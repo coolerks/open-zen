@@ -227,6 +227,41 @@ function formatReasoningDuration(durationMs: number | null | undefined): string 
   return `${minutes}分钟${seconds}秒`;
 }
 
+function formatQuotedTextForPrompt(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join('\n');
+}
+
+function buildOutgoingUserContent(inputValue: string, quotedText: string | null): string {
+  const normalizedInput = inputValue.trim();
+  const normalizedQuotedText = quotedText?.trim() ?? '';
+  if (!normalizedQuotedText) {
+    return normalizedInput;
+  }
+
+  const quoteBlock = formatQuotedTextForPrompt(normalizedQuotedText);
+  if (!normalizedInput) {
+    return quoteBlock;
+  }
+  return `${quoteBlock}\n\n${normalizedInput}`;
+}
+
+function resolveSelectionActionPosition(rect: DOMRect): { top: number; left: number } {
+  const horizontalMargin = 88;
+  const left = Math.min(
+    window.innerWidth - horizontalMargin,
+    Math.max(horizontalMargin, rect.left + rect.width / 2),
+  );
+
+  const preferredTop = rect.top - 46;
+  const fallbackTop = rect.bottom + 10;
+  const top = preferredTop >= 8 ? preferredTop : Math.min(window.innerHeight - 44, fallbackTop);
+
+  return { top, left };
+}
+
 function buildMessageMarkdown(message: ChatMessage): string {
   const images = parseImageUrls(message.imageUrls);
   const parts: string[] = [];
@@ -1242,6 +1277,34 @@ const CopyIcon: React.FC = () => (
   </svg>
 );
 
+const AskSelectionIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M7.3 14.7H4.7C3.76 14.7 3 13.94 3 13V5.7C3 4.76 3.76 4 4.7 4H10.5C11.44 4 12.2 4.76 12.2 5.7V13C12.2 13.94 11.44 14.7 10.5 14.7H9.2L7.3 16.8V14.7Z"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M13.8 11.7H18.6C19.37 11.7 20 12.33 20 13.1V17.6C20 18.37 19.37 19 18.6 19H17L14.8 21V19H13.8C13.03 19 12.4 18.37 12.4 17.6V13.1C12.4 12.33 13.03 11.7 13.8 11.7Z"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path d="M5.6 7.4H7.2M8.8 7.4H10.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="M14.8 14.9H16.4M17.6 14.9H19.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const QuoteContextIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M9 7L4 12L9 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4 12H13.5C16.81 12 19.5 14.69 19.5 18" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+  </svg>
+);
+
 const DownloadIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M12 4.5V15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -1781,6 +1844,12 @@ type AssistantProfile = {
   avatarValue: string | null;
 };
 
+type SelectionActionPayload = {
+  messageId: number;
+  text: string;
+  rect: DOMRect;
+};
+
 const DEFAULT_MESSAGE_ASSISTANT_PROFILE: AssistantProfile = {
   displayName: 'AI',
   avatarType: null,
@@ -1817,7 +1886,8 @@ const MessageCardBase: React.FC<{
   onCopy: (message: ChatMessage) => void;
   onBranch: (message: ChatMessage) => void;
   onDelete: (message: ChatMessage) => void;
-}> = ({ message, isStreaming, copied, assistantProfile, onCopy, onBranch, onDelete }) => {
+  onSelectForAction: (payload: SelectionActionPayload | null) => void;
+}> = ({ message, isStreaming, copied, assistantProfile, onCopy, onBranch, onDelete, onSelectForAction }) => {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
   const images = parseImageUrls(message.imageUrls);
@@ -1877,6 +1947,47 @@ const MessageCardBase: React.FC<{
       </IconActionButton>
     </div>
   );
+
+  const handleAssistantMouseUp = () => {
+    if (isUser || isTool) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      onSelectForAction(null);
+      return;
+    }
+
+    const selectedText = selection.toString().trim();
+    if (!selectedText) {
+      onSelectForAction(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const containerNode = range.commonAncestorContainer;
+    const containerElement = containerNode instanceof Element ? containerNode : containerNode.parentElement;
+    const host = containerElement?.closest(`[data-assistant-message-id="${message.id}"]`);
+    if (!host) {
+      onSelectForAction(null);
+      return;
+    }
+
+    const rect = range.getBoundingClientRect();
+    const fallbackRect = range.getClientRects().item(0);
+    const resolvedRect = rect.width > 0 || rect.height > 0 ? rect : fallbackRect;
+    if (!resolvedRect) {
+      onSelectForAction(null);
+      return;
+    }
+
+    onSelectForAction({
+      messageId: message.id,
+      text: selectedText,
+      rect: resolvedRect,
+    });
+  };
 
   const bodyContent = (
     <>
@@ -1955,6 +2066,8 @@ const MessageCardBase: React.FC<{
       className="mx-auto flex w-full max-w-[860px] gap-3 animate-fade-up"
       onMouseEnter={showActions}
       onMouseLeave={hideActions}
+      onMouseUp={handleAssistantMouseUp}
+      data-assistant-message-id={isTool ? undefined : message.id}
     >
       {isTool ? <MessageAvatar type="tool" /> : <AssistantAvatar profile={assistantProfile} />}
       <div className="min-w-0 flex-1">
@@ -2010,7 +2123,11 @@ const MessageCard = React.memo(
     prev.copied === next.copied &&
     prev.assistantProfile.displayName === next.assistantProfile.displayName &&
     prev.assistantProfile.avatarType === next.assistantProfile.avatarType &&
-    prev.assistantProfile.avatarValue === next.assistantProfile.avatarValue,
+    prev.assistantProfile.avatarValue === next.assistantProfile.avatarValue &&
+    prev.onCopy === next.onCopy &&
+    prev.onBranch === next.onBranch &&
+    prev.onDelete === next.onDelete &&
+    prev.onSelectForAction === next.onSelectForAction,
 );
 
 const ChatPage: React.FC = () => {
@@ -2044,6 +2161,8 @@ const ChatPage: React.FC = () => {
 
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const [quotedSelection, setQuotedSelection] = useState<{ messageId: number; text: string } | null>(null);
+  const [selectionAction, setSelectionAction] = useState<{ messageId: number; text: string; top: number; left: number } | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   const [draftAgentId, setDraftAgentId] = useState<number | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
@@ -2202,6 +2321,7 @@ const ChatPage: React.FC = () => {
   }, [messages, streaming]);
   const hasCurrentSession = currentSessionId != null && currentSession != null;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
+  const askActionLabel = activeAgent && !activeAgent.isDefault ? `问${activeAgent.name}` : '问AI';
 
   useEffect(() => {
     fetchSessions();
@@ -2220,8 +2340,53 @@ const ChatPage: React.FC = () => {
     // 切换会话或进入草稿后，默认回到底部。
     shouldAutoScrollRef.current = true;
     lastMessagesScrollTopRef.current = 0;
+    setSelectionAction(null);
+    setQuotedSelection(null);
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [currentSessionId]);
+
+  useEffect(() => {
+    const onSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+        setSelectionAction(null);
+      }
+    };
+
+    const onViewportChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setSelectionAction(null);
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const fallbackRect = range.getClientRects().item(0);
+      const resolvedRect = rect.width > 0 || rect.height > 0 ? rect : fallbackRect;
+      if (!resolvedRect) {
+        setSelectionAction(null);
+        return;
+      }
+
+      const { top, left } = resolveSelectionActionPosition(resolvedRect);
+      setSelectionAction((current) => {
+        if (!current) {
+          return current;
+        }
+        return { ...current, top, left };
+      });
+    };
+
+    document.addEventListener('selectionchange', onSelectionChange);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+    return () => {
+      document.removeEventListener('selectionchange', onSelectionChange);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
+  }, []);
 
   useEffect(() => {
     document.title = currentSession?.title ? `${currentSession.title} · Open Zen` : 'Open Zen';
@@ -2427,6 +2592,8 @@ const ChatPage: React.FC = () => {
     clearError();
     setInput('');
     setPendingImages([]);
+    setQuotedSelection(null);
+    setSelectionAction(null);
     shouldAutoScrollRef.current = true;
 
     if (desiredModelId != null && selectedModelId !== desiredModelId) {
@@ -2472,10 +2639,12 @@ const ChatPage: React.FC = () => {
       return;
     }
 
-    const text = input;
+    const text = buildOutgoingUserContent(input, quotedSelection?.text ?? null);
     const images = [...pendingImages];
     setInput('');
     setPendingImages([]);
+    setQuotedSelection(null);
+    setSelectionAction(null);
 
     await sendMessage(text, images);
   };
@@ -2516,6 +2685,36 @@ const ChatPage: React.FC = () => {
   const handleDeleteMessage = useCallback((target: ChatMessage) => {
     setDeleteMessageTarget(target);
   }, []);
+
+  const handleSelectForAction = useCallback((payload: SelectionActionPayload | null) => {
+    if (!payload || !payload.text.trim()) {
+      setSelectionAction(null);
+      return;
+    }
+
+    const { top, left } = resolveSelectionActionPosition(payload.rect);
+    setSelectionAction({
+      messageId: payload.messageId,
+      text: payload.text,
+      top,
+      left,
+    });
+  }, []);
+
+  const handleAskFromSelection = useCallback(() => {
+    if (!selectionAction?.text) {
+      return;
+    }
+
+    setQuotedSelection({
+      messageId: selectionAction.messageId,
+      text: selectionAction.text,
+    });
+    setSelectionAction(null);
+    window.getSelection()?.removeAllRanges();
+
+    textareaRef.current?.focus();
+  }, [selectionAction]);
 
   const handleSelectAgent = async (agentId: number) => {
     if (currentSessionId) {
@@ -2914,6 +3113,7 @@ const ChatPage: React.FC = () => {
                   onCopy={handleCopyMessage}
                   onBranch={handleBranchMessage}
                   onDelete={handleDeleteMessage}
+                  onSelectForAction={handleSelectForAction}
                 />
               ))}
               <div ref={messagesEndRef} />
@@ -2955,6 +3155,25 @@ const ChatPage: React.FC = () => {
             )}
 
             <div className="rounded-[30px] border border-[#d9d9e3] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
+              {quotedSelection && (
+                <div className="mb-2 flex items-start gap-2 rounded-2xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-[#3a3a3a] dark:text-slate-200">
+                  <span className="mt-0.5 shrink-0 text-slate-500 dark:text-slate-400">
+                    <QuoteContextIcon />
+                  </span>
+                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                    “{quotedSelection.text}”
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setQuotedSelection(null)}
+                    className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-[#444444] dark:hover:text-slate-100"
+                    title="移除引用"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -3111,7 +3330,7 @@ const ChatPage: React.FC = () => {
                   ) : (
                     <button
                       onClick={() => void handleSend()}
-                      disabled={!input.trim() && pendingImages.length === 0}
+                      disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
                       className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
                       title="发送"
                       type="button"
@@ -3131,6 +3350,22 @@ const ChatPage: React.FC = () => {
           </div>
         </div>
       </main>
+
+      {selectionAction && (
+        <button
+          type="button"
+          onMouseDown={(event) => {
+            // 保留当前选区，避免按钮点击前 selection 被浏览器清空。
+            event.preventDefault();
+          }}
+          onClick={handleAskFromSelection}
+          className="fixed z-50 inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-lg transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-[#2f2f2f] dark:text-slate-100 dark:hover:bg-[#3a3a3a]"
+          style={{ top: `${selectionAction.top}px`, left: `${selectionAction.left}px`, transform: 'translateX(-50%)' }}
+        >
+          <AskSelectionIcon />
+          <span>{askActionLabel}</span>
+        </button>
+      )}
 
       <SessionAboutDialog
         state={sessionAboutDialog}
