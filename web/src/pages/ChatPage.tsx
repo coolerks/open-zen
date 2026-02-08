@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -379,6 +380,21 @@ function toMessageRoleLabel(role: ChatMessage['role']): string {
   return role;
 }
 
+function renderMarkdownHtmlForExport(markdown: string): string {
+  if (!markdown.trim()) {
+    return '<p>(空消息)</p>';
+  }
+
+  return renderToStaticMarkup(
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex, rehypeHighlightMarks]}
+    >
+      {markdown}
+    </ReactMarkdown>,
+  );
+}
+
 function buildSessionExportMarkdown(sessionTitle: string, messages: ChatMessage[]): string {
   const parts: string[] = [
     `# ${sessionTitle || '未命名会话'}`,
@@ -418,11 +434,9 @@ function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): 
       const role = escapeHtml(toMessageRoleLabel(message.role));
       const modelName = message.modelName ? escapeHtml(message.modelName) : '';
       const createdAt = message.createdAt ? escapeHtml(formatDateTime(message.createdAt)) : '';
-      const content = message.content?.trim() ? escapeHtml(message.content.trim()) : '(空消息)';
       const reasoning = message.reasoningContent?.trim() ? escapeHtml(message.reasoningContent.trim()) : '';
-      const imageHtml = parseImageUrls(message.imageUrls)
-        .map((url) => `<img src="${escapeHtml(url)}" alt="message-image" />`)
-        .join('');
+      const markdownBody = buildMessageMarkdown(message);
+      const markdownHtml = renderMarkdownHtmlForExport(markdownBody);
 
       return `
         <section class="message">
@@ -430,8 +444,7 @@ function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): 
           ${modelName ? `<p class="meta">模型：${modelName}</p>` : ''}
           ${createdAt ? `<p class="meta">时间：${createdAt}</p>` : ''}
           ${reasoning ? `<h3>思考过程</h3><pre>${reasoning}</pre>` : ''}
-          ${imageHtml ? `<div class="images">${imageHtml}</div>` : ''}
-          <pre>${content}</pre>
+          <div class="markdown">${markdownHtml}</div>
         </section>
       `;
     })
@@ -448,6 +461,7 @@ function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): 
             font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
             margin: 24px;
             color: #0f172a;
+            background: #ffffff;
           }
           h1 {
             margin: 0 0 8px 0;
@@ -489,18 +503,104 @@ function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): 
             border-radius: 8px;
             padding: 10px;
           }
-          .images {
+          .markdown {
             margin-top: 8px;
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
+            color: #0f172a;
+            line-height: 1.75;
           }
-          .images img {
-            width: 140px;
-            height: 140px;
-            object-fit: cover;
+          .markdown > :first-child {
+            margin-top: 0;
+          }
+          .markdown > :last-child {
+            margin-bottom: 0;
+          }
+          .markdown p,
+          .markdown ul,
+          .markdown ol,
+          .markdown blockquote,
+          .markdown table,
+          .markdown pre {
+            margin: 0.65em 0;
+          }
+          .markdown h1,
+          .markdown h2,
+          .markdown h3,
+          .markdown h4,
+          .markdown h5,
+          .markdown h6 {
+            margin: 1.05em 0 0.55em;
+            font-weight: 700;
+            line-height: 1.4;
+          }
+          .markdown h1 { font-size: 1.5em; }
+          .markdown h2 { font-size: 1.32em; }
+          .markdown h3 { font-size: 1.2em; }
+          .markdown h4,
+          .markdown h5,
+          .markdown h6 { font-size: 1.05em; }
+          .markdown ul,
+          .markdown ol {
+            padding-left: 1.5em;
+          }
+          .markdown li + li {
+            margin-top: 0.32em;
+          }
+          .markdown blockquote {
+            margin: 0.7em 0;
+            padding-left: 0.85em;
+            border-left: 3px solid #cbd5e1;
+            color: #475569;
+          }
+          .markdown code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.92em;
+            background: #f1f5f9;
+            border-radius: 6px;
+            padding: 0.1em 0.35em;
+          }
+          .markdown pre {
+            margin: 0.75em 0;
+            border-radius: 10px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            overflow-x: auto;
+            padding: 10px 12px;
+          }
+          .markdown pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            white-space: pre;
+          }
+          .markdown table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          .markdown th,
+          .markdown td {
+            border: 1px solid #cbd5e1;
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: top;
+          }
+          .markdown th {
+            background: #f8fafc;
+            font-weight: 600;
+          }
+          .markdown img {
+            max-width: min(100%, 520px);
             border-radius: 8px;
             border: 1px solid #cbd5e1;
+          }
+          .markdown .katex-display {
+            margin: 0.8em 0;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding: 2px 0;
+          }
+          .katex {
+            font: normal 1.1em KaTeX_Main, "Times New Roman", serif;
+            line-height: 1.2;
           }
         </style>
       </head>
@@ -511,6 +611,78 @@ function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): 
       </body>
     </html>
   `;
+}
+
+function printHtmlAsPdf(html: string): void {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+  iframe.style.border = '0';
+
+  let cleaned = false;
+  let fallbackTimer: number | null = null;
+
+  const cleanup = () => {
+    if (cleaned) {
+      return;
+    }
+    cleaned = true;
+    if (fallbackTimer != null) {
+      window.clearTimeout(fallbackTimer);
+    }
+    try {
+      if (iframe.contentWindow) {
+        iframe.contentWindow.onafterprint = null;
+      }
+    } catch {
+      // 忽略清理阶段异常。
+    }
+    iframe.remove();
+  };
+
+  iframe.onload = () => {
+    const frameWindow = iframe.contentWindow;
+    if (!frameWindow) {
+      cleanup();
+      return;
+    }
+
+    frameWindow.onafterprint = () => {
+      cleanup();
+    };
+
+    window.setTimeout(() => {
+      try {
+        frameWindow.focus();
+        frameWindow.print();
+      } catch (error) {
+        console.error('PDF 打印触发失败', error);
+        cleanup();
+      }
+    }, 80);
+  };
+
+  document.body.appendChild(iframe);
+  const frameDocument = iframe.contentDocument;
+  if (!frameDocument) {
+    cleanup();
+    return;
+  }
+
+  frameDocument.open();
+  frameDocument.write(html);
+  frameDocument.close();
+
+  // 某些浏览器不会触发 onafterprint，兜底自动清理 iframe。
+  fallbackTimer = window.setTimeout(() => {
+    cleanup();
+  }, 60_000);
 }
 
 function parseSvgDimension(value: string | null | undefined): number | null {
@@ -2790,35 +2962,7 @@ const ChatPage: React.FC = () => {
 
     const sessionTitle = currentSession?.title?.trim() || '未命名会话';
     const printableHtml = buildSessionExportHtml(sessionTitle, collectExportMessages());
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=960,height=800');
-    if (!printWindow) {
-      return;
-    }
-
-    printWindow.document.open();
-    printWindow.document.write(printableHtml);
-    printWindow.document.close();
-
-    const triggerPrint = () => {
-      printWindow.focus();
-      printWindow.print();
-    };
-
-    if (printWindow.document.readyState === 'complete') {
-      window.setTimeout(triggerPrint, 120);
-    } else {
-      printWindow.addEventListener(
-        'load',
-        () => {
-          window.setTimeout(triggerPrint, 120);
-        },
-        { once: true },
-      );
-    }
-
-    printWindow.onafterprint = () => {
-      printWindow.close();
-    };
+    printHtmlAsPdf(printableHtml);
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
