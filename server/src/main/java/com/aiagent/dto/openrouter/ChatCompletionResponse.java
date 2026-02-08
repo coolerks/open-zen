@@ -10,7 +10,7 @@ import java.util.List;
 
 /**
  * OpenRouter Chat Completions 响应体。
- * 字段结构与 OpenAI Chat Completions 兼容。
+ * 字段结构与 OpenOpen Zen Completions 兼容。
  */
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)

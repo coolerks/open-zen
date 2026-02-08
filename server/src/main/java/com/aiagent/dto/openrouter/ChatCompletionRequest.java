@@ -8,7 +8,7 @@ import java.util.List;
 
 /**
  * OpenRouter Chat Completions 请求体。
- * 字段结构与 OpenAI Chat Completions 兼容。
+ * 字段结构与 OpenOpen Zen Completions 兼容。
  */
 @Data
 @JsonInclude(JsonInclude.Include.NON_NULL)

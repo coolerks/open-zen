@@ -691,6 +691,7 @@ const MermaidBlock: React.FC<{ chart: string; isStreaming: boolean }> = ({ chart
   const [svgMarkup, setSvgMarkup] = useState('');
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<ExportImageFormat | null>(null);
+  const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
 
   useEffect(() => {
@@ -776,6 +777,16 @@ const MermaidBlock: React.FC<{ chart: string; isStreaming: boolean }> = ({ chart
   }, [exportMenuOpen]);
 
   useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), TOOLBAR_FEEDBACK_DURATION_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied]);
+
+  useEffect(() => {
     if (!downloaded) {
       return;
     }
@@ -814,51 +825,71 @@ const MermaidBlock: React.FC<{ chart: string; isStreaming: boolean }> = ({ chart
     <div className="chat-mermaid-card">
       <div className="chat-code-toolbar">
         <span className="chat-code-language">Mermaid</span>
-        <div ref={exportMenuRef} className="relative">
+        <div className="flex items-center gap-1">
           {downloaded ? (
             <span className="chat-toolbar-feedback">已下载</span>
           ) : (
-            <ToolbarIconButton
-              title="下载图表"
-              onClick={() => setExportMenuOpen((prev) => !prev)}
-              disabled={Boolean(exportingFormat) || Boolean(isStreaming || renderError || !svgMarkup)}
-            >
-              <DownloadIcon />
-            </ToolbarIconButton>
-          )}
-          {exportMenuOpen && !isStreaming && !renderError && (
-            <div className="chat-export-menu">
-              <button
-                type="button"
-                className="chat-export-menu-item"
-                onClick={() => {
-                  void handleExport('svg');
-                }}
-                disabled={Boolean(exportingFormat)}
+            <div ref={exportMenuRef} className="relative">
+              <ToolbarIconButton
+                title="下载图表"
+                onClick={() => setExportMenuOpen((prev) => !prev)}
+                disabled={Boolean(exportingFormat) || Boolean(isStreaming || renderError || !svgMarkup)}
               >
-                导出 SVG
-              </button>
-              <button
-                type="button"
-                className="chat-export-menu-item"
-                onClick={() => {
-                  void handleExport('png');
-                }}
-                disabled={Boolean(exportingFormat)}
-              >
-                导出 PNG
-              </button>
-              <button
-                type="button"
-                className="chat-export-menu-item"
-                onClick={() => {
-                  void handleExport('jpeg');
-                }}
-                disabled={Boolean(exportingFormat)}
-              >
-                导出 JPEG
-              </button>
+                <DownloadIcon />
+              </ToolbarIconButton>
+              {exportMenuOpen && !isStreaming && !renderError && (
+                <div className="chat-export-menu">
+                  <button
+                    type="button"
+                    className="chat-export-menu-item"
+                    onClick={() => {
+                      void handleExport('svg');
+                    }}
+                    disabled={Boolean(exportingFormat)}
+                  >
+                    导出 SVG
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-export-menu-item"
+                    onClick={() => {
+                      void handleExport('png');
+                    }}
+                    disabled={Boolean(exportingFormat)}
+                  >
+                    导出 PNG
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-export-menu-item"
+                    onClick={() => {
+                      void handleExport('jpeg');
+                    }}
+                    disabled={Boolean(exportingFormat)}
+                  >
+                    导出 JPEG
+                  </button>
+                </div>
+              )}
             </div>
+          )}
+
+          {copied ? (
+            <span className="chat-toolbar-feedback">已复制</span>
+          ) : (
+            <ToolbarIconButton
+              title="复制 Mermaid 代码"
+              onClick={() => {
+                void copyTextToClipboard(chart)
+                  .then(() => setCopied(true))
+                  .catch((error) => {
+                    console.error('Mermaid 代码复制失败', error);
+                  });
+              }}
+              disabled={Boolean(isStreaming || !chart.trim())}
+            >
+              <CopyIcon />
+            </ToolbarIconButton>
           )}
         </div>
       </div>
@@ -2086,7 +2117,7 @@ const ChatPage: React.FC = () => {
   }, [currentSessionId]);
 
   useEffect(() => {
-    document.title = currentSession?.title ? `${currentSession.title} · AI Chat` : 'AI Chat';
+    document.title = currentSession?.title ? `${currentSession.title} · Open Zen` : 'Open Zen';
   }, [currentSession?.title]);
 
   useEffect(() => {
@@ -2557,7 +2588,7 @@ const ChatPage: React.FC = () => {
         className={`${sidebarCollapsed ? 'w-[72px]' : 'w-[268px]'} flex shrink-0 flex-col border-r border-slate-200 bg-[#f9f9f9] p-3 transition-[width] duration-200 dark:border-[#2f2f2f] dark:bg-[#171717]`}
       >
         <div className={`mb-3 flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between px-1'}`}>
-          {!sidebarCollapsed && <p className="truncate text-sm font-semibold text-slate-700 dark:text-slate-200">AI Chat</p>}
+          {!sidebarCollapsed && <p className="truncate text-sm font-semibold text-slate-700 dark:text-slate-200">Open Zen</p>}
           <button
             className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a]"
             onClick={() => setSidebarCollapsed((prev) => !prev)}
