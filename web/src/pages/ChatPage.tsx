@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -18,6 +18,8 @@ const TOKENS_PER_MILLION = 1_000_000;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'chat.sidebar.collapsed';
 const LAST_SELECTED_MODEL_STORAGE_KEY = 'chat.lastSelectedModelId';
 const TOOLBAR_FEEDBACK_DURATION_MS = 3000;
+const STREAM_MARKDOWN_MIN_COMMIT_CHARS = 10;
+const STREAM_MARKDOWN_FORCE_COMMIT_CHARS = 120;
 const CODE_LANGUAGE_ALIAS_MAP: Record<string, string> = {
   js: 'javascript',
   mjs: 'javascript',
@@ -81,6 +83,20 @@ const CODE_EXTENSION_MAP: Record<string, string> = {
   markdown: 'md',
   plaintext: 'txt',
 };
+
+function resolveStreamMarkdownInterval(contentLength: number): number {
+  // 内容越长，Markdown 重渲染间隔越大，用于平衡流畅度与性能。
+  if (contentLength < 800) {
+    return 90;
+  }
+  if (contentLength < 3_000) {
+    return 130;
+  }
+  if (contentLength < 8_000) {
+    return 190;
+  }
+  return 240;
+}
 
 type ExportImageFormat = 'svg' | 'png' | 'jpeg';
 type HighlightResult = {
@@ -1064,6 +1080,82 @@ const MessageMarkdown: React.FC<{ content: string; isStreaming: boolean }> = ({ 
   );
 };
 
+const StreamingMessageMarkdown: React.FC<{ content: string }> = ({ content }) => {
+  const [markdownSnapshot, setMarkdownSnapshot] = useState('');
+  const lastCommitAtRef = useRef<number>(0);
+  const commitTimerRef = useRef<number | null>(null);
+  const latestContentRef = useRef(content);
+
+  const clearCommitTimer = () => {
+    if (commitTimerRef.current == null) {
+      return;
+    }
+    window.clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = null;
+  };
+
+  const commitSnapshot = useCallback((nextContent: string) => {
+    clearCommitTimer();
+    setMarkdownSnapshot(nextContent);
+    lastCommitAtRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
+    latestContentRef.current = content;
+
+    if (!content) {
+      commitSnapshot('');
+      return;
+    }
+
+    // 首屏先尽快展示，避免流式开始时短暂无内容。
+    if (!markdownSnapshot) {
+      commitSnapshot(content);
+      return;
+    }
+
+    if (markdownSnapshot.length > content.length) {
+      commitSnapshot(content);
+      return;
+    }
+
+    const pendingChars = content.length - markdownSnapshot.length;
+    if (pendingChars <= 0) {
+      return;
+    }
+
+    const tail = content.slice(markdownSnapshot.length);
+    const interval = resolveStreamMarkdownInterval(content.length);
+    const elapsed = Date.now() - lastCommitAtRef.current;
+    const hasNaturalBoundary = tail.includes('\n') || /[。！？!?;；:：]$/.test(tail);
+    const shouldCommitImmediately =
+      pendingChars >= STREAM_MARKDOWN_FORCE_COMMIT_CHARS ||
+      (pendingChars >= STREAM_MARKDOWN_MIN_COMMIT_CHARS && hasNaturalBoundary) ||
+      elapsed >= interval;
+
+    if (shouldCommitImmediately) {
+      commitSnapshot(content);
+      return;
+    }
+
+    clearCommitTimer();
+    commitTimerRef.current = window.setTimeout(() => {
+      // 定时提交时始终使用最新内容，避免闭包拿到过期 content 造成“回跳”。
+      commitSnapshot(latestContentRef.current);
+      commitTimerRef.current = null;
+    }, Math.max(24, interval - elapsed));
+  }, [content, markdownSnapshot, commitSnapshot]);
+
+  useEffect(
+    () => () => {
+      clearCommitTimer();
+    },
+    [],
+  );
+
+  return <MessageMarkdown content={markdownSnapshot} isStreaming />;
+};
+
 const MessageAvatar: React.FC<{ type: 'assistant' | 'user' | 'tool' }> = ({ type }) => {
   const styleMap = {
     assistant: 'bg-emerald-500 text-white',
@@ -1717,7 +1809,7 @@ const AssistantAvatar: React.FC<{ profile: AssistantProfile }> = ({ profile }) =
   return <MessageAvatar type="assistant" />;
 };
 
-const MessageCard: React.FC<{
+const MessageCardBase: React.FC<{
   message: ChatMessage;
   isStreaming: boolean;
   copied: boolean;
@@ -1814,7 +1906,11 @@ const MessageCard: React.FC<{
 
       <div className="chat-markdown text-sm leading-7 text-slate-800 dark:text-slate-100">
         {hasContent ? (
-          <MessageMarkdown content={content} isStreaming={isStreaming} />
+          isStreaming ? (
+            <StreamingMessageMarkdown content={content} />
+          ) : (
+            <MessageMarkdown content={content} isStreaming={isStreaming} />
+          )
         ) : isStreaming ? (
           <div className="flex h-7 items-center">
             <span className="chat-loading-dot" aria-label="加载中" />
@@ -1905,6 +2001,17 @@ const MessageCard: React.FC<{
     </div>
   );
 };
+
+const MessageCard = React.memo(
+  MessageCardBase,
+  (prev, next) =>
+    prev.message === next.message &&
+    prev.isStreaming === next.isStreaming &&
+    prev.copied === next.copied &&
+    prev.assistantProfile.displayName === next.assistantProfile.displayName &&
+    prev.assistantProfile.avatarType === next.assistantProfile.avatarType &&
+    prev.assistantProfile.avatarValue === next.assistantProfile.avatarValue,
+);
 
 const ChatPage: React.FC = () => {
   const { theme, toggleTheme } = useThemeStore();
@@ -2373,7 +2480,7 @@ const ChatPage: React.FC = () => {
     await sendMessage(text, images);
   };
 
-  const handleCopyMessage = async (message: ChatMessage) => {
+  const handleCopyMessage = useCallback(async (message: ChatMessage) => {
     const markdown = buildMessageMarkdown(message);
     if (!markdown) {
       return;
@@ -2393,7 +2500,22 @@ const ChatPage: React.FC = () => {
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
+
+  const handleBranchMessage = useCallback(
+    (target: ChatMessage) => {
+      setBranchDialog({
+        open: true,
+        message: target,
+        title: `${currentSession?.title ?? '会话'}（分支）`,
+      });
+    },
+    [currentSession?.title],
+  );
+
+  const handleDeleteMessage = useCallback((target: ChatMessage) => {
+    setDeleteMessageTarget(target);
+  }, []);
 
   const handleSelectAgent = async (agentId: number) => {
     if (currentSessionId) {
@@ -2790,14 +2912,8 @@ const ChatPage: React.FC = () => {
                   copied={copiedMessageId === message.id}
                   assistantProfile={resolveMessageAssistantProfile(message)}
                   onCopy={handleCopyMessage}
-                  onBranch={(target) =>
-                    setBranchDialog({
-                      open: true,
-                      message: target,
-                      title: `${currentSession?.title ?? '会话'}（分支）`,
-                    })
-                  }
-                  onDelete={(target) => setDeleteMessageTarget(target)}
+                  onBranch={handleBranchMessage}
+                  onDelete={handleDeleteMessage}
                 />
               ))}
               <div ref={messagesEndRef} />

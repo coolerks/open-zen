@@ -34,8 +34,21 @@ interface ChatState {
   clearError: () => void;
 }
 
+const STREAM_RENDER_INTERVAL_MS = 32;
+const STREAM_RENDER_MIN_CHARS = 2;
+const STREAM_RENDER_MAX_CHARS = 48;
+
 function appendStreamField(original: string | null, delta: string): string {
   return `${original ?? ''}${delta}`;
+}
+
+function resolveStreamStepSize(queueLength: number): number {
+  if (queueLength <= 0) {
+    return 0;
+  }
+  // 队列越长，单帧吐字越多，避免大段积压后明显延迟。
+  const dynamicStep = Math.ceil(queueLength / 24);
+  return Math.min(STREAM_RENDER_MAX_CHARS, Math.max(STREAM_RENDER_MIN_CHARS, dynamicStep));
 }
 
 let activeStreamAbortController: AbortController | null = null;
@@ -225,6 +238,97 @@ export const useChatStore = create<ChatState>((set, get) => ({
     activeStreamAbortController = new AbortController();
 
     const donePayloadHolder: { value: StreamDonePayload | null } = { value: null };
+    const streamQueue = {
+      content: '',
+      reasoning: '',
+    };
+    let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
+    let streamClosed = false;
+    let resolveQueueDrain: (() => void) | null = null;
+
+    const clearStreamFlushTimer = () => {
+      if (streamFlushTimer == null) {
+        return;
+      }
+      clearInterval(streamFlushTimer);
+      streamFlushTimer = null;
+    };
+
+    const tryResolveQueueDrain = () => {
+      if (!streamClosed) {
+        return;
+      }
+      if (streamQueue.content.length > 0 || streamQueue.reasoning.length > 0) {
+        return;
+      }
+      clearStreamFlushTimer();
+      if (resolveQueueDrain) {
+        resolveQueueDrain();
+        resolveQueueDrain = null;
+      }
+    };
+
+    const flushStreamQueue = () => {
+      const contentStep = resolveStreamStepSize(streamQueue.content.length);
+      const reasoningStep = resolveStreamStepSize(streamQueue.reasoning.length);
+      const contentDelta = contentStep > 0 ? streamQueue.content.slice(0, contentStep) : '';
+      const reasoningDelta = reasoningStep > 0 ? streamQueue.reasoning.slice(0, reasoningStep) : '';
+
+      if (contentDelta) {
+        streamQueue.content = streamQueue.content.slice(contentDelta.length);
+      }
+      if (reasoningDelta) {
+        streamQueue.reasoning = streamQueue.reasoning.slice(reasoningDelta.length);
+      }
+
+      if (!contentDelta && !reasoningDelta) {
+        tryResolveQueueDrain();
+        return;
+      }
+
+      set((state) => ({
+        messages: state.messages.map((msg) => {
+          if (msg.id !== tempAssistantId) {
+            return msg;
+          }
+
+          const nextContent = contentDelta ? appendStreamField(msg.content, contentDelta) : msg.content;
+          const nextReasoning = reasoningDelta ? appendStreamField(msg.reasoningContent, reasoningDelta) : msg.reasoningContent;
+
+          if (nextContent === msg.content && nextReasoning === msg.reasoningContent) {
+            return msg;
+          }
+
+          return {
+            ...msg,
+            content: nextContent,
+            reasoningContent: nextReasoning,
+          };
+        }),
+      }));
+
+      tryResolveQueueDrain();
+    };
+
+    const ensureStreamFlushTimer = () => {
+      if (streamFlushTimer != null) {
+        return;
+      }
+      // 以稳定帧率小步刷新，避免后端 chunk 边界导致“整段跳字”。
+      streamFlushTimer = setInterval(() => {
+        flushStreamQueue();
+      }, STREAM_RENDER_INTERVAL_MS);
+    };
+
+    const waitForStreamQueueDrain = async () => {
+      if (streamQueue.content.length === 0 && streamQueue.reasoning.length === 0) {
+        clearStreamFlushTimer();
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        resolveQueueDrain = resolve;
+      });
+    };
 
     try {
       await chatApi.streamMessage(
@@ -236,25 +340,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
         {
           onDelta: ({ content: delta }) => {
-            set((state) => ({
-              messages: state.messages.map((msg) =>
-                msg.id === tempAssistantId
-                  ? { ...msg, content: appendStreamField(msg.content, delta) }
-                  : msg,
-              ),
-            }));
+            if (!delta) {
+              return;
+            }
+            streamQueue.content += delta;
+            ensureStreamFlushTimer();
           },
           onReasoning: ({ reasoning }) => {
-            set((state) => ({
-              messages: state.messages.map((msg) =>
-                msg.id === tempAssistantId
-                  ? {
-                      ...msg,
-                      reasoningContent: appendStreamField(msg.reasoningContent, reasoning),
-                    }
-                  : msg,
-              ),
-            }));
+            if (!reasoning) {
+              return;
+            }
+            streamQueue.reasoning += reasoning;
+            ensureStreamFlushTimer();
           },
           onDone: (payload) => {
             donePayloadHolder.value = payload;
@@ -265,6 +362,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
         { signal: activeStreamAbortController.signal },
       );
+      streamClosed = true;
+      flushStreamQueue();
+      await waitForStreamQueueDrain();
 
       const [session, latestMessages] = await Promise.all([
         chatApi.getSession(currentSessionId),
@@ -288,12 +388,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
       }
     } catch (e: any) {
+      streamClosed = true;
+      flushStreamQueue();
+      clearStreamFlushTimer();
       const isAborted = e?.name === 'AbortError';
       if (!isAborted) {
         set({ error: e.message });
         await get().fetchMessages(currentSessionId);
       }
     } finally {
+      streamClosed = true;
+      clearStreamFlushTimer();
       activeStreamAbortController = null;
       set({ streaming: false });
     }
