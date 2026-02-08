@@ -438,8 +438,8 @@ public ChatSession branchSession(
 ## 📮 联系方式
 
 如有问题或建议，欢迎：
-- 提交 [Issue](https://github.com/coolerks/agentflow/issues)
-- 发起 [Discussion](https://github.com/coolerks/agentflow/discussions)
+- 提交 [Issue](https://github.com/coolerks/open-zen/issues)
+- 发起 [Discussion](https://github.com/coolerks/open-zen/discussions)
 - 发送邮件至：your-email@example.com
 
 ---
