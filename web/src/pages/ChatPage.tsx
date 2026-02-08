@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import katexCssText from 'katex/dist/katex.min.css?raw';
 import { chatApi } from '../api/chat';
 import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
@@ -342,6 +343,18 @@ function createTimestampSuffix(): string {
   ).padStart(2, '0')}`;
 }
 
+function canRunAsHtml(code: string, language: string): boolean {
+  const normalized = normalizeCodeLanguage(language);
+  if (normalized === 'html') {
+    return true;
+  }
+  if (normalized === 'xml' && /<html[\s>]/i.test(code)) {
+    return true;
+  }
+
+  return /^\s*<!doctype\s+html/i.test(code) || /<html[\s>]/i.test(code);
+}
+
 function normalizeExportFileName(value: string): string {
   return value
     .replace(/[\\/:*?"<>|]+/g, '_')
@@ -602,6 +615,7 @@ function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): 
             font: normal 1.1em KaTeX_Main, "Times New Roman", serif;
             line-height: 1.2;
           }
+          ${katexCssText}
         </style>
       </head>
       <body>
@@ -1207,12 +1221,29 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
   const currentLanguage = resolvedLanguage || normalizeCodeLanguage(language) || 'plaintext';
   const displayLanguage = toCodeLanguageLabel(currentLanguage);
   const fileExtension = toCodeFileExtension(currentLanguage);
+  const canRunHtml = canRunAsHtml(code, currentLanguage);
 
   return (
     <div className="chat-code-block">
       <div className="chat-code-toolbar">
         <span className="chat-code-language">{displayLanguage}</span>
         <div className="flex items-center gap-1">
+          {canRunHtml && (
+            <ToolbarIconButton
+              title="运行 HTML"
+              onClick={() => {
+                const blob = new Blob([code], { type: 'text/html;charset=utf-8' });
+                const previewUrl = URL.createObjectURL(blob);
+                window.open(previewUrl, '_blank', 'noopener,noreferrer');
+                // 预留足够时间给新标签页完成加载，避免过早回收导致页面无法打开。
+                window.setTimeout(() => {
+                  URL.revokeObjectURL(previewUrl);
+                }, 60_000);
+              }}
+            >
+              <RunHtmlIcon />
+            </ToolbarIconButton>
+          )}
           {downloaded ? (
             <span className="chat-toolbar-feedback">已下载</span>
           ) : (
@@ -1474,6 +1505,13 @@ const QuoteContextIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M9 7L4 12L9 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
     <path d="M4 12H13.5C16.81 12 19.5 14.69 19.5 18" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+  </svg>
+);
+
+const RunHtmlIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3.5" y="4.2" width="17" height="15.6" rx="2.4" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M8.8 9.4L14.8 12L8.8 14.6V9.4Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
   </svg>
 );
 
