@@ -1,0 +1,3130 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import { chatApi } from '../api/chat';
+import { useChatStore } from '../store/chatStore';
+import { useModelStore } from '../store/modelStore';
+import { useAgentStore } from '../store/agentStore';
+import { useThemeStore } from '../store/themeStore';
+import { Button } from '../components/ui/Button';
+import { Dialog } from '../components/ui/Dialog';
+import { Input } from '../components/ui/Input';
+import type { ChatMessage, ChatSession, ChatSessionContextStats } from '../types';
+
+const TOKENS_PER_MILLION = 1_000_000;
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'chat.sidebar.collapsed';
+const LAST_SELECTED_MODEL_STORAGE_KEY = 'chat.lastSelectedModelId';
+const TOOLBAR_FEEDBACK_DURATION_MS = 3000;
+const CODE_LANGUAGE_ALIAS_MAP: Record<string, string> = {
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  ts: 'typescript',
+  'c++': 'cpp',
+  py: 'python',
+  rb: 'ruby',
+  sh: 'bash',
+  shell: 'bash',
+  shellscript: 'bash',
+  yml: 'yaml',
+  md: 'markdown',
+  csharp: 'cs',
+  'c#': 'cs',
+  text: 'plaintext',
+};
+const CODE_LANGUAGE_LABEL_MAP: Record<string, string> = {
+  javascript: 'JavaScript',
+  typescript: 'TypeScript',
+  jsx: 'JSX',
+  tsx: 'TSX',
+  python: 'Python',
+  java: 'Java',
+  go: 'Go',
+  rust: 'Rust',
+  cpp: 'C++',
+  c: 'C',
+  cs: 'C#',
+  php: 'PHP',
+  ruby: 'Ruby',
+  bash: 'Bash',
+  sql: 'SQL',
+  html: 'HTML',
+  css: 'CSS',
+  json: 'JSON',
+  yaml: 'YAML',
+  markdown: 'Markdown',
+  plaintext: 'Text',
+};
+const CODE_EXTENSION_MAP: Record<string, string> = {
+  javascript: 'js',
+  typescript: 'ts',
+  tsx: 'tsx',
+  jsx: 'jsx',
+  python: 'py',
+  java: 'java',
+  go: 'go',
+  rust: 'rs',
+  cpp: 'cpp',
+  c: 'c',
+  cs: 'cs',
+  php: 'php',
+  ruby: 'rb',
+  bash: 'sh',
+  sql: 'sql',
+  html: 'html',
+  css: 'css',
+  json: 'json',
+  yaml: 'yml',
+  markdown: 'md',
+  plaintext: 'txt',
+};
+
+type ExportImageFormat = 'svg' | 'png' | 'jpeg';
+type HighlightResult = {
+  value: string;
+  language?: string;
+};
+type HighlightJsApi = {
+  getLanguage: (languageName: string) => unknown;
+  highlight: (code: string, options: { language: string; ignoreIllegals?: boolean }) => HighlightResult;
+  highlightAuto: (code: string) => HighlightResult;
+};
+
+let highlightJsLoader: Promise<HighlightJsApi> | null = null;
+
+function readStoredModelId(): number | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(LAST_SELECTED_MODEL_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseImageUrls(raw: string | null): string[] {
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item) => typeof item === 'string');
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) {
+    return '暂无';
+  }
+  const date = new Date(value);
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function formatUsd(value: string | number | null): string {
+  if (value == null || value === '') {
+    return '-';
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return `$${value}`;
+  }
+  if (numeric === 0) {
+    return '$0';
+  }
+  if (numeric < 0.0001) {
+    return `$${numeric.toExponential(2)}`;
+  }
+  return `$${numeric.toFixed(6)}`;
+}
+
+function formatUsdPerMillion(value: string | number | null): string {
+  if (value == null || value === '') {
+    return '-';
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return `$${value}/M`;
+  }
+
+  const perMillion = numeric * TOKENS_PER_MILLION;
+  if (perMillion === 0) {
+    return '$0/M';
+  }
+  if (perMillion < 0.01) {
+    return `$${perMillion.toFixed(4)}/M`;
+  }
+  if (perMillion < 1) {
+    return `$${perMillion.toFixed(3)}/M`;
+  }
+  if (perMillion < 100) {
+    return `$${perMillion.toFixed(2)}/M`;
+  }
+  return `$${perMillion.toFixed(1)}/M`;
+}
+
+function formatTokenNumber(value: number | null | undefined): string {
+  if (value == null) {
+    return '-';
+  }
+  return new Intl.NumberFormat('zh-CN').format(value);
+}
+
+function formatReasoningDuration(durationMs: number | null | undefined): string | null {
+  if (durationMs == null || durationMs < 0) {
+    return null;
+  }
+
+  // 毫秒转秒后向上取整，避免出现“0秒”的体验。
+  const totalSeconds = Math.max(1, Math.ceil(durationMs / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}秒`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (seconds === 0) {
+    return `${minutes}分钟`;
+  }
+  return `${minutes}分钟${seconds}秒`;
+}
+
+function buildMessageMarkdown(message: ChatMessage): string {
+  const images = parseImageUrls(message.imageUrls);
+  const parts: string[] = [];
+
+  if (images.length > 0) {
+    images.forEach((url, index) => {
+      parts.push(`![图片${index + 1}](${url})`);
+    });
+  }
+
+  if (message.content?.trim()) {
+    parts.push(message.content.trim());
+  }
+
+  return parts.join('\n\n');
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (!text) {
+    return;
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+}
+
+async function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error(`文件读取失败: ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function normalizeCodeLanguage(rawLanguage: string | null | undefined): string {
+  if (!rawLanguage) {
+    return '';
+  }
+  const normalized = rawLanguage.trim().toLowerCase();
+  return CODE_LANGUAGE_ALIAS_MAP[normalized] ?? normalized;
+}
+
+function toCodeLanguageLabel(language: string): string {
+  if (!language) {
+    return 'Text';
+  }
+  return CODE_LANGUAGE_LABEL_MAP[language] ?? language;
+}
+
+function toCodeFileExtension(language: string): string {
+  if (!language) {
+    return 'txt';
+  }
+  return CODE_EXTENSION_MAP[language] ?? 'txt';
+}
+
+function createTimestampSuffix(): string {
+  const now = new Date();
+  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(
+    2,
+    '0',
+  )}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(
+    now.getSeconds(),
+  ).padStart(2, '0')}`;
+}
+
+function normalizeExportFileName(value: string): string {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function triggerBlobDownload(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function toMessageRoleLabel(role: ChatMessage['role']): string {
+  if (role === 'user') {
+    return '用户';
+  }
+  if (role === 'assistant') {
+    return '助手';
+  }
+  if (role === 'tool') {
+    return '工具';
+  }
+  return role;
+}
+
+function buildSessionExportMarkdown(sessionTitle: string, messages: ChatMessage[]): string {
+  const parts: string[] = [
+    `# ${sessionTitle || '未命名会话'}`,
+    '',
+    `导出时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+    '',
+    '---',
+  ];
+
+  messages.forEach((message) => {
+    parts.push('', `## ${toMessageRoleLabel(message.role)}`);
+
+    if (message.modelName) {
+      parts.push(`- 模型：${message.modelName}`);
+    }
+    if (message.createdAt) {
+      parts.push(`- 时间：${formatDateTime(message.createdAt)}`);
+    }
+
+    const reasoning = message.reasoningContent?.trim();
+    if (reasoning) {
+      parts.push('', '### 思考过程', '', reasoning);
+    }
+
+    const body = buildMessageMarkdown(message);
+    parts.push('', body || '(空消息)', '', '---');
+  });
+
+  return parts.join('\n');
+}
+
+function buildSessionExportHtml(sessionTitle: string, messages: ChatMessage[]): string {
+  const escapedTitle = escapeHtml(sessionTitle || '未命名会话');
+  const exportedAt = escapeHtml(new Date().toLocaleString('zh-CN', { hour12: false }));
+  const entries = messages
+    .map((message) => {
+      const role = escapeHtml(toMessageRoleLabel(message.role));
+      const modelName = message.modelName ? escapeHtml(message.modelName) : '';
+      const createdAt = message.createdAt ? escapeHtml(formatDateTime(message.createdAt)) : '';
+      const content = message.content?.trim() ? escapeHtml(message.content.trim()) : '(空消息)';
+      const reasoning = message.reasoningContent?.trim() ? escapeHtml(message.reasoningContent.trim()) : '';
+      const imageHtml = parseImageUrls(message.imageUrls)
+        .map((url) => `<img src="${escapeHtml(url)}" alt="message-image" />`)
+        .join('');
+
+      return `
+        <section class="message">
+          <h2>${role}</h2>
+          ${modelName ? `<p class="meta">模型：${modelName}</p>` : ''}
+          ${createdAt ? `<p class="meta">时间：${createdAt}</p>` : ''}
+          ${reasoning ? `<h3>思考过程</h3><pre>${reasoning}</pre>` : ''}
+          ${imageHtml ? `<div class="images">${imageHtml}</div>` : ''}
+          <pre>${content}</pre>
+        </section>
+      `;
+    })
+    .join('');
+
+  return `
+    <!doctype html>
+    <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapedTitle}</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+            margin: 24px;
+            color: #0f172a;
+          }
+          h1 {
+            margin: 0 0 8px 0;
+            font-size: 24px;
+          }
+          .export-meta {
+            margin: 0 0 20px 0;
+            color: #64748b;
+            font-size: 12px;
+          }
+          .message {
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 12px;
+            page-break-inside: avoid;
+          }
+          .message h2 {
+            margin: 0 0 6px 0;
+            font-size: 16px;
+          }
+          .message h3 {
+            margin: 10px 0 6px 0;
+            font-size: 13px;
+            color: #334155;
+          }
+          .meta {
+            margin: 2px 0;
+            font-size: 12px;
+            color: #64748b;
+          }
+          pre {
+            margin: 8px 0 0 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 13px;
+            line-height: 1.6;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 10px;
+          }
+          .images {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+          }
+          .images img {
+            width: 140px;
+            height: 140px;
+            object-fit: cover;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+          }
+        </style>
+      </head>
+      <body>
+        <h1>${escapedTitle}</h1>
+        <p class="export-meta">导出时间：${exportedAt}</p>
+        ${entries}
+      </body>
+    </html>
+  `;
+}
+
+function parseSvgDimension(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const numeric = Number.parseFloat(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function readSvgSize(svgMarkup: string): { width: number; height: number } {
+  try {
+    const parser = new DOMParser();
+    const documentElement = parser.parseFromString(svgMarkup, 'image/svg+xml').documentElement;
+    const width = parseSvgDimension(documentElement.getAttribute('width'));
+    const height = parseSvgDimension(documentElement.getAttribute('height'));
+
+    if (width && height) {
+      return { width, height };
+    }
+
+    const viewBox = documentElement.getAttribute('viewBox');
+    if (viewBox) {
+      const values = viewBox
+        .split(/[\s,]+/)
+        .map((item) => Number.parseFloat(item))
+        .filter((item) => Number.isFinite(item));
+      if (values.length === 4 && values[2] > 0 && values[3] > 0) {
+        return { width: values[2], height: values[3] };
+      }
+    }
+  } catch {
+    // 解析失败时走兜底尺寸。
+  }
+
+  return { width: 1200, height: 800 };
+}
+
+async function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图像加载失败'));
+    image.src = src;
+  });
+}
+
+async function renderSvgToRasterBlob(svgMarkup: string, format: Exclude<ExportImageFormat, 'svg'>): Promise<Blob> {
+  const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await loadImageElement(svgUrl);
+    const { width, height } = readSvgSize(svgMarkup);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Canvas 上下文不可用');
+    }
+
+    if (format === 'jpeg') {
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (result) => {
+          if (!result) {
+            reject(new Error('图像导出失败'));
+            return;
+          }
+          resolve(result);
+        },
+        mimeType,
+        format === 'jpeg' ? 0.92 : undefined,
+      );
+    });
+    return blob;
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+async function getHighlightJsApi(): Promise<HighlightJsApi> {
+  if (!highlightJsLoader) {
+    highlightJsLoader = import('highlight.js/lib/common').then((module) => module.default as unknown as HighlightJsApi);
+  }
+  return highlightJsLoader;
+}
+
+type HastNode = {
+  type: string;
+  value?: string;
+  tagName?: string;
+  children?: HastNode[];
+  properties?: Record<string, unknown>;
+};
+
+type HighlightSegment = {
+  text: string;
+  highlighted: boolean;
+};
+
+function splitHighlightSegments(text: string): HighlightSegment[] {
+  const pattern = /==([^=\n][\s\S]*?)==/g;
+  const segments: HighlightSegment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null = pattern.exec(text);
+
+  while (match) {
+    const start = match.index;
+    const end = pattern.lastIndex;
+
+    if (start > cursor) {
+      segments.push({ text: text.slice(cursor, start), highlighted: false });
+    }
+
+    const content = match[1];
+    if (content) {
+      segments.push({ text: content, highlighted: true });
+    } else {
+      segments.push({ text: match[0], highlighted: false });
+    }
+
+    cursor = end;
+    match = pattern.exec(text);
+  }
+
+  if (cursor < text.length) {
+    segments.push({ text: text.slice(cursor), highlighted: false });
+  }
+
+  if (segments.length === 0) {
+    segments.push({ text, highlighted: false });
+  }
+  return segments;
+}
+
+function applyHighlightSyntax(node: HastNode, insideLiteral = false): void {
+  if (!node || !Array.isArray(node.children)) {
+    return;
+  }
+
+  const currentInsideLiteral =
+    insideLiteral || (node.type === 'element' && (node.tagName === 'pre' || node.tagName === 'code'));
+  const nextChildren: HastNode[] = [];
+
+  for (const child of node.children) {
+    if (
+      !currentInsideLiteral &&
+      child.type === 'text' &&
+      typeof child.value === 'string' &&
+      child.value.includes('==')
+    ) {
+      const segments = splitHighlightSegments(child.value);
+      const hasHighlighted = segments.some((segment) => segment.highlighted);
+      if (!hasHighlighted) {
+        nextChildren.push(child);
+        continue;
+      }
+
+      for (const segment of segments) {
+        if (!segment.text) {
+          continue;
+        }
+        if (segment.highlighted) {
+          nextChildren.push({
+            type: 'element',
+            tagName: 'mark',
+            properties: {},
+            children: [{ type: 'text', value: segment.text }],
+          });
+        } else {
+          nextChildren.push({ type: 'text', value: segment.text });
+        }
+      }
+      continue;
+    }
+
+    applyHighlightSyntax(child, currentInsideLiteral);
+    nextChildren.push(child);
+  }
+
+  node.children = nextChildren;
+}
+
+function rehypeHighlightMarks() {
+  return (tree: HastNode) => {
+    applyHighlightSyntax(tree);
+  };
+}
+
+const ToolbarIconButton: React.FC<{
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  disabled?: boolean;
+}> = ({ title, onClick, children, disabled = false }) => {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      onClick={onClick}
+      className="chat-toolbar-icon-button"
+    >
+      {children}
+    </button>
+  );
+};
+
+const MermaidBlock: React.FC<{ chart: string; isStreaming: boolean }> = ({ chart, isStreaming }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const renderSeedRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 9)}`);
+  const renderIndexRef = useRef(0);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [svgMarkup, setSvgMarkup] = useState('');
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<ExportImageFormat | null>(null);
+  const [downloaded, setDownloaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const render = async () => {
+      if (!containerRef.current) {
+        return;
+      }
+
+      // 流式输出阶段 Mermaid 文本可能尚未完整，先展示“生成中”占位，避免全局语法报错污染页面。
+      if (isStreaming) {
+        containerRef.current.innerHTML = '';
+        setRenderError(null);
+        setSvgMarkup('');
+        return;
+      }
+
+      if (!chart.trim()) {
+        containerRef.current.innerHTML = '';
+        setRenderError(null);
+        setSvgMarkup('');
+        return;
+      }
+
+      try {
+        const mermaidModule = await import('mermaid');
+        const mermaid = mermaidModule.default;
+        const parseErrorHandler = (mermaid as unknown as { setParseErrorHandler?: (handler: (err: any, hash: any) => void) => void })
+          .setParseErrorHandler;
+        parseErrorHandler?.(() => {
+          // 屏蔽 Mermaid 全局 parseError 输出，错误仅在当前消息卡片内展示。
+        });
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          suppressErrorRendering: true,
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+        });
+
+        renderIndexRef.current += 1;
+        const renderId = `${renderSeedRef.current}-${renderIndexRef.current}`;
+        const { svg } = await mermaid.render(renderId, chart);
+
+        if (cancelled || !containerRef.current) {
+          return;
+        }
+
+        containerRef.current.innerHTML = svg;
+        setSvgMarkup(svg);
+        setRenderError(null);
+      } catch (error: any) {
+        if (cancelled) {
+          return;
+        }
+        setSvgMarkup('');
+        setRenderError(error?.message ?? '渲染失败');
+      }
+    };
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, isStreaming]);
+
+  useEffect(() => {
+    if (!exportMenuOpen) {
+      return;
+    }
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (exportMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setExportMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [exportMenuOpen]);
+
+  useEffect(() => {
+    if (!downloaded) {
+      return;
+    }
+    const timer = window.setTimeout(() => setDownloaded(false), TOOLBAR_FEEDBACK_DURATION_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [downloaded]);
+
+  const handleExport = async (format: ExportImageFormat): Promise<void> => {
+    if (!svgMarkup) {
+      return;
+    }
+    setExportingFormat(format);
+    try {
+      if (format === 'svg') {
+        const blob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+        triggerBlobDownload(blob, `mermaid-${createTimestampSuffix()}.svg`);
+      } else {
+        const blob = await renderSvgToRasterBlob(svgMarkup, format);
+        triggerBlobDownload(blob, `mermaid-${createTimestampSuffix()}.${format}`);
+      }
+      setDownloaded(true);
+    } catch (error) {
+      console.error('Mermaid 导出失败', error);
+    } finally {
+      setExportingFormat(null);
+      setExportMenuOpen(false);
+    }
+  };
+
+  const statusText = isStreaming ? '图表生成中，等待输出完成后自动渲染' : renderError ? '图表无法渲染，请检查 Mermaid 语法' : null;
+  const statusClassName = isStreaming ? 'chat-mermaid-status chat-mermaid-status--pending' : 'chat-mermaid-status chat-mermaid-status--error';
+
+  return (
+    <div className="chat-mermaid-card">
+      <div className="chat-code-toolbar">
+        <span className="chat-code-language">Mermaid</span>
+        <div ref={exportMenuRef} className="relative">
+          {downloaded ? (
+            <span className="chat-toolbar-feedback">已下载</span>
+          ) : (
+            <ToolbarIconButton
+              title="下载图表"
+              onClick={() => setExportMenuOpen((prev) => !prev)}
+              disabled={Boolean(exportingFormat) || Boolean(isStreaming || renderError || !svgMarkup)}
+            >
+              <DownloadIcon />
+            </ToolbarIconButton>
+          )}
+          {exportMenuOpen && !isStreaming && !renderError && (
+            <div className="chat-export-menu">
+              <button
+                type="button"
+                className="chat-export-menu-item"
+                onClick={() => {
+                  void handleExport('svg');
+                }}
+                disabled={Boolean(exportingFormat)}
+              >
+                导出 SVG
+              </button>
+              <button
+                type="button"
+                className="chat-export-menu-item"
+                onClick={() => {
+                  void handleExport('png');
+                }}
+                disabled={Boolean(exportingFormat)}
+              >
+                导出 PNG
+              </button>
+              <button
+                type="button"
+                className="chat-export-menu-item"
+                onClick={() => {
+                  void handleExport('jpeg');
+                }}
+                disabled={Boolean(exportingFormat)}
+              >
+                导出 JPEG
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div ref={containerRef} className={`chat-mermaid ${statusText ? 'hidden' : ''}`} />
+      {statusText && <div className={statusClassName}>{statusText}</div>}
+    </div>
+  );
+};
+
+function getMarkdownCodeText(raw: unknown): string | null {
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    return raw.replace(/\n$/, '');
+  }
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => (typeof item === 'string' ? item : String(item ?? '')))
+      .join('')
+      .replace(/\n$/, '');
+  }
+  return String(raw).replace(/\n$/, '');
+}
+
+const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, code }) => {
+  const [highlightedHtml, setHighlightedHtml] = useState(() => escapeHtml(code));
+  const [resolvedLanguage, setResolvedLanguage] = useState(() => normalizeCodeLanguage(language));
+  const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const highlightCode = async () => {
+      const normalizedLanguage = normalizeCodeLanguage(language);
+
+      try {
+        const highlightJs = await getHighlightJsApi();
+        let html = '';
+        let finalLanguage = normalizedLanguage;
+
+        if (normalizedLanguage && highlightJs.getLanguage(normalizedLanguage)) {
+          html = highlightJs.highlight(code, { language: normalizedLanguage, ignoreIllegals: true }).value;
+        } else {
+          const autoHighlighted = highlightJs.highlightAuto(code);
+          html = autoHighlighted.value;
+          finalLanguage = autoHighlighted.language ?? normalizedLanguage;
+        }
+
+        if (!cancelled) {
+          setHighlightedHtml(html || escapeHtml(code));
+          setResolvedLanguage(finalLanguage);
+        }
+      } catch {
+        if (!cancelled) {
+          setHighlightedHtml(escapeHtml(code));
+          setResolvedLanguage(normalizedLanguage);
+        }
+      }
+    };
+
+    void highlightCode();
+    return () => {
+      cancelled = true;
+    };
+  }, [language, code]);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setCopied(false), TOOLBAR_FEEDBACK_DURATION_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied]);
+
+  useEffect(() => {
+    if (!downloaded) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setDownloaded(false), TOOLBAR_FEEDBACK_DURATION_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [downloaded]);
+
+  const currentLanguage = resolvedLanguage || normalizeCodeLanguage(language) || 'plaintext';
+  const displayLanguage = toCodeLanguageLabel(currentLanguage);
+  const fileExtension = toCodeFileExtension(currentLanguage);
+
+  return (
+    <div className="chat-code-block">
+      <div className="chat-code-toolbar">
+        <span className="chat-code-language">{displayLanguage}</span>
+        <div className="flex items-center gap-1">
+          {downloaded ? (
+            <span className="chat-toolbar-feedback">已下载</span>
+          ) : (
+            <ToolbarIconButton
+              title="下载代码"
+              onClick={() => {
+                const blob = new Blob([code], { type: 'text/plain;charset=utf-8' });
+                triggerBlobDownload(blob, `code-${createTimestampSuffix()}.${fileExtension}`);
+                setDownloaded(true);
+              }}
+            >
+              <DownloadIcon />
+            </ToolbarIconButton>
+          )}
+          {copied ? (
+            <span className="chat-toolbar-feedback">已复制</span>
+          ) : (
+            <ToolbarIconButton
+              title="复制代码"
+              onClick={() => {
+                void copyTextToClipboard(code)
+                  .then(() => setCopied(true))
+                  .catch((error) => {
+                    console.error('代码复制失败', error);
+                  });
+              }}
+            >
+              <CopyIcon />
+            </ToolbarIconButton>
+          )}
+        </div>
+      </div>
+
+      <pre>
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
+      </pre>
+    </div>
+  );
+};
+
+const MessageMarkdown: React.FC<{ content: string; isStreaming: boolean }> = ({ content, isStreaming }) => {
+  const markdownComponents = useMemo(
+    () => ({
+      pre: ({ children, ...props }: any) => {
+        const firstChild = Array.isArray(children) ? children[0] : children;
+        const className = firstChild?.props?.className ?? '';
+        const language = normalizeCodeLanguage(/language-([^\s]+)/i.exec(className)?.[1] ?? '');
+        const code = getMarkdownCodeText(firstChild?.props?.children);
+
+        if (code == null) {
+          return <pre {...props}>{children}</pre>;
+        }
+
+        if (language === 'mermaid') {
+          return <MermaidBlock chart={code} isStreaming={isStreaming} />;
+        }
+
+        return <CodeBlock language={language} code={code} />;
+      },
+    }),
+    [isStreaming],
+  );
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex, rehypeHighlightMarks]}
+      components={markdownComponents}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+};
+
+const MessageAvatar: React.FC<{ type: 'assistant' | 'user' | 'tool' }> = ({ type }) => {
+  const styleMap = {
+    assistant: 'bg-emerald-500 text-white',
+    user: 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900',
+    tool: 'bg-amber-500 text-white',
+  } as const;
+
+  const labelMap = {
+    assistant: 'AI',
+    user: '你',
+    tool: '工',
+  } as const;
+
+  return (
+    <div
+      className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${styleMap[type]}`}
+    >
+      {labelMap[type]}
+    </div>
+  );
+};
+
+const IconActionButton: React.FC<{
+  tooltip: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}> = ({ tooltip, onClick, danger = false, children }) => {
+  return (
+    <button
+      onClick={onClick}
+      className={`group/icon relative rounded-md p-1 transition-colors ${
+        danger
+          ? 'text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20'
+          : 'text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+      }`}
+      aria-label={tooltip}
+      type="button"
+    >
+      {children}
+      <span className="pointer-events-none absolute -top-8 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover/icon:opacity-100 dark:bg-slate-100 dark:text-slate-900">
+        {tooltip}
+      </span>
+    </button>
+  );
+};
+
+const ChevronDownIcon: React.FC<{ className?: string }> = ({ className = '' }) => (
+  <svg className={className} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const ChevronRightIcon: React.FC<{ className?: string }> = ({ className = '' }) => (
+  <svg className={className} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M7.5 5L12.5 10L7.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const PlusIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 4V16M4 10H16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const CollapseIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M7.5 5L2.5 10L7.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M17 4V16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const ExpandIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12.5 5L17.5 10L12.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M3 4V16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const CopyIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M6.5 15V6.8C6.5 5.81 7.31 5 8.3 5H16.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const DownloadIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 4.5V15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="M8 11.5L12 15.5L16 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M5.5 19.5H18.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const BranchIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="7" cy="6" r="2.1" stroke="currentColor" strokeWidth="1.8" />
+    <circle cx="17" cy="18" r="2.1" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M7 8.1V13C7 15.21 8.79 17 11 17H14.9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const DeleteIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4.5 7H19.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="M9.5 7V5.8C9.5 4.81 10.31 4 11.3 4H12.7C13.69 4 14.5 4.81 14.5 5.8V7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="M7.5 7L8.2 18.1C8.27 19.12 9.12 19.9 10.14 19.9H13.86C14.88 19.9 15.73 19.12 15.8 18.1L16.5 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const PencilIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4 20L8.6 18.9L19 8.5C19.79 7.71 19.79 6.43 19 5.64L18.36 5C17.57 4.21 16.29 4.21 15.5 5L5.1 15.4L4 20Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+  </svg>
+);
+
+const UploadIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 4V13M10 4L6.5 7.5M10 4L13.5 7.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4 15.5H16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
+const SparkIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 2.8L11.9 7.2L16.3 9.1L11.9 11L10 15.4L8.1 11L3.7 9.1L8.1 7.2L10 2.8Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+  </svg>
+);
+
+const MoreIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="5" cy="10" r="1.4" fill="currentColor" />
+    <circle cx="10" cy="10" r="1.4" fill="currentColor" />
+    <circle cx="15" cy="10" r="1.4" fill="currentColor" />
+  </svg>
+);
+
+const InfoIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="10" cy="10" r="6.8" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="10" cy="6.6" r="1" fill="currentColor" />
+    <path d="M10 9.2V13.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+);
+
+const CheckIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4.5 10.5L8 14L15.5 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const ModelManageIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 3.6L15.7 6.6L10 9.6L4.3 6.6L10 3.6Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M4.3 10L10 13L15.7 10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4.3 13.4L10 16.4L15.7 13.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const AgentManageIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 3.1V5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <rect x="4.2" y="5.8" width="11.6" height="10.1" rx="2.2" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="7.8" cy="10.3" r="1" fill="currentColor" />
+    <circle cx="12.2" cy="10.3" r="1" fill="currentColor" />
+    <path d="M7.3 13H12.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+);
+
+const SettingsIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M19.14 12.94C19.18 12.63 19.2 12.32 19.2 12C19.2 11.68 19.18 11.37 19.14 11.06L21.17 9.48C21.36 9.34 21.41 9.07 21.29 8.86L19.37 5.54C19.25 5.33 18.99 5.24 18.76 5.33L16.37 6.29C15.86 5.9 15.31 5.57 14.73 5.35L14.37 2.8C14.34 2.56 14.13 2.4 13.89 2.4H10.11C9.87 2.4 9.66 2.56 9.63 2.8L9.27 5.35C8.69 5.57 8.14 5.9 7.63 6.29L5.24 5.33C5.01 5.24 4.75 5.33 4.63 5.54L2.71 8.86C2.59 9.07 2.64 9.34 2.83 9.48L4.86 11.06C4.82 11.37 4.8 11.68 4.8 12C4.8 12.32 4.82 12.63 4.86 12.94L2.83 14.52C2.64 14.66 2.59 14.93 2.71 15.14L4.63 18.46C4.75 18.67 5.01 18.76 5.24 18.67L7.63 17.71C8.14 18.1 8.69 18.43 9.27 18.65L9.63 21.2C9.66 21.44 9.87 21.6 10.11 21.6H13.89C14.13 21.6 14.34 21.44 14.37 21.2L14.73 18.65C15.31 18.43 15.86 18.1 16.37 17.71L18.76 18.67C18.99 18.76 19.25 18.67 19.37 18.46L21.29 15.14C21.41 14.93 21.36 14.66 21.17 14.52L19.14 12.94Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    <circle cx="12" cy="12" r="3.1" stroke="currentColor" strokeWidth="1.6" />
+  </svg>
+);
+
+const SunIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="10" cy="10" r="3.3" stroke="currentColor" strokeWidth="1.7" />
+    <path d="M10 2.5V4.2M10 15.8V17.5M2.5 10H4.2M15.8 10H17.5M4.7 4.7L5.9 5.9M14.1 14.1L15.3 15.3M15.3 4.7L14.1 5.9M5.9 14.1L4.7 15.3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+  </svg>
+);
+
+const MoonIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M16.9 13.5A7.2 7.2 0 0 1 7.2 3.8A7.8 7.8 0 1 0 16.9 13.5Z"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+const ExportPdfIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M5 2.8H11.5L15 6.3V16.8C15 17.46 14.46 18 13.8 18H5C4.34 18 3.8 17.46 3.8 16.8V4C3.8 3.34 4.34 2.8 5 2.8Z" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M11.2 2.9V6.5H14.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M6.2 13.8H12.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M6.2 10.8H12.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+);
+
+const ExportMarkdownIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3.5" y="2.8" width="13" height="14.4" rx="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M6.5 8.3V12.8M6.5 12.8L4.9 11.2M6.5 12.8L8.1 11.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M10.1 12.8V8.3L11.9 10.8L13.7 8.3V12.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+function calcModelSelectWidth(options: { value: number; label: string }[]): number {
+  const labels = ['选择模型', ...options.map((item) => item.label)];
+  const maxLabelLength = Math.max(...labels.map((item) => item.length));
+
+  if (typeof document === 'undefined') {
+    return Math.max(160, maxLabelLength * 14 + 34);
+  }
+
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return Math.max(160, maxLabelLength * 14 + 34);
+  }
+
+  context.font = "600 16px 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+  const maxLabelWidth = Math.max(...labels.map((item) => context.measureText(item).width));
+  return Math.max(160, Math.ceil(maxLabelWidth + 34));
+}
+
+const SessionItem: React.FC<{
+  session: ChatSession;
+  active: boolean;
+  collapsed: boolean;
+  onSelect: () => void;
+  onAbout: () => void;
+  onRename: () => void;
+  onCopy: () => void;
+  onDelete: () => void;
+}> = ({ session, active, collapsed, onSelect, onAbout, onRename, onCopy, onDelete }) => {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (menuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [menuOpen]);
+
+  if (collapsed) {
+    return (
+      <button
+        onClick={onSelect}
+        title={session.title}
+        className={`flex h-10 w-full items-center justify-center rounded-xl text-sm font-semibold transition-colors ${
+          active
+            ? 'bg-[#ececf1] text-slate-800 dark:bg-[#2a2a2a] dark:text-slate-100'
+            : 'text-slate-500 hover:bg-white/80 dark:text-slate-300 dark:hover:bg-[#242424]'
+        }`}
+      >
+        {session.title.slice(0, 1) || '会'}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className={`group/session relative flex items-center gap-1 rounded-xl px-2.5 py-1.5 transition-colors ${
+        active
+          ? 'bg-[#ececf1] text-slate-900 dark:bg-[#2a2a2a] dark:text-slate-100'
+          : 'text-slate-600 hover:bg-white/80 dark:text-slate-300 dark:hover:bg-[#242424]'
+      }`}
+    >
+      <button onClick={onSelect} className="min-w-0 flex-1 py-1 text-left">
+        <p className="truncate text-[14px] font-medium leading-6">{session.title}</p>
+      </button>
+
+      <div
+        ref={menuRef}
+        className={`relative shrink-0 transition-opacity ${
+          menuOpen ? 'opacity-100' : 'opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100'
+        }`}
+      >
+        <button
+          className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#3a3a3a] dark:hover:text-slate-100"
+          onClick={(event) => {
+            event.stopPropagation();
+            setMenuOpen((prev) => !prev);
+          }}
+          type="button"
+          title="更多"
+        >
+          <MoreIcon />
+        </button>
+
+        {menuOpen && (
+          <div className="absolute right-0 top-9 z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
+            <button
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              onClick={() => {
+                setMenuOpen(false);
+                onAbout();
+              }}
+              type="button"
+            >
+              <InfoIcon />
+              <span>关于此聊天</span>
+            </button>
+            <button
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              onClick={() => {
+                setMenuOpen(false);
+                onRename();
+              }}
+              type="button"
+            >
+              <PencilIcon />
+              <span>重命名</span>
+            </button>
+            <button
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              onClick={() => {
+                setMenuOpen(false);
+                onCopy();
+              }}
+              type="button"
+            >
+              <CopyIcon />
+              <span>复制</span>
+            </button>
+            <button
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20"
+              onClick={() => {
+                setMenuOpen(false);
+                onDelete();
+              }}
+              type="button"
+            >
+              <DeleteIcon />
+              <span>删除</span>
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+type SessionAboutDialogState = {
+  open: boolean;
+  loading: boolean;
+  session: ChatSession | null;
+  messageCount: number;
+  firstMessageAt: string | null;
+  lastMessageAt: string | null;
+  error: string | null;
+};
+
+const initialSessionAboutState: SessionAboutDialogState = {
+  open: false,
+  loading: false,
+  session: null,
+  messageCount: 0,
+  firstMessageAt: null,
+  lastMessageAt: null,
+  error: null,
+};
+
+const SessionAboutDialog: React.FC<{
+  state: SessionAboutDialogState;
+  onClose: () => void;
+}> = ({ state, onClose }) => {
+  return (
+    <Dialog open={state.open} onClose={onClose} title="关于此聊天">
+      <div className="space-y-4">
+        <div>
+          <p className="text-xs text-slate-400 dark:text-slate-500">聊天标题</p>
+          <p className="mt-1 break-words text-sm font-medium text-slate-800 dark:text-slate-100">{state.session?.title ?? '未命名会话'}</p>
+        </div>
+        {state.loading ? (
+          <p className="text-sm text-slate-500 dark:text-slate-400">正在加载...</p>
+        ) : state.error ? (
+          <p className="text-sm text-rose-500">{state.error}</p>
+        ) : (
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-[#242424]">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-400">消息条数</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{state.messageCount}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-400">最开始消息时间</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{formatDateTime(state.firstMessageAt)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-400">最后一条消息时间</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{formatDateTime(state.lastMessageAt)}</span>
+            </div>
+          </div>
+        )}
+        <div className="flex justify-end">
+          <Button variant="secondary" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+};
+
+const ContextUsageIndicator: React.FC<{
+  stats: ChatSessionContextStats | null;
+  loading: boolean;
+}> = ({ stats, loading }) => {
+  const ratio = Math.max(0, Math.min(1, stats?.contextUsageRatio ?? 0));
+  const degree = Math.round(ratio * 360);
+  const ringColor = ratio >= 0.85 ? '#ef4444' : ratio >= 0.65 ? '#f59e0b' : '#64748b';
+  const ratioText = `${(ratio * 100).toFixed(1)}%`;
+  const ratioCenterText = `${Math.round(ratio * 100)}%`;
+
+  return (
+    <div className="group/context relative">
+      <div
+        className={`relative h-7 w-7 rounded-full ${loading ? 'animate-pulse' : ''}`}
+        style={{
+          background: `conic-gradient(${ringColor} ${degree}deg, rgba(148,163,184,0.3) ${degree}deg)`,
+        }}
+      >
+        <div className="absolute inset-[2.5px] flex items-center justify-center rounded-full bg-white dark:bg-[#2f2f2f]">
+          <span className="text-[8px] font-semibold leading-none text-slate-500 dark:text-slate-300">
+            {ratioCenterText}
+          </span>
+        </div>
+      </div>
+
+      <div className="pointer-events-none absolute bottom-10 right-0 z-40 w-[280px] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 opacity-0 shadow-xl transition-opacity group-hover/context:opacity-100 dark:border-slate-700 dark:bg-[#2f2f2f] dark:text-slate-300">
+        <p className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-100">上下文信息</p>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span>模型</span>
+            <span className="max-w-[170px] truncate font-medium">{stats?.modelName ?? '-'}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>当前上下文</span>
+            <span className="font-medium">
+              {formatTokenNumber(stats?.contextUsedTokens)} / {formatTokenNumber(stats?.contextWindowTokens)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>窗口占比</span>
+            <span className="font-medium">{ratioText}</span>
+          </div>
+          <div className="mt-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+            <div className="flex items-center justify-between">
+              <span>输入价格（M）</span>
+              <span className="font-medium">{formatUsdPerMillion(stats?.inputPrice ?? null)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>输出价格（M）</span>
+              <span className="font-medium">{formatUsdPerMillion(stats?.outputPrice ?? null)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>缓存读价格（M）</span>
+              <span className="font-medium">{formatUsdPerMillion(stats?.cacheReadPrice ?? null)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>缓存写价格（M）</span>
+              <span className="font-medium">{formatUsdPerMillion(stats?.cacheWritePrice ?? null)}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between text-slate-800 dark:text-slate-100">
+              <span>当前会话花费</span>
+              <span className="font-semibold">{formatUsd(stats?.sessionCostUsd ?? null)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ChatModelSelect: React.FC<{
+  value: number | null;
+  options: { value: number; label: string }[];
+  onChange: (value: number | null) => void;
+}> = ({ value, options, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const selectWidth = useMemo(() => calcModelSelectWidth(options), [options]);
+
+  const activeOption = useMemo(
+    () => options.find((option) => option.value === value) ?? null,
+    [options, value],
+  );
+  const filteredOptions = useMemo(() => {
+    const keyword = searchKeyword.trim().toLowerCase();
+    if (!keyword) {
+      return options;
+    }
+    return options.filter((option) => option.label.toLowerCase().includes(keyword));
+  }, [options, searchKeyword]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (containerRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setOpen(false);
+    };
+
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative" style={{ width: `${selectWidth}px` }}>
+      <button
+        className="inline-flex h-10 items-center gap-1 rounded-xl px-3 text-sm font-semibold text-[#2f2f2f] transition-colors hover:bg-[#f3f4f6] dark:text-slate-100 dark:hover:bg-[#2f2f2f]"
+        style={{ width: `${selectWidth}px` }}
+        type="button"
+        onClick={() =>
+          setOpen((prev) => {
+            const next = !prev;
+            if (!next) {
+              setSearchKeyword('');
+            }
+            return next;
+          })
+        }
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="whitespace-nowrap">{activeOption?.label ?? '选择模型'}</span>
+        <ChevronDownIcon className={`h-4 w-4 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div
+          className="absolute top-12 z-40 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]"
+          style={{ width: `${selectWidth}px` }}
+        >
+          <div className="px-2 pb-1 pt-1">
+            <input
+              ref={searchInputRef}
+              value={searchKeyword}
+              onChange={(event) => setSearchKeyword(event.target.value)}
+              className="h-8 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
+              placeholder="搜索模型..."
+            />
+          </div>
+          {filteredOptions.length > 0 ? (
+            filteredOptions.map((option) => {
+              const active = option.value === value;
+              return (
+                <button
+                  key={option.value}
+                className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
+                  active
+                    ? 'bg-slate-100 text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                    : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]'
+                }`}
+                type="button"
+                  onClick={() => {
+                    onChange(option.value);
+                    setSearchKeyword('');
+                    setOpen(false);
+                  }}
+                  role="option"
+                  aria-selected={active}
+                >
+                <span className="whitespace-nowrap">{option.label}</span>
+                  {active && <CheckIcon />}
+                </button>
+              );
+            })
+          ) : (
+            <p className="px-3 py-2 text-sm text-slate-400 dark:text-slate-500">未找到匹配模型</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+type AssistantProfile = {
+  displayName: string;
+  avatarType: 'emoji' | 'image' | null;
+  avatarValue: string | null;
+};
+
+const DEFAULT_MESSAGE_ASSISTANT_PROFILE: AssistantProfile = {
+  displayName: 'AI',
+  avatarType: null,
+  avatarValue: null,
+};
+
+const AssistantAvatar: React.FC<{ profile: AssistantProfile }> = ({ profile }) => {
+  if (profile.avatarType === 'image' && profile.avatarValue) {
+    return (
+      <img
+        src={profile.avatarValue}
+        alt={`${profile.displayName}-头像`}
+        className="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover"
+      />
+    );
+  }
+
+  if (profile.avatarType === 'emoji' && profile.avatarValue) {
+    return (
+      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm dark:bg-slate-800">
+        {profile.avatarValue}
+      </div>
+    );
+  }
+
+  return <MessageAvatar type="assistant" />;
+};
+
+const MessageCard: React.FC<{
+  message: ChatMessage;
+  isStreaming: boolean;
+  copied: boolean;
+  assistantProfile: AssistantProfile;
+  onCopy: (message: ChatMessage) => void;
+  onBranch: (message: ChatMessage) => void;
+  onDelete: (message: ChatMessage) => void;
+}> = ({ message, isStreaming, copied, assistantProfile, onCopy, onBranch, onDelete }) => {
+  const isUser = message.role === 'user';
+  const isTool = message.role === 'tool';
+  const images = parseImageUrls(message.imageUrls);
+  const reasoning = message.reasoningContent?.trim() || '';
+  const content = message.content ?? '';
+  const hasContent = content.length > 0;
+  const isReasoningInProgress = Boolean(reasoning) && isStreaming && !hasContent;
+  const reasoningSummary = isReasoningInProgress
+    ? '思考中'
+    : (() => {
+        const durationText = formatReasoningDuration(message.reasoningDurationMs);
+        return durationText ? `已思考（用时${durationText}）` : '已思考';
+      })();
+  const [reasoningOpen, setReasoningOpen] = useState(isReasoningInProgress);
+  const [actionsVisible, setActionsVisible] = useState(false);
+  const hideActionsTimerRef = useRef<number | null>(null);
+
+  const showActions = () => {
+    if (hideActionsTimerRef.current != null) {
+      window.clearTimeout(hideActionsTimerRef.current);
+    }
+    setActionsVisible(true);
+  };
+
+  const hideActions = () => {
+    if (hideActionsTimerRef.current != null) {
+      window.clearTimeout(hideActionsTimerRef.current);
+    }
+    hideActionsTimerRef.current = window.setTimeout(() => {
+      setActionsVisible(false);
+    }, 80);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hideActionsTimerRef.current != null) {
+        window.clearTimeout(hideActionsTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // 思考过程中自动展开，思考结束后自动收起。
+    setReasoningOpen(isReasoningInProgress);
+  }, [isReasoningInProgress, message.id]);
+
+  const actionButtons = (
+    <div className="flex items-center gap-0.5">
+      <IconActionButton tooltip={copied ? '已复制' : '复制 Markdown'} onClick={() => onCopy(message)}>
+        <CopyIcon />
+      </IconActionButton>
+      <IconActionButton tooltip="创建分支" onClick={() => onBranch(message)}>
+        <BranchIcon />
+      </IconActionButton>
+      <IconActionButton tooltip="删除消息" onClick={() => onDelete(message)} danger>
+        <DeleteIcon />
+      </IconActionButton>
+    </div>
+  );
+
+  const bodyContent = (
+    <>
+      {reasoning && (
+        <details
+          open={reasoningOpen}
+          onToggle={(event) => setReasoningOpen(event.currentTarget.open)}
+          className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
+        >
+          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{reasoningSummary}</summary>
+          <div className="mt-2 whitespace-pre-wrap text-slate-500 dark:text-slate-400">{reasoning}</div>
+        </details>
+      )}
+
+      {images.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {images.map((url, index) => (
+            <img
+              key={`${message.id}-${index}`}
+              src={url}
+              alt={`上传图片-${index + 1}`}
+              className="h-24 w-24 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="chat-markdown text-sm leading-7 text-slate-800 dark:text-slate-100">
+        {hasContent ? (
+          <MessageMarkdown content={content} isStreaming={isStreaming} />
+        ) : isStreaming ? (
+          <div className="flex h-7 items-center">
+            <span className="chat-loading-dot" aria-label="加载中" />
+          </div>
+        ) : (
+          <span className="opacity-60">(空消息)</span>
+        )}
+        {isStreaming && hasContent && <span className="chat-loading-inline" aria-label="加载中" />}
+      </div>
+    </>
+  );
+
+  if (isUser) {
+    return (
+      <div
+        className="relative mx-auto flex w-full max-w-[860px] justify-end gap-3 animate-fade-up"
+        onMouseEnter={showActions}
+        onMouseLeave={hideActions}
+      >
+        <div className="min-w-0 max-w-[78%] rounded-[24px] bg-[#f4f4f4] px-4 py-3 text-sm text-slate-900 dark:bg-[#303030] dark:text-slate-100">
+          {bodyContent}
+        </div>
+        <MessageAvatar type="user" />
+
+        {message.id > 0 && (
+          <div
+            className={`absolute right-10 top-full z-10 transition-opacity ${
+              actionsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+            }`}
+            onMouseEnter={showActions}
+            onMouseLeave={hideActions}
+          >
+            {actionButtons}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mx-auto flex w-full max-w-[860px] gap-3 animate-fade-up"
+      onMouseEnter={showActions}
+      onMouseLeave={hideActions}
+    >
+      {isTool ? <MessageAvatar type="tool" /> : <AssistantAvatar profile={assistantProfile} />}
+      <div className="min-w-0 flex-1">
+        {!isTool && (
+          <div className="mb-2 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <span className="font-medium text-slate-700 dark:text-slate-200">{assistantProfile.displayName}</span>
+            {message.modelName && (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                {message.modelName}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div
+          className={`text-sm leading-7 ${
+            isTool
+              ? 'rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100'
+              : 'px-1 text-slate-800 dark:text-slate-100'
+          }`}
+        >
+          {bodyContent}
+
+          {(message.tokenUsage != null || message.id > 0) && (
+            <div className="mt-2 flex items-center justify-between text-xs">
+              <span className="text-slate-400 dark:text-slate-500">
+                {message.tokenUsage != null ? `tokens: ${message.tokenUsage}` : ''}
+              </span>
+              {message.id > 0 && (
+                <div
+                  className={`transition-opacity ${
+                    actionsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+                  }`}
+                  onMouseEnter={showActions}
+                  onMouseLeave={hideActions}
+                >
+                  {actionButtons}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ChatPage: React.FC = () => {
+  const { theme, toggleTheme } = useThemeStore();
+  const {
+    sessions,
+    currentSessionId,
+    currentSession,
+    messages,
+    selectedModelId,
+    streaming,
+    error,
+    fetchSessions,
+    createSession,
+    startDraftSession,
+    deleteSession,
+    copySession,
+    renameSession,
+    selectSession,
+    sendMessage,
+    stopStreaming,
+    deleteMessage,
+    branchFromMessage,
+    setSelectedModelId,
+    setSelectedAgentId,
+    clearError,
+  } = useChatStore();
+
+  const { enabledModels, fetchEnabledModels } = useModelStore();
+  const { enabledAgents, fetchEnabledAgents } = useAgentStore();
+
+  const [input, setInput] = useState('');
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [draftAgentId, setDraftAgentId] = useState<number | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+  });
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [addMenuAgentOpen, setAddMenuAgentOpen] = useState(false);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
+  const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
+
+  const [renameDialog, setRenameDialog] = useState<{ open: boolean; session: ChatSession | null; title: string }>({
+    open: false,
+    session: null,
+    title: '',
+  });
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<ChatSession | null>(null);
+  const [copyDialog, setCopyDialog] = useState<{ open: boolean; session: ChatSession | null; title: string }>({
+    open: false,
+    session: null,
+    title: '',
+  });
+  const [preferredModelId, setPreferredModelId] = useState<number | null>(() => readStoredModelId());
+
+  const [branchDialog, setBranchDialog] = useState<{ open: boolean; message: ChatMessage | null; title: string }>({
+    open: false,
+    message: null,
+    title: '',
+  });
+  const [deleteMessageTarget, setDeleteMessageTarget] = useState<ChatMessage | null>(null);
+  const [sessionAboutDialog, setSessionAboutDialog] = useState<SessionAboutDialogState>(initialSessionAboutState);
+  const [contextStats, setContextStats] = useState<ChatSessionContextStats | null>(null);
+  const [contextStatsLoading, setContextStatsLoading] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const agentPickerRef = useRef<HTMLDivElement>(null);
+  const sidebarSettingsRef = useRef<HTMLDivElement>(null);
+  const headerMoreRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const lastMessagesScrollTopRef = useRef(0);
+  const copiedTimerRef = useRef<number | null>(null);
+  const composingRef = useRef(false);
+
+  const defaultModel = useMemo(
+    () => enabledModels.find((model) => model.isDefault) ?? enabledModels[0] ?? null,
+    [enabledModels],
+  );
+
+  const enabledModelIdSet = useMemo(
+    () => new Set(enabledModels.map((model) => model.id)),
+    [enabledModels],
+  );
+
+  const hasValidSelectedModel = selectedModelId != null && enabledModelIdSet.has(selectedModelId);
+  const hasValidPreferredModel = preferredModelId != null && enabledModelIdSet.has(preferredModelId);
+  // 已有会话优先使用该会话当前模型（无效则降级默认）；草稿态优先使用浏览器记忆模型。
+  const effectiveSelectedModelId = currentSessionId
+    ? hasValidSelectedModel
+      ? selectedModelId
+      : defaultModel?.id ?? null
+    : hasValidSelectedModel
+      ? selectedModelId
+      : hasValidPreferredModel
+        ? preferredModelId
+        : defaultModel?.id ?? null;
+
+  const selectedModel = useMemo(
+    () => enabledModels.find((model) => model.id === effectiveSelectedModelId) ?? null,
+    [enabledModels, effectiveSelectedModelId],
+  );
+
+  const defaultAgent = useMemo(
+    () => enabledAgents.find((agent) => agent.isDefault) ?? enabledAgents[0] ?? null,
+    [enabledAgents],
+  );
+
+  const enabledAgentIdSet = useMemo(
+    () => new Set(enabledAgents.map((agent) => agent.id)),
+    [enabledAgents],
+  );
+
+  const activeAgentId = useMemo(() => {
+    // 智能体被删除后，旧会话或草稿中可能残留无效 ID，这里统一回退到默认智能体。
+    const candidate = currentSessionId ? currentSession?.agentId ?? null : draftAgentId ?? null;
+    if (candidate != null && enabledAgentIdSet.has(candidate)) {
+      return candidate;
+    }
+    return defaultAgent?.id ?? null;
+  }, [currentSessionId, currentSession?.agentId, draftAgentId, enabledAgentIdSet, defaultAgent?.id]);
+
+  const activeAgent = useMemo(
+    () => enabledAgents.find((agent) => agent.id === activeAgentId) ?? defaultAgent,
+    [enabledAgents, activeAgentId, defaultAgent],
+  );
+
+  const assistantProfile = useMemo<AssistantProfile>(() => {
+    if (!activeAgent || activeAgent.isDefault) {
+      return DEFAULT_MESSAGE_ASSISTANT_PROFILE;
+    }
+
+    return {
+      displayName: activeAgent.name,
+      avatarType: activeAgent.avatarType,
+      avatarValue: activeAgent.avatarValue,
+    };
+  }, [activeAgent]);
+
+  const resolveMessageAssistantProfile = (message: ChatMessage): AssistantProfile => {
+    // 优先使用消息级快照，保证历史消息不受智能体后续编辑影响。
+    if (message.agentName) {
+      return {
+        displayName: message.agentName,
+        avatarType: message.agentAvatarType,
+        avatarValue: message.agentAvatarValue,
+      };
+    }
+    // 临时流式消息还未落库，可回退到当前会话智能体展示。
+    if (message.id < 0) {
+      return assistantProfile;
+    }
+    // 兼容历史数据：没有快照时固定回退到通用 AI，避免后续编辑智能体导致历史头像变化。
+    return DEFAULT_MESSAGE_ASSISTANT_PROFILE;
+  };
+
+  const visibleAgents = useMemo(() => {
+    // 兼容历史数据：若出现多个同名“默认”，前端仅展示系统默认那条，避免用户误解。
+    const defaultNamed = enabledAgents.filter((agent) => agent.name === '默认');
+    if (defaultNamed.length <= 1) {
+      return enabledAgents;
+    }
+
+    const keepId = defaultNamed.find((agent) => agent.isDefault)?.id ?? defaultNamed[0].id;
+    return enabledAgents.filter((agent) => agent.name !== '默认' || agent.id === keepId);
+  }, [enabledAgents]);
+
+  const activeStreamingMessageId = useMemo(() => {
+    if (!streaming) {
+      return null;
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (candidate.role === 'assistant' && candidate.id < 0) {
+        return candidate.id;
+      }
+    }
+
+    return null;
+  }, [messages, streaming]);
+  const hasCurrentSession = currentSessionId != null && currentSession != null;
+  const canExportCurrentSession = hasCurrentSession && messages.length > 0;
+
+  useEffect(() => {
+    fetchSessions();
+    fetchEnabledModels();
+    fetchEnabledAgents();
+  }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents]);
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) {
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' });
+  }, [messages, streaming]);
+
+  useEffect(() => {
+    // 切换会话或进入草稿后，默认回到底部。
+    shouldAutoScrollRef.current = true;
+    lastMessagesScrollTopRef.current = 0;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    document.title = currentSession?.title ? `${currentSession.title} · AI Chat` : 'AI Chat';
+  }, [currentSession?.title]);
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      setContextStats(null);
+      setContextStatsLoading(false);
+      return;
+    }
+    // 流式中增量更新频繁，结束后再统一刷新上下文统计，避免高频请求。
+    if (streaming) {
+      return;
+    }
+
+    let cancelled = false;
+    setContextStatsLoading(true);
+    chatApi
+      .getSessionContextStats(currentSessionId, effectiveSelectedModelId)
+      .then((stats) => {
+        if (!cancelled) {
+          setContextStats(stats);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContextStats(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setContextStatsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSessionId, effectiveSelectedModelId, streaming, messages.length]);
+
+  useEffect(() => {
+    if (!currentSessionId && draftAgentId == null && defaultAgent) {
+      setDraftAgentId(defaultAgent.id);
+    }
+  }, [currentSessionId, draftAgentId, defaultAgent]);
+
+  useEffect(() => {
+    if (currentSessionId) {
+      return;
+    }
+    if (draftAgentId != null && !enabledAgentIdSet.has(draftAgentId)) {
+      setDraftAgentId(defaultAgent?.id ?? null);
+    }
+  }, [currentSessionId, draftAgentId, enabledAgentIdSet, defaultAgent]);
+
+  useEffect(() => {
+    if (enabledModels.length === 0) {
+      // 首次加载期间 enabledModels 可能暂时为空，这里不能清空本地模型偏好。
+      return;
+    }
+
+    if (preferredModelId != null && enabledModelIdSet.has(preferredModelId)) {
+      return;
+    }
+
+    const storedModelId = readStoredModelId();
+    if (storedModelId != null && enabledModelIdSet.has(storedModelId)) {
+      setPreferredModelId(storedModelId);
+      return;
+    }
+
+    const fallbackModelId = defaultModel?.id ?? null;
+    setPreferredModelId(fallbackModelId);
+    if (typeof window !== 'undefined') {
+      if (fallbackModelId != null) {
+        window.localStorage.setItem(LAST_SELECTED_MODEL_STORAGE_KEY, String(fallbackModelId));
+      } else {
+        window.localStorage.removeItem(LAST_SELECTED_MODEL_STORAGE_KEY);
+      }
+    }
+  }, [enabledModels.length, preferredModelId, enabledModelIdSet, defaultModel?.id]);
+
+  useEffect(() => {
+    if (currentSessionId) {
+      return;
+    }
+    if (effectiveSelectedModelId != null && selectedModelId !== effectiveSelectedModelId) {
+      void setSelectedModelId(effectiveSelectedModelId);
+    }
+  }, [currentSessionId, effectiveSelectedModelId, selectedModelId, setSelectedModelId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed ? '1' : '0');
+  }, [sidebarCollapsed]);
+
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current != null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!addMenuOpen && !agentPickerOpen) {
+      return;
+    }
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (addMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      if (agentPickerRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setAddMenuOpen(false);
+      setAddMenuAgentOpen(false);
+      setAgentPickerOpen(false);
+    };
+
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [addMenuOpen, agentPickerOpen]);
+
+  useEffect(() => {
+    if (!sidebarSettingsOpen && !headerMoreOpen) {
+      return;
+    }
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (sidebarSettingsRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      if (headerMoreRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setSidebarSettingsOpen(false);
+      setHeaderMoreOpen(false);
+    };
+
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [sidebarSettingsOpen, headerMoreOpen]);
+
+  useEffect(() => {
+    if (sidebarCollapsed) {
+      setSidebarSettingsOpen(false);
+    }
+  }, [sidebarCollapsed]);
+
+  const adjustInputHeight = (target?: HTMLTextAreaElement | null) => {
+    const element = target ?? textareaRef.current;
+    if (!element) {
+      return;
+    }
+
+    const lineHeight = 24;
+    const maxHeight = lineHeight * 8;
+
+    element.style.height = 'auto';
+    const nextHeight = Math.min(Math.max(element.scrollHeight, lineHeight), maxHeight);
+    element.style.height = `${nextHeight}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  };
+
+  useEffect(() => {
+    adjustInputHeight();
+  }, [input]);
+
+  const resolvePreferredModelForNewSession = () => {
+    if (preferredModelId != null && enabledModelIdSet.has(preferredModelId)) {
+      return preferredModelId;
+    }
+    return defaultModel?.id ?? null;
+  };
+
+  const persistPreferredModel = (modelId: number | null) => {
+    setPreferredModelId(modelId);
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (modelId == null) {
+      window.localStorage.removeItem(LAST_SELECTED_MODEL_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(LAST_SELECTED_MODEL_STORAGE_KEY, String(modelId));
+    }
+  };
+
+  const handleModelChange = async (modelId: number | null) => {
+    if (modelId == null) {
+      return;
+    }
+    persistPreferredModel(modelId);
+    await setSelectedModelId(modelId);
+  };
+
+  const handleCreateSession = async () => {
+    // “新建会话”仅进入草稿态，不立即落库，避免侧栏出现多个空会话。
+    const desiredModelId = resolvePreferredModelForNewSession();
+    startDraftSession();
+    clearError();
+    setInput('');
+    setPendingImages([]);
+    shouldAutoScrollRef.current = true;
+
+    if (desiredModelId != null && selectedModelId !== desiredModelId) {
+      await setSelectedModelId(desiredModelId);
+    }
+  };
+
+  const ensureSessionReady = async (): Promise<boolean> => {
+    if (!currentSessionId) {
+      const desiredModelId = resolvePreferredModelForNewSession();
+      if (!desiredModelId) {
+        return false;
+      }
+      const created = await createSession(activeAgentId != null ? { agentId: activeAgentId } : undefined);
+      persistPreferredModel(desiredModelId);
+      // 新建会话接口默认回填“系统默认模型”，此处强制覆盖为用户偏好模型。
+      if (created.modelId !== desiredModelId || selectedModelId !== desiredModelId) {
+        await setSelectedModelId(desiredModelId);
+      }
+      return true;
+    }
+
+    const desiredModelId = effectiveSelectedModelId;
+    if (!desiredModelId) {
+      return false;
+    }
+
+    if (selectedModelId !== desiredModelId) {
+      await setSelectedModelId(desiredModelId);
+    }
+    return true;
+  };
+
+  const handleSend = async () => {
+    if (streaming) {
+      return;
+    }
+
+    clearError();
+    shouldAutoScrollRef.current = true;
+    const ready = await ensureSessionReady();
+    if (!ready) {
+      return;
+    }
+
+    const text = input;
+    const images = [...pendingImages];
+    setInput('');
+    setPendingImages([]);
+
+    await sendMessage(text, images);
+  };
+
+  const handleCopyMessage = async (message: ChatMessage) => {
+    const markdown = buildMessageMarkdown(message);
+    if (!markdown) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(markdown);
+      setCopiedMessageId(message.id);
+
+      if (copiedTimerRef.current != null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+
+      copiedTimerRef.current = window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === message.id ? null : current));
+      }, 1500);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSelectAgent = async (agentId: number) => {
+    if (currentSessionId) {
+      await setSelectedAgentId(agentId);
+    } else {
+      setDraftAgentId(agentId);
+    }
+    setAddMenuOpen(false);
+    setAddMenuAgentOpen(false);
+    setAgentPickerOpen(false);
+  };
+
+  const handleOpenSessionAbout = async (session: ChatSession) => {
+    setSessionAboutDialog({
+      open: true,
+      loading: true,
+      session,
+      messageCount: 0,
+      firstMessageAt: null,
+      lastMessageAt: null,
+      error: null,
+    });
+
+    try {
+      const sessionMessages = await chatApi.getMessages(session.id);
+      const messageCount = sessionMessages.length;
+      const firstMessageAt = messageCount > 0 ? sessionMessages[0].createdAt : null;
+      const lastMessageAt = messageCount > 0 ? sessionMessages[messageCount - 1].createdAt : null;
+
+      setSessionAboutDialog({
+        open: true,
+        loading: false,
+        session,
+        messageCount,
+        firstMessageAt,
+        lastMessageAt,
+        error: null,
+      });
+    } catch (e: any) {
+      setSessionAboutDialog({
+        open: true,
+        loading: false,
+        session,
+        messageCount: 0,
+        firstMessageAt: null,
+        lastMessageAt: null,
+        error: e?.message ?? '加载聊天信息失败',
+      });
+    }
+  };
+
+  const collectExportMessages = () =>
+    messages.filter((message) => message.id > 0 && message.role !== 'system');
+
+  const handleExportMarkdown = () => {
+    if (!currentSessionId) {
+      return;
+    }
+
+    const sessionTitle = currentSession?.title?.trim() || '未命名会话';
+    const markdown = buildSessionExportMarkdown(sessionTitle, collectExportMessages());
+    const safeTitle = normalizeExportFileName(sessionTitle) || 'chat';
+    triggerBlobDownload(
+      new Blob([markdown], { type: 'text/markdown;charset=utf-8' }),
+      `${safeTitle}-${createTimestampSuffix()}.md`,
+    );
+  };
+
+  const handleExportPdf = () => {
+    if (!currentSessionId) {
+      return;
+    }
+
+    const sessionTitle = currentSession?.title?.trim() || '未命名会话';
+    const printableHtml = buildSessionExportHtml(sessionTitle, collectExportMessages());
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=960,height=800');
+    if (!printWindow) {
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(printableHtml);
+    printWindow.document.close();
+
+    const triggerPrint = () => {
+      printWindow.focus();
+      printWindow.print();
+    };
+
+    if (printWindow.document.readyState === 'complete') {
+      window.setTimeout(triggerPrint, 120);
+    } else {
+      printWindow.addEventListener(
+        'load',
+        () => {
+          window.setTimeout(triggerPrint, 120);
+        },
+        { once: true },
+      );
+    }
+
+    printWindow.onafterprint = () => {
+      printWindow.close();
+    };
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = event.nativeEvent as KeyboardEvent & { keyCode?: number };
+    if (event.key === 'Enter' && !event.shiftKey) {
+      // 输入法组合输入阶段（中文/日文等）按回车用于上屏，不应触发发送。
+      if (composingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229) {
+        return;
+      }
+      event.preventDefault();
+      void handleSend();
+    }
+  };
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(event.target.value);
+    adjustInputHeight(event.currentTarget);
+  };
+
+  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(event.clipboardData?.items ?? []);
+    const imageFiles = items
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file != null);
+
+    if (imageFiles.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    try {
+      const imageData = await Promise.all(imageFiles.map((file) => fileToDataUrl(file)));
+      setPendingImages((prev) => [...prev, ...imageData].slice(0, 6));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleUploadImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+
+    try {
+      const imageData = await Promise.all(files.map((file) => fileToDataUrl(file)));
+      setPendingImages((prev) => [...prev, ...imageData].slice(0, 6));
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const handleMessagesScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const currentScrollTop = container.scrollTop;
+    const isScrollingUp = currentScrollTop < lastMessagesScrollTopRef.current;
+    lastMessagesScrollTopRef.current = currentScrollTop;
+
+    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    // 仅在“非常接近底部”时恢复自动跟随，避免用户轻微上滑仍被强制拉回。
+    if (distanceToBottom <= 8) {
+      shouldAutoScrollRef.current = true;
+      return;
+    }
+
+    if (isScrollingUp) {
+      shouldAutoScrollRef.current = false;
+    }
+  };
+
+  const handleMessagesWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    // 用户滚轮向上时立即退出自动跟随，避免下一批 token 抢滚动。
+    if (event.deltaY < 0) {
+      shouldAutoScrollRef.current = false;
+    }
+  };
+
+  return (
+    <div className="flex h-full bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
+      <aside
+        className={`${sidebarCollapsed ? 'w-[72px]' : 'w-[268px]'} flex shrink-0 flex-col border-r border-slate-200 bg-[#f9f9f9] p-3 transition-[width] duration-200 dark:border-[#2f2f2f] dark:bg-[#171717]`}
+      >
+        <div className={`mb-3 flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between px-1'}`}>
+          {!sidebarCollapsed && <p className="truncate text-sm font-semibold text-slate-700 dark:text-slate-200">AI Chat</p>}
+          <button
+            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a]"
+            onClick={() => setSidebarCollapsed((prev) => !prev)}
+            title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+            type="button"
+          >
+            {sidebarCollapsed ? <ExpandIcon /> : <CollapseIcon />}
+          </button>
+        </div>
+
+        <button
+          className={`mb-3 flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700 dark:bg-[#2f2f2f] dark:hover:bg-[#3a3a3a] ${sidebarCollapsed ? 'w-10 h-10 mx-auto px-0 py-0' : 'w-full'}`}
+          onClick={() => void handleCreateSession()}
+          title="新建会话"
+          type="button"
+        >
+          <PlusIcon />
+          {!sidebarCollapsed && <span>新建会话</span>}
+        </button>
+
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+          {sessions.map((session) => (
+            <SessionItem
+              key={session.id}
+              session={session}
+              collapsed={sidebarCollapsed}
+              active={currentSessionId === session.id}
+              onSelect={() => void selectSession(session.id)}
+              onAbout={() => void handleOpenSessionAbout(session)}
+              onRename={() => setRenameDialog({ open: true, session, title: session.title })}
+              onCopy={() =>
+                setCopyDialog({
+                  open: true,
+                  session,
+                  title: `${session.title}（副本）`,
+                })
+              }
+              onDelete={() => setDeleteSessionTarget(session)}
+            />
+          ))}
+
+          {sessions.length === 0 && !sidebarCollapsed && (
+            <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-slate-700">
+              还没有会话，点击上方按钮开始
+            </div>
+          )}
+        </div>
+
+        <div
+          ref={sidebarSettingsRef}
+          className={`relative mt-2 border-t border-slate-200 pt-2 dark:border-[#2f2f2f] ${sidebarCollapsed ? 'flex justify-center' : ''}`}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setHeaderMoreOpen(false);
+              setSidebarSettingsOpen((prev) => !prev);
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100 ${
+              sidebarCollapsed ? 'h-9 w-9 justify-center px-0' : 'w-full justify-start'
+            }`}
+            title="设置"
+          >
+            <SettingsIcon />
+            {!sidebarCollapsed && <span>设置</span>}
+            {!sidebarCollapsed && (
+              <ChevronDownIcon className={`ml-auto h-4 w-4 text-slate-400 transition-transform ${sidebarSettingsOpen ? 'rotate-180' : ''}`} />
+            )}
+          </button>
+
+          {sidebarSettingsOpen && (
+            <div
+              className={`absolute z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f] ${
+                sidebarCollapsed ? 'bottom-0 left-[calc(100%+8px)]' : 'bottom-11 left-0'
+              }`}
+            >
+              <Link
+                to="/models"
+                onClick={() => setSidebarSettingsOpen(false)}
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              >
+                <ModelManageIcon />
+                <span>模型管理</span>
+              </Link>
+              <Link
+                to="/agents"
+                onClick={() => setSidebarSettingsOpen(false)}
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              >
+                <AgentManageIcon />
+                <span>智能体管理</span>
+              </Link>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
+        <div className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-5 dark:border-[#2f2f2f] dark:bg-[#212121]">
+          <ChatModelSelect
+            options={enabledModels.map((model) => ({ value: model.id, label: model.displayName }))}
+            value={effectiveSelectedModelId}
+            onChange={(value) => void handleModelChange(value)}
+          />
+
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+              title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
+            >
+              {theme === 'light' ? <MoonIcon /> : <SunIcon />}
+            </button>
+
+            <div ref={headerMoreRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setSidebarSettingsOpen(false);
+                  setHeaderMoreOpen((prev) => !prev);
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+                title="更多"
+              >
+                <MoreIcon />
+              </button>
+
+              {headerMoreOpen && (
+                <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMoreOpen(false);
+                      handleExportPdf();
+                    }}
+                    disabled={!canExportCurrentSession}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                  >
+                    <ExportPdfIcon />
+                    <span>导出 PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMoreOpen(false);
+                      handleExportMarkdown();
+                    }}
+                    disabled={!canExportCurrentSession}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                  >
+                    <ExportMarkdownIcon />
+                    <span>导出 Markdown</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!currentSession) {
+                        return;
+                      }
+                      setHeaderMoreOpen(false);
+                      setDeleteSessionTarget(currentSession);
+                    }}
+                    disabled={!hasCurrentSession}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-rose-500 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-rose-900/20"
+                  >
+                    <DeleteIcon />
+                    <span>删除会话</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div
+          ref={messagesContainerRef}
+          onScroll={handleMessagesScroll}
+          onWheel={handleMessagesWheel}
+          className="flex-1 overflow-y-auto px-4 pb-4 pt-6"
+        >
+          {!currentSessionId ? (
+            <div className="mx-auto mt-24 max-w-2xl text-center text-slate-500 dark:text-slate-400">
+              <h2 className="mb-3 text-[30px] font-semibold tracking-tight">今天想聊点什么？</h2>
+              <p className="text-sm">选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。</p>
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="mx-auto mt-24 max-w-2xl rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-[#212121] dark:text-slate-400">
+              <p className="text-lg">会话已创建</p>
+              <p className="mt-2 text-sm">输入你的问题，或拖拽/上传图片开始对话。</p>
+            </div>
+          ) : (
+            <div className="space-y-7 pb-3">
+              {messages.map((message) => (
+                <MessageCard
+                  key={message.id}
+                  message={message}
+                  isStreaming={activeStreamingMessageId === message.id}
+                  copied={copiedMessageId === message.id}
+                  assistantProfile={resolveMessageAssistantProfile(message)}
+                  onCopy={handleCopyMessage}
+                  onBranch={(target) =>
+                    setBranchDialog({
+                      open: true,
+                      message: target,
+                      title: `${currentSession?.title ?? '会话'}（分支）`,
+                    })
+                  }
+                  onDelete={(target) => setDeleteMessageTarget(target)}
+                />
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+        </div>
+
+        <div className="bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]">
+          <div className="mx-auto max-w-[860px]">
+            {error && (
+              <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+                {error}
+              </div>
+            )}
+
+            {pendingImages.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {pendingImages.map((image, index) => (
+                  <div key={`${image.slice(0, 32)}-${index}`} className="relative">
+                    <img
+                      src={image}
+                      alt={`待发送图片-${index + 1}`}
+                      className="h-16 w-16 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
+                    />
+                    <button
+                      onClick={() => setPendingImages((prev) => prev.filter((_, i) => i !== index))}
+                      className="absolute -right-1 -top-1 rounded-full bg-slate-900 px-1 text-xs text-white"
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!selectedModel?.supportsVision && pendingImages.length > 0 && (
+              <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">当前模型不支持图片输入，发送时会报错，请切换视觉模型。</p>
+            )}
+
+            <div className="rounded-[30px] border border-[#d9d9e3] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  composingRef.current = false;
+                }}
+                onPaste={(event) => void handlePaste(event)}
+                placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                rows={1}
+                disabled={streaming}
+                className="w-full resize-none border-none bg-transparent text-sm leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100"
+              />
+
+              <div className="mt-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="relative" ref={addMenuRef}>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => void handleUploadImages(event)}
+                    />
+
+                    <button
+                      onClick={() => {
+                        setAddMenuOpen((prev) => !prev);
+                        setAddMenuAgentOpen(false);
+                        setAgentPickerOpen(false);
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                      type="button"
+                      title="更多"
+                    >
+                      <PlusIcon />
+                    </button>
+
+                    {addMenuOpen && (
+                      <div className="absolute bottom-11 left-0 z-30 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                        <button
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                          onClick={() => {
+                            fileInputRef.current?.click();
+                            setAddMenuOpen(false);
+                            setAddMenuAgentOpen(false);
+                          }}
+                          type="button"
+                        >
+                          <UploadIcon />
+                          <span>上传图片</span>
+                        </button>
+
+                        <button
+                          className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                          onClick={() => setAddMenuAgentOpen((prev) => !prev)}
+                          onMouseEnter={() => setAddMenuAgentOpen(true)}
+                          type="button"
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <SparkIcon />
+                            选择智能体
+                          </span>
+                          <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+                        </button>
+
+                        {addMenuAgentOpen && (
+                          <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                            {visibleAgents.map((agent) => (
+                              <button
+                                key={agent.id}
+                                onClick={() => void handleSelectAgent(agent.id)}
+                                className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                  activeAgentId === agent.id
+                                    ? 'bg-slate-100 text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                    : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]'
+                                }`}
+                                type="button"
+                              >
+                                <span className="inline-flex items-center gap-2">
+                                  <SparkIcon />
+                                  {agent.name}
+                                </span>
+                                {activeAgentId === agent.id && <CheckIcon />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {activeAgent && (
+                    <div className="relative" ref={agentPickerRef}>
+                      <button
+                        className="inline-flex h-9 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 text-xs text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-200 dark:hover:bg-[#2d2d2d]"
+                        type="button"
+                        onClick={() => {
+                          setAgentPickerOpen((prev) => !prev);
+                          setAddMenuOpen(false);
+                          setAddMenuAgentOpen(false);
+                        }}
+                        title="切换智能体"
+                      >
+                        <SparkIcon />
+                        <span>{activeAgent.name}</span>
+                        <ChevronDownIcon className={`h-3.5 w-3.5 text-slate-400 transition-transform ${agentPickerOpen ? 'rotate-180' : ''}`} />
+                      </button>
+
+                      {agentPickerOpen && (
+                        <div className="absolute bottom-10 left-0 z-40 min-w-[220px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                          {visibleAgents.map((agent) => (
+                            <button
+                              key={agent.id}
+                              onClick={() => void handleSelectAgent(agent.id)}
+                              className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                activeAgentId === agent.id
+                                  ? 'bg-slate-100 text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]'
+                              }`}
+                              type="button"
+                            >
+                              <span className="inline-flex items-center gap-2">
+                                <SparkIcon />
+                                {agent.name}
+                              </span>
+                              {activeAgentId === agent.id && <CheckIcon />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <ContextUsageIndicator stats={contextStats} loading={contextStatsLoading} />
+                  {streaming ? (
+                    <button
+                      onClick={() => void stopStreaming()}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
+                      title="停止生成"
+                      type="button"
+                    >
+                      <svg className="h-[18px] w-[18px]" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="3.5" y="3.5" width="13" height="13" rx="2.2" fill="currentColor" />
+                      </svg>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void handleSend()}
+                      disabled={!input.trim() && pendingImages.length === 0}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
+                      title="发送"
+                      type="button"
+                    >
+                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M10 3L10 15M10 3L5 8M10 3L15 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500">
+              AI 可能会犯错，请注意核验关键信息
+            </p>
+          </div>
+        </div>
+      </main>
+
+      <SessionAboutDialog
+        state={sessionAboutDialog}
+        onClose={() => setSessionAboutDialog(initialSessionAboutState)}
+      />
+
+      <Dialog
+        open={renameDialog.open}
+        onClose={() => setRenameDialog({ open: false, session: null, title: '' })}
+        title="重命名会话"
+      >
+        <div className="space-y-4">
+          <Input value={renameDialog.title} onChange={(event) => setRenameDialog((prev) => ({ ...prev, title: event.target.value }))} />
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setRenameDialog({ open: false, session: null, title: '' })}>
+              取消
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!renameDialog.session) {
+                  return;
+                }
+                await renameSession(renameDialog.session.id, renameDialog.title.trim() || '新会话');
+                setRenameDialog({ open: false, session: null, title: '' });
+              }}
+            >
+              保存
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={copyDialog.open}
+        onClose={() => setCopyDialog({ open: false, session: null, title: '' })}
+        title="复制会话"
+      >
+        <div className="space-y-4">
+          <Input value={copyDialog.title} onChange={(event) => setCopyDialog((prev) => ({ ...prev, title: event.target.value }))} />
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setCopyDialog({ open: false, session: null, title: '' })}>
+              取消
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!copyDialog.session) {
+                  return;
+                }
+                await copySession(copyDialog.session.id, copyDialog.title.trim());
+                setCopyDialog({ open: false, session: null, title: '' });
+              }}
+            >
+              复制
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteSessionTarget)}
+        onClose={() => setDeleteSessionTarget(null)}
+        title="删除会话"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            确认删除会话「{deleteSessionTarget?.title}」吗？删除后不可恢复。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setDeleteSessionTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (!deleteSessionTarget) {
+                  return;
+                }
+                await deleteSession(deleteSessionTarget.id);
+                setDeleteSessionTarget(null);
+              }}
+            >
+              确认删除
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={branchDialog.open}
+        onClose={() => setBranchDialog({ open: false, message: null, title: '' })}
+        title="从该消息创建分支"
+      >
+        <div className="space-y-4">
+          <Input value={branchDialog.title} onChange={(event) => setBranchDialog((prev) => ({ ...prev, title: event.target.value }))} />
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setBranchDialog({ open: false, message: null, title: '' })}>
+              取消
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!branchDialog.message) {
+                  return;
+                }
+                await branchFromMessage(branchDialog.message.id, branchDialog.title.trim());
+                setBranchDialog({ open: false, message: null, title: '' });
+              }}
+            >
+              创建分支
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteMessageTarget)}
+        onClose={() => setDeleteMessageTarget(null)}
+        title="删除消息"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600 dark:text-slate-300">确认删除这条消息吗？删除后不可恢复。</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setDeleteMessageTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (!deleteMessageTarget) {
+                  return;
+                }
+                await deleteMessage(deleteMessageTarget.id);
+                setDeleteMessageTarget(null);
+              }}
+            >
+              确认删除
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    </div>
+  );
+};
+
+export default ChatPage;

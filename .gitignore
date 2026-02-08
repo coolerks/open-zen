@@ -1,0 +1,76 @@
+############################
+# 通用
+############################
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+
+############################
+# IntelliJ IDEA
+############################
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+############################
+# VS Code
+############################
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+############################
+# Java / Maven
+############################
+target/
+*.class
+*.jar
+*.war
+*.ear
+dependency-reduced-pom.xml
+
+############################
+# Node / Frontend (TS / TSX)
+############################
+node_modules/
+dist/
+build/
+.cache/
+.parcel-cache/
+
+############################
+# 前端构建 & 工具
+############################
+.eslintcache
+*.tsbuildinfo
+.vite/
+.next/
+.nuxt/
+.svelte-kit/
+
+############################
+# 环境变量
+############################
+.env
+.env.*
+!.env.example
+
+############################
+# 测试 & 覆盖率
+############################
+coverage/
+.nyc_output/
+
+############################
+# 其他编辑器
+############################
+*.code-workspace
+*.db
