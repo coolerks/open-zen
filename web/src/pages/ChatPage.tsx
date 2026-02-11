@@ -3672,7 +3672,7 @@ const ChatPage: React.FC = () => {
             <button
               type="button"
               onClick={toggleTheme}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#0d0d0d] transition-colors hover:bg-slate-100 hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
               title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
             >
               {theme === 'light' ? <MoonIcon /> : <SunIcon />}
@@ -3685,7 +3685,7 @@ const ChatPage: React.FC = () => {
                   setSidebarSettingsOpen(false);
                   setHeaderMoreOpen((prev) => !prev);
                 }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#0d0d0d] transition-colors hover:bg-slate-100 hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
                 title="更多"
               >
                 <MoreIcon />
@@ -3756,7 +3756,7 @@ const ChatPage: React.FC = () => {
           className="flex-1 overflow-y-auto px-4 pb-4 pt-6"
         >
           {!currentSessionId ? (
-            <div className="mx-auto mt-24 max-w-2xl text-center text-slate-500 dark:text-slate-400">
+            <div className="mx-auto mt-24 max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100">
               <h2 className="mb-3 text-[30px] font-semibold tracking-tight">今天想聊点什么？</h2>
               <p className="text-sm">选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。</p>
             </div>
@@ -3830,7 +3830,7 @@ const ChatPage: React.FC = () => {
               <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">当前模型不支持图片输入，发送时会报错，请切换视觉模型。</p>
             )}
 
-            <div className="rounded-[30px] border border-[#d9d9e3] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
+            <div className="rounded-[30px] border border-[rgb(208,208,208)] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
               {quotedSelection && (
                 <div className="mb-2 flex items-start gap-2 rounded-2xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-[#3a3a3a] dark:text-slate-200">
                   <span className="mt-0.5 shrink-0 text-slate-500 dark:text-slate-400">
