@@ -17,6 +17,20 @@ interface StreamHandlers {
   onError?: (payload: { message: string }) => void;
 }
 
+function normalizeStreamError(payload: unknown): { message: string } {
+  if (typeof payload === 'string') {
+    const text = payload.trim();
+    return { message: text || '流式响应发生异常' };
+  }
+  if (payload && typeof payload === 'object' && 'message' in payload) {
+    const message = (payload as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return { message: message.trim() };
+    }
+  }
+  return { message: '流式响应发生异常' };
+}
+
 function parseEventBlock(block: string): { event: string; data: any } | null {
   if (!block.trim()) {
     return null;
@@ -119,7 +133,10 @@ export const chatApi = {
         } else if (event === 'done') {
           handlers.onDone?.(payload as StreamDonePayload);
         } else if (event === 'error') {
-          handlers.onError?.(payload as { message: string });
+          const normalizedError = normalizeStreamError(payload);
+          handlers.onError?.(normalizedError);
+          // 收到错误事件后立即结束流，确保上层能及时回落发送状态。
+          throw new Error(normalizedError.message);
         }
       }
     }
@@ -130,7 +147,9 @@ export const chatApi = {
         handlers.onDone?.(parsed.data as StreamDonePayload);
       }
       if (parsed?.event === 'error') {
-        handlers.onError?.(parsed.data as { message: string });
+        const normalizedError = normalizeStreamError(parsed.data);
+        handlers.onError?.(normalizedError);
+        throw new Error(normalizedError.message);
       }
     }
   },

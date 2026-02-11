@@ -1509,9 +1509,8 @@ const QuoteContextIcon: React.FC = () => (
 );
 
 const RunHtmlIcon: React.FC = () => (
-  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="3.5" y="4.2" width="17" height="15.6" rx="2.4" stroke="currentColor" strokeWidth="1.8" />
-    <path d="M8.8 9.4L14.8 12L8.8 14.6V9.4Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M6 4.5L15 10L6 15.5V4.5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
   </svg>
 );
 
