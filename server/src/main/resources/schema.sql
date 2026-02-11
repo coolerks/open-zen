@@ -101,6 +101,53 @@ COMMENT ON COLUMN custom_agent.updated_at IS '更新时间';
 CREATE INDEX IF NOT EXISTS idx_agent_enabled ON custom_agent(enabled);
 CREATE INDEX IF NOT EXISTS idx_agent_default ON custom_agent(is_default);
 
+-- 应用中心表：保存用户从聊天代码块收藏的可复用应用
+CREATE TABLE IF NOT EXISTS app_center_item (
+    id                   BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name                 VARCHAR(120) NOT NULL,
+    icon_type            VARCHAR(20),
+    icon_value           CLOB,
+    source_key           VARCHAR(200) NOT NULL,
+    source_session_id    BIGINT,
+    source_session_title VARCHAR(200),
+    source_message_id    BIGINT,
+    source_model_id      BIGINT,
+    source_model_name    VARCHAR(200),
+    language             VARCHAR(40)  NOT NULL,
+    code_content         CLOB         NOT NULL,
+    created_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS icon_type VARCHAR(20);
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS icon_value CLOB;
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_key VARCHAR(200);
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_session_id BIGINT;
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_session_title VARCHAR(200);
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_message_id BIGINT;
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_model_id BIGINT;
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_model_name VARCHAR(200);
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS language VARCHAR(40);
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS code_content CLOB;
+COMMENT ON TABLE app_center_item IS '应用中心条目表';
+COMMENT ON COLUMN app_center_item.id IS '主键 ID';
+COMMENT ON COLUMN app_center_item.name IS '应用名称';
+COMMENT ON COLUMN app_center_item.icon_type IS '图标类型：emoji/image';
+COMMENT ON COLUMN app_center_item.icon_value IS '图标内容：emoji 字符或图片 dataURL/地址';
+COMMENT ON COLUMN app_center_item.source_key IS '来源代码块唯一标识';
+COMMENT ON COLUMN app_center_item.source_session_id IS '来源会话 ID';
+COMMENT ON COLUMN app_center_item.source_session_title IS '来源会话标题快照';
+COMMENT ON COLUMN app_center_item.source_message_id IS '来源消息 ID';
+COMMENT ON COLUMN app_center_item.source_model_id IS '来源模型 ID';
+COMMENT ON COLUMN app_center_item.source_model_name IS '来源模型名称快照';
+COMMENT ON COLUMN app_center_item.language IS '代码语言';
+COMMENT ON COLUMN app_center_item.code_content IS '应用源码（通常为 HTML）';
+COMMENT ON COLUMN app_center_item.created_at IS '创建时间';
+COMMENT ON COLUMN app_center_item.updated_at IS '更新时间';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_app_source_key ON app_center_item(source_key);
+CREATE INDEX IF NOT EXISTS idx_app_updated_at ON app_center_item(updated_at);
+CREATE INDEX IF NOT EXISTS idx_app_source_session ON app_center_item(source_session_id);
+CREATE INDEX IF NOT EXISTS idx_app_source_message ON app_center_item(source_message_id);
+
 -- 会话表：支持复制、分支、绑定智能体与默认模型
 CREATE TABLE IF NOT EXISTS chat_session (
     id                 BIGINT AUTO_INCREMENT PRIMARY KEY,

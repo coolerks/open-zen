@@ -101,6 +101,44 @@ export interface AgentRequest {
   enabled?: boolean;
 }
 
+// 应用中心
+export interface AppCenterItem {
+  id: number;
+  name: string;
+  iconType: 'emoji' | 'image' | null;
+  iconValue: string | null;
+  sourceKey: string;
+  sourceSessionId: number | null;
+  sourceSessionTitle: string | null;
+  sourceMessageId: number | null;
+  sourceModelId: number | null;
+  sourceModelName: string | null;
+  language: string;
+  codeContent: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AppCenterItemCreateRequest {
+  name: string;
+  iconType?: 'emoji' | 'image';
+  iconValue?: string;
+  sourceKey: string;
+  sourceSessionId?: number;
+  sourceSessionTitle?: string;
+  sourceMessageId?: number;
+  sourceModelId?: number;
+  sourceModelName?: string;
+  language: string;
+  codeContent: string;
+}
+
+export interface AppCenterItemUpdateRequest {
+  name: string;
+  iconType?: 'emoji' | 'image';
+  iconValue?: string;
+}
+
 // 会话
 export interface ChatSession {
   id: number;

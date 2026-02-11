@@ -7,8 +7,9 @@
 :root {
   --app-bg-light: #f7f7f8;
   --app-bg-dark: #212121;
-  --app-text-light: #0f172a;
+  --app-text-light: rgb(13, 13, 13);
   --app-text-dark: #f8fafc;
+  --app-placeholder: rgb(143, 143, 143);
 }
 
 * {
@@ -25,6 +26,22 @@ body {
 .dark body {
   color: var(--app-text-dark);
   background: var(--app-bg-dark);
+}
+
+/* 全局统一浅色主题黑色文本观感 */
+.text-gray-900,
+.text-slate-900,
+.text-gray-800,
+.text-slate-800,
+.text-\[\#2f2f2f\] {
+  color: rgb(13, 13, 13);
+}
+
+/* 全局统一输入类占位文案颜色 */
+input::placeholder,
+textarea::placeholder {
+  color: var(--app-placeholder) !important;
+  opacity: 1;
 }
 
 code,
@@ -672,4 +689,26 @@ pre,
 
 .dark ::-webkit-scrollbar-thumb {
   background: #3f3f46;
+}
+
+/* 侧栏会话列表滚动条颜色 */
+.chat-sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(224, 224, 224) transparent;
+  margin-right: 0;
+  padding-right: 0;
+}
+
+.chat-sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.chat-sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgb(224, 224, 224);
+  border-radius: 999px;
 }

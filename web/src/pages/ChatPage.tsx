@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,6 +10,7 @@ import { chatApi } from '../api/chat';
 import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
 import { useAgentStore } from '../store/agentStore';
+import { useAppCenterStore } from '../store/appCenterStore';
 import { useThemeStore } from '../store/themeStore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
@@ -86,6 +87,8 @@ const CODE_EXTENSION_MAP: Record<string, string> = {
   plaintext: 'txt',
 };
 
+const APP_ICON_EMOJIS = ['🚀', '📊', '🧩', '🛠️', '💡', '🧠', '🌐', '📚', '🎨', '📦'];
+
 function resolveStreamMarkdownInterval(contentLength: number): number {
   // 内容越长，Markdown 重渲染间隔越大，用于平衡流畅度与性能。
   if (contentLength < 800) {
@@ -101,6 +104,17 @@ function resolveStreamMarkdownInterval(contentLength: number): number {
 }
 
 type ExportImageFormat = 'svg' | 'png' | 'jpeg';
+type SaveCodeBlockPayload = {
+  sourceKey: string;
+  sourceSessionId: number | null;
+  sourceSessionTitle: string | null;
+  sourceMessageId: number | null;
+  sourceModelId: number | null;
+  sourceModelName: string | null;
+  language: string;
+  codeContent: string;
+};
+
 type HighlightResult = {
   value: string;
   language?: string;
@@ -355,6 +369,25 @@ function canRunAsHtml(code: string, language: string): boolean {
   return /^\s*<!doctype\s+html/i.test(code) || /<html[\s>]/i.test(code);
 }
 
+function createCodeBlockSourceKey(messageId: number | null | undefined, blockIndex: number): string | null {
+  if (messageId == null || messageId <= 0) {
+    return null;
+  }
+  if (blockIndex < 0) {
+    return null;
+  }
+  return `msg-${messageId}-code-${blockIndex}`;
+}
+
+function openHtmlCodePreview(code: string): void {
+  const blob = new Blob([code], { type: 'text/html;charset=utf-8' });
+  const previewUrl = URL.createObjectURL(blob);
+  window.open(previewUrl, '_blank', 'noopener,noreferrer');
+  // 预留足够时间给新标签页完成加载，避免过早回收导致页面无法打开。
+  window.setTimeout(() => {
+    URL.revokeObjectURL(previewUrl);
+  }, 60_000);
+}
 function normalizeExportFileName(value: string): string {
   return value
     .replace(/[\\/:*?"<>|]+/g, '_')
@@ -1153,7 +1186,29 @@ function getMarkdownCodeText(raw: unknown): string | null {
   return String(raw).replace(/\n$/, '');
 }
 
-const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, code }) => {
+const CodeBlock: React.FC<{
+  language: string;
+  code: string;
+  sourceKey: string | null;
+  sourceSessionId: number | null;
+  sourceSessionTitle: string | null;
+  sourceMessageId: number | null;
+  sourceModelId: number | null;
+  sourceModelName: string | null;
+  savedInAppCenter: boolean;
+  onAddToAppCenter?: (payload: SaveCodeBlockPayload) => void;
+}> = ({
+  language,
+  code,
+  sourceKey,
+  sourceSessionId,
+  sourceSessionTitle,
+  sourceMessageId,
+  sourceModelId,
+  sourceModelName,
+  savedInAppCenter,
+  onAddToAppCenter,
+}) => {
   const [highlightedHtml, setHighlightedHtml] = useState(() => escapeHtml(code));
   const [resolvedLanguage, setResolvedLanguage] = useState(() => normalizeCodeLanguage(language));
   const [copied, setCopied] = useState(false);
@@ -1222,28 +1277,48 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
   const displayLanguage = toCodeLanguageLabel(currentLanguage);
   const fileExtension = toCodeFileExtension(currentLanguage);
   const canRunHtml = canRunAsHtml(code, currentLanguage);
+  const canAddToAppCenter = canRunHtml && Boolean(sourceKey && onAddToAppCenter);
 
   return (
     <div className="chat-code-block">
       <div className="chat-code-toolbar">
         <span className="chat-code-language">{displayLanguage}</span>
         <div className="flex items-center gap-1">
+          {canAddToAppCenter && (
+            <ToolbarIconButton
+              title={savedInAppCenter ? '该代码块已在应用中心' : '添加到应用中心'}
+              onClick={() => {
+                if (!sourceKey || !onAddToAppCenter || savedInAppCenter) {
+                  return;
+                }
+                onAddToAppCenter({
+                  sourceKey,
+                  sourceSessionId,
+                  sourceSessionTitle,
+                  sourceMessageId,
+                  sourceModelId,
+                  sourceModelName,
+                  language: currentLanguage,
+                  codeContent: code,
+                });
+              }}
+              disabled={savedInAppCenter}
+            >
+              <AddToAppIcon />
+            </ToolbarIconButton>
+          )}
+
           {canRunHtml && (
             <ToolbarIconButton
               title="运行 HTML"
               onClick={() => {
-                const blob = new Blob([code], { type: 'text/html;charset=utf-8' });
-                const previewUrl = URL.createObjectURL(blob);
-                window.open(previewUrl, '_blank', 'noopener,noreferrer');
-                // 预留足够时间给新标签页完成加载，避免过早回收导致页面无法打开。
-                window.setTimeout(() => {
-                  URL.revokeObjectURL(previewUrl);
-                }, 60_000);
+                openHtmlCodePreview(code);
               }}
             >
               <RunHtmlIcon />
             </ToolbarIconButton>
           )}
+
           {downloaded ? (
             <span className="chat-toolbar-feedback">已下载</span>
           ) : (
@@ -1258,6 +1333,7 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
               <DownloadIcon />
             </ToolbarIconButton>
           )}
+
           {copied ? (
             <span className="chat-toolbar-feedback">已复制</span>
           ) : (
@@ -1284,9 +1360,31 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
   );
 };
 
-const MessageMarkdown: React.FC<{ content: string; isStreaming: boolean }> = ({ content, isStreaming }) => {
-  const markdownComponents = useMemo(
-    () => ({
+const MessageMarkdown: React.FC<{
+  content: string;
+  isStreaming: boolean;
+  messageId?: number | null;
+  sourceSessionId?: number | null;
+  sourceSessionTitle?: string | null;
+  sourceModelId?: number | null;
+  sourceModelName?: string | null;
+  onAddToAppCenter?: (payload: SaveCodeBlockPayload) => void;
+  savedSourceKeySet?: Set<string>;
+}> = ({
+  content,
+  isStreaming,
+  messageId = null,
+  sourceSessionId = null,
+  sourceSessionTitle = null,
+  sourceModelId = null,
+  sourceModelName = null,
+  onAddToAppCenter,
+  savedSourceKeySet,
+}) => {
+  const markdownComponents = useMemo(() => {
+    let codeBlockIndex = 0;
+
+    return {
       pre: ({ children, ...props }: any) => {
         const firstChild = Array.isArray(children) ? children[0] : children;
         const className = firstChild?.props?.className ?? '';
@@ -1297,15 +1395,39 @@ const MessageMarkdown: React.FC<{ content: string; isStreaming: boolean }> = ({ 
           return <pre {...props}>{children}</pre>;
         }
 
+        const sourceKey = createCodeBlockSourceKey(messageId, codeBlockIndex);
+        codeBlockIndex += 1;
+
         if (language === 'mermaid') {
           return <MermaidBlock chart={code} isStreaming={isStreaming} />;
         }
 
-        return <CodeBlock language={language} code={code} />;
+        return (
+          <CodeBlock
+            language={language}
+            code={code}
+            sourceKey={sourceKey}
+            sourceSessionId={sourceSessionId}
+            sourceSessionTitle={sourceSessionTitle}
+            sourceMessageId={messageId}
+            sourceModelId={sourceModelId}
+            sourceModelName={sourceModelName}
+            savedInAppCenter={sourceKey != null && (savedSourceKeySet?.has(sourceKey) ?? false)}
+            onAddToAppCenter={onAddToAppCenter}
+          />
+        );
       },
-    }),
-    [isStreaming],
-  );
+    };
+  }, [
+    isStreaming,
+    messageId,
+    onAddToAppCenter,
+    savedSourceKeySet,
+    sourceSessionId,
+    sourceSessionTitle,
+    sourceModelId,
+    sourceModelName,
+  ]);
 
   return (
     <ReactMarkdown
@@ -1459,6 +1581,23 @@ const PlusIcon: React.FC = () => (
   </svg>
 );
 
+const NewChatIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3" y="3.2" width="14" height="13.6" rx="3" stroke="currentColor" strokeWidth="1.7" />
+    <path d="M10 6.7V13.3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <path d="M6.7 10H13.3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+  </svg>
+);
+
+const SidebarAppsIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="6.2" cy="6.2" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="13.8" cy="6.2" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="6.2" cy="13.8" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="13.8" cy="13.8" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+  </svg>
+);
+
 const CollapseIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M7.5 5L2.5 10L7.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -1511,6 +1650,13 @@ const QuoteContextIcon: React.FC = () => (
 const RunHtmlIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M6 4.5L15 10L6 15.5V4.5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+  </svg>
+);
+
+const AddToAppIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 5V19" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    <path d="M5 12H19" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
   </svg>
 );
 
@@ -1645,6 +1791,16 @@ const ExportMarkdownIcon: React.FC = () => (
   </svg>
 );
 
+const ShareIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="14.6" cy="4.9" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="5.4" cy="10" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="14.6" cy="15.1" r="2.1" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M7.3 9L12.7 5.9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M7.3 11L12.7 14.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+);
+
 function calcModelSelectWidth(options: { value: number; label: string }[]): number {
   const labels = ['选择模型', ...options.map((item) => item.label)];
   const maxLabelLength = Math.max(...labels.map((item) => item.length));
@@ -1700,10 +1856,10 @@ const SessionItem: React.FC<{
       <button
         onClick={onSelect}
         title={session.title}
-        className={`flex h-10 w-full items-center justify-center rounded-xl text-sm font-semibold transition-colors ${
+        className={`flex h-10 w-full items-center justify-center rounded-xl text-sm font-normal transition-colors ${
           active
-            ? 'bg-[#ececf1] text-slate-800 dark:bg-[#2a2a2a] dark:text-slate-100'
-            : 'text-slate-500 hover:bg-white/80 dark:text-slate-300 dark:hover:bg-[#242424]'
+            ? 'bg-[rgb(234,234,234)] text-[#0d0d0d] dark:bg-[#2a2a2a] dark:text-slate-100'
+            : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-300 dark:hover:bg-[#242424]'
         }`}
       >
         {session.title.slice(0, 1) || '会'}
@@ -1713,14 +1869,14 @@ const SessionItem: React.FC<{
 
   return (
     <div
-      className={`group/session relative flex items-center gap-1 rounded-xl px-2.5 py-1.5 transition-colors ${
+      className={`group/session relative mx-[6px] flex items-center gap-1 rounded-xl px-[10px] py-[6px] transition-colors ${
         active
-          ? 'bg-[#ececf1] text-slate-900 dark:bg-[#2a2a2a] dark:text-slate-100'
-          : 'text-slate-600 hover:bg-white/80 dark:text-slate-300 dark:hover:bg-[#242424]'
+          ? 'bg-[rgb(234,234,234)] text-[#0d0d0d] dark:bg-[#2a2a2a] dark:text-slate-100'
+          : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-300 dark:hover:bg-[#242424]'
       }`}
     >
-      <button onClick={onSelect} className="min-w-0 flex-1 py-1 text-left">
-        <p className="truncate text-[14px] font-medium leading-6">{session.title}</p>
+      <button onClick={onSelect} className="min-w-0 flex-1 text-left leading-6">
+        <p className="truncate text-[14px] font-normal leading-6">{session.title}</p>
       </button>
 
       <div
@@ -1730,7 +1886,7 @@ const SessionItem: React.FC<{
         }`}
       >
         <button
-          className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#3a3a3a] dark:hover:text-slate-100"
+          className="rounded-lg p-1.5 text-[#8f8f8f] transition-colors hover:bg-[rgb(234,234,234)] hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#3a3a3a] dark:hover:text-slate-100"
           onClick={(event) => {
             event.stopPropagation();
             setMenuOpen((prev) => !prev);
@@ -1744,7 +1900,7 @@ const SessionItem: React.FC<{
         {menuOpen && (
           <div className="absolute right-0 top-9 z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
               onClick={() => {
                 setMenuOpen(false);
                 onAbout();
@@ -1755,7 +1911,7 @@ const SessionItem: React.FC<{
               <span>关于此聊天</span>
             </button>
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
               onClick={() => {
                 setMenuOpen(false);
                 onRename();
@@ -1766,7 +1922,7 @@ const SessionItem: React.FC<{
               <span>重命名</span>
             </button>
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
               onClick={() => {
                 setMenuOpen(false);
                 onCopy();
@@ -1803,6 +1959,42 @@ type SessionAboutDialogState = {
   lastMessageAt: string | null;
   error: string | null;
 };
+
+type SaveAppDialogState = {
+  open: boolean;
+  sourceKey: string;
+  sourceSessionId: number | null;
+  sourceSessionTitle: string | null;
+  sourceMessageId: number | null;
+  sourceModelId: number | null;
+  sourceModelName: string | null;
+  language: string;
+  codeContent: string;
+  name: string;
+  iconMode: 'none' | 'emoji' | 'image';
+  iconEmoji: string;
+  iconImage: string;
+  error: string | null;
+};
+
+function createInitialSaveAppDialogState(): SaveAppDialogState {
+  return {
+    open: false,
+    sourceKey: '',
+    sourceSessionId: null,
+    sourceSessionTitle: null,
+    sourceMessageId: null,
+    sourceModelId: null,
+    sourceModelName: null,
+    language: 'html',
+    codeContent: '',
+    name: '',
+    iconMode: 'none',
+    iconEmoji: APP_ICON_EMOJIS[0],
+    iconImage: '',
+    error: null,
+  };
+}
 
 const initialSessionAboutState: SessionAboutDialogState = {
   open: false,
@@ -2091,12 +2283,27 @@ const MessageCardBase: React.FC<{
   message: ChatMessage;
   isStreaming: boolean;
   copied: boolean;
+  sessionTitle: string | null;
   assistantProfile: AssistantProfile;
   onCopy: (message: ChatMessage) => void;
   onBranch: (message: ChatMessage) => void;
   onDelete: (message: ChatMessage) => void;
   onSelectForAction: (payload: SelectionActionPayload | null) => void;
-}> = ({ message, isStreaming, copied, assistantProfile, onCopy, onBranch, onDelete, onSelectForAction }) => {
+  onAddToAppCenter: (payload: SaveCodeBlockPayload) => void;
+  savedSourceKeySet: Set<string>;
+}> = ({
+  message,
+  isStreaming,
+  copied,
+  sessionTitle,
+  assistantProfile,
+  onCopy,
+  onBranch,
+  onDelete,
+  onSelectForAction,
+  onAddToAppCenter,
+  savedSourceKeySet,
+}) => {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
   const images = parseImageUrls(message.imageUrls);
@@ -2229,7 +2436,17 @@ const MessageCardBase: React.FC<{
           isStreaming ? (
             <StreamingMessageMarkdown content={content} />
           ) : (
-            <MessageMarkdown content={content} isStreaming={isStreaming} />
+            <MessageMarkdown
+              content={content}
+              isStreaming={isStreaming}
+              messageId={message.id > 0 ? message.id : null}
+              sourceSessionId={message.sessionId > 0 ? message.sessionId : null}
+              sourceSessionTitle={sessionTitle}
+              sourceModelId={message.modelId}
+              sourceModelName={message.modelName}
+              onAddToAppCenter={onAddToAppCenter}
+              savedSourceKeySet={savedSourceKeySet}
+            />
           )
         ) : isStreaming ? (
           <div className="flex h-7 items-center">
@@ -2330,16 +2547,22 @@ const MessageCard = React.memo(
     prev.message === next.message &&
     prev.isStreaming === next.isStreaming &&
     prev.copied === next.copied &&
+    prev.sessionTitle === next.sessionTitle &&
     prev.assistantProfile.displayName === next.assistantProfile.displayName &&
     prev.assistantProfile.avatarType === next.assistantProfile.avatarType &&
     prev.assistantProfile.avatarValue === next.assistantProfile.avatarValue &&
     prev.onCopy === next.onCopy &&
     prev.onBranch === next.onBranch &&
     prev.onDelete === next.onDelete &&
-    prev.onSelectForAction === next.onSelectForAction,
+    prev.onSelectForAction === next.onSelectForAction &&
+    prev.onAddToAppCenter === next.onAddToAppCenter &&
+    prev.savedSourceKeySet === next.savedSourceKeySet,
 );
 
 const ChatPage: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { sessionId: routeSessionIdParam } = useParams<{ sessionId?: string }>();
   const { theme, toggleTheme } = useThemeStore();
   const {
     sessions,
@@ -2348,6 +2571,7 @@ const ChatPage: React.FC = () => {
     messages,
     selectedModelId,
     streaming,
+    loading,
     error,
     fetchSessions,
     createSession,
@@ -2367,6 +2591,7 @@ const ChatPage: React.FC = () => {
 
   const { enabledModels, fetchEnabledModels } = useModelStore();
   const { enabledAgents, fetchEnabledAgents } = useAgentStore();
+  const { items: appCenterItems, fetchItems: fetchAppCenterItems, createItem: createAppCenterItem } = useAppCenterStore();
 
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<string[]>([]);
@@ -2385,6 +2610,9 @@ const ChatPage: React.FC = () => {
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
   const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [saveAppDialog, setSaveAppDialog] = useState<SaveAppDialogState>(() => createInitialSaveAppDialogState());
+  const [saveAppSubmitting, setSaveAppSubmitting] = useState(false);
 
   const [renameDialog, setRenameDialog] = useState<{ open: boolean; session: ChatSession | null; title: string }>({
     open: false,
@@ -2410,6 +2638,7 @@ const ChatPage: React.FC = () => {
   const [contextStatsLoading, setContextStatsLoading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const saveAppIconInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const agentPickerRef = useRef<HTMLDivElement>(null);
@@ -2421,6 +2650,35 @@ const ChatPage: React.FC = () => {
   const lastMessagesScrollTopRef = useRef(0);
   const copiedTimerRef = useRef<number | null>(null);
   const composingRef = useRef(false);
+  const routeSessionSelectingRef = useRef(false);
+  const routeMessageJumpRef = useRef<string | null>(null);
+  const routeMessageJumpTimerRef = useRef<number | null>(null);
+  const shareCopiedTimerRef = useRef<number | null>(null);
+
+  const routeSessionId = useMemo(() => {
+    if (!routeSessionIdParam) {
+      return null;
+    }
+    const parsed = Number.parseInt(routeSessionIdParam, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return parsed;
+  }, [routeSessionIdParam]);
+
+  const routeMessageId = useMemo(() => {
+    const raw = new URLSearchParams(location.search).get('messageId');
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return parsed;
+  }, [location.search]);
+
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
   const defaultModel = useMemo(
     () => enabledModels.find((model) => model.isDefault) ?? enabledModels[0] ?? null,
@@ -2531,12 +2789,80 @@ const ChatPage: React.FC = () => {
   const hasCurrentSession = currentSessionId != null && currentSession != null;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
   const askActionLabel = activeAgent && !activeAgent.isDefault ? `问${activeAgent.name}` : '问AI';
+  const appSourceKeySet = useMemo(() => new Set(appCenterItems.map((item) => item.sourceKey)), [appCenterItems]);
 
   useEffect(() => {
     fetchSessions();
     fetchEnabledModels();
     fetchEnabledAgents();
-  }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents]);
+    fetchAppCenterItems();
+  }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems]);
+
+  useEffect(() => {
+    if (routeSessionId == null) {
+      routeSessionSelectingRef.current = false;
+      return;
+    }
+    if (currentSessionId === routeSessionId) {
+      routeSessionSelectingRef.current = false;
+      return;
+    }
+    routeSessionSelectingRef.current = true;
+    void selectSession(routeSessionId).finally(() => {
+      routeSessionSelectingRef.current = false;
+    });
+  }, [routeSessionId, currentSessionId, selectSession]);
+
+  useEffect(() => {
+    if (routeSessionId != null && routeSessionId !== currentSessionId) {
+      // URL 已指定目标会话且尚未切换完成时，不要把地址改回旧会话。
+      return;
+    }
+
+    const targetPath = currentSessionId ? `/chat/${currentSessionId}` : '/chat';
+    if (location.pathname !== targetPath) {
+      navigate(targetPath, { replace: true });
+    }
+  }, [routeSessionId, currentSessionId, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (routeSessionId == null || currentSessionId != null || loading) {
+      return;
+    }
+    if (!error) {
+      return;
+    }
+    // 非法会话链接回退到聊天主页，避免停留在无效地址。
+    navigate('/chat', { replace: true });
+  }, [routeSessionId, currentSessionId, loading, error, navigate]);
+
+  useEffect(() => {
+    if (!currentSessionId || !routeMessageId) {
+      routeMessageJumpRef.current = null;
+      return;
+    }
+
+    const jumpKey = `${currentSessionId}-${routeMessageId}`;
+    if (routeMessageJumpRef.current === jumpKey) {
+      return;
+    }
+
+    const targetElement = document.querySelector(`[data-message-id="${routeMessageId}"]`) as HTMLElement | null;
+    if (!targetElement) {
+      return;
+    }
+
+    routeMessageJumpRef.current = jumpKey;
+    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMessageId(routeMessageId);
+
+    if (routeMessageJumpTimerRef.current != null) {
+      window.clearTimeout(routeMessageJumpTimerRef.current);
+    }
+    routeMessageJumpTimerRef.current = window.setTimeout(() => {
+      setHighlightedMessageId((current) => (current === routeMessageId ? null : current));
+    }, 2200);
+  }, [currentSessionId, routeMessageId, messages]);
 
   useEffect(() => {
     if (!shouldAutoScrollRef.current) {
@@ -2697,6 +3023,12 @@ const ChatPage: React.FC = () => {
       if (copiedTimerRef.current != null) {
         window.clearTimeout(copiedTimerRef.current);
       }
+      if (routeMessageJumpTimerRef.current != null) {
+        window.clearTimeout(routeMessageJumpTimerRef.current);
+      }
+      if (shareCopiedTimerRef.current != null) {
+        window.clearTimeout(shareCopiedTimerRef.current);
+      }
     },
     [],
   );
@@ -2797,6 +3129,7 @@ const ChatPage: React.FC = () => {
   const handleCreateSession = async () => {
     // “新建会话”仅进入草稿态，不立即落库，避免侧栏出现多个空会话。
     const desiredModelId = resolvePreferredModelForNewSession();
+    navigate('/chat');
     startDraftSession();
     clearError();
     setInput('');
@@ -2879,6 +3212,96 @@ const ChatPage: React.FC = () => {
       console.error(e);
     }
   }, []);
+
+  const handleOpenSaveCodeBlock = useCallback(
+    (payload: SaveCodeBlockPayload) => {
+      if (!payload.sourceKey || appSourceKeySet.has(payload.sourceKey)) {
+        return;
+      }
+
+      const resolvedLanguage = normalizeCodeLanguage(payload.language) || 'html';
+      const languageLabel = toCodeLanguageLabel(resolvedLanguage);
+      const sessionTitle = currentSession?.title?.trim() || '应用';
+      const defaultName = `${sessionTitle}-${languageLabel}`;
+
+      setSaveAppDialog({
+        open: true,
+        sourceKey: payload.sourceKey,
+        sourceSessionId: payload.sourceSessionId,
+        sourceSessionTitle: payload.sourceSessionTitle,
+        sourceMessageId: payload.sourceMessageId,
+        sourceModelId: payload.sourceModelId,
+        sourceModelName: payload.sourceModelName,
+        language: resolvedLanguage,
+        codeContent: payload.codeContent,
+        name: defaultName,
+        iconMode: 'none',
+        iconEmoji: APP_ICON_EMOJIS[0],
+        iconImage: '',
+        error: null,
+      });
+    },
+    [appSourceKeySet, currentSession?.title],
+  );
+
+  const closeSaveAppDialog = () => {
+    if (saveAppSubmitting) {
+      return;
+    }
+    setSaveAppDialog(createInitialSaveAppDialogState());
+  };
+
+  const handleSubmitSaveApp = async () => {
+    if (!saveAppDialog.open) {
+      return;
+    }
+
+    const payload = {
+      name: saveAppDialog.name.trim() || '未命名应用',
+      sourceKey: saveAppDialog.sourceKey,
+      sourceSessionId: saveAppDialog.sourceSessionId ?? undefined,
+      sourceSessionTitle: saveAppDialog.sourceSessionTitle ?? undefined,
+      sourceMessageId: saveAppDialog.sourceMessageId ?? undefined,
+      sourceModelId: saveAppDialog.sourceModelId ?? undefined,
+      sourceModelName: saveAppDialog.sourceModelName ?? undefined,
+      language: saveAppDialog.language,
+      codeContent: saveAppDialog.codeContent,
+    } as {
+      name: string;
+      sourceKey: string;
+      sourceSessionId?: number;
+      sourceSessionTitle?: string;
+      sourceMessageId?: number;
+      sourceModelId?: number;
+      sourceModelName?: string;
+      language: string;
+      codeContent: string;
+      iconType?: 'emoji' | 'image';
+      iconValue?: string;
+    };
+
+    if (saveAppDialog.iconMode === 'emoji' && saveAppDialog.iconEmoji) {
+      payload.iconType = 'emoji';
+      payload.iconValue = saveAppDialog.iconEmoji;
+    }
+    if (saveAppDialog.iconMode === 'image' && saveAppDialog.iconImage) {
+      payload.iconType = 'image';
+      payload.iconValue = saveAppDialog.iconImage;
+    }
+
+    setSaveAppSubmitting(true);
+    try {
+      await createAppCenterItem(payload);
+      setSaveAppDialog(createInitialSaveAppDialogState());
+    } catch (error: any) {
+      setSaveAppDialog((prev) => ({
+        ...prev,
+        error: error?.message ?? '添加应用失败',
+      }));
+    } finally {
+      setSaveAppSubmitting(false);
+    }
+  };
 
   const handleBranchMessage = useCallback(
     (target: ChatMessage) => {
@@ -3002,6 +3425,26 @@ const ChatPage: React.FC = () => {
     printHtmlAsPdf(printableHtml);
   };
 
+  const handleShareCurrentSession = async () => {
+    if (!currentSessionId) {
+      return;
+    }
+
+    const shareUrl = `${window.location.origin}/chat/${currentSessionId}`;
+    try {
+      await copyTextToClipboard(shareUrl);
+      setShareCopied(true);
+      if (shareCopiedTimerRef.current != null) {
+        window.clearTimeout(shareCopiedTimerRef.current);
+      }
+      shareCopiedTimerRef.current = window.setTimeout(() => {
+        setShareCopied(false);
+      }, 1500);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const nativeEvent = event.nativeEvent as KeyboardEvent & { keyCode?: number };
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -3087,12 +3530,14 @@ const ChatPage: React.FC = () => {
   return (
     <div className="flex h-full bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
       <aside
-        className={`${sidebarCollapsed ? 'w-[72px]' : 'w-[268px]'} flex shrink-0 flex-col border-r border-slate-200 bg-[#f9f9f9] p-3 transition-[width] duration-200 dark:border-[#2f2f2f] dark:bg-[#171717]`}
+        className={`${sidebarCollapsed ? 'w-[72px]' : 'w-[260px]'} flex shrink-0 flex-col border-r border-slate-200 bg-[#f5f5f5] py-3 pr-0 transition-[width] duration-200 dark:border-[#2f2f2f] dark:bg-[#171717]`}
       >
-        <div className={`mb-3 flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between px-1'}`}>
-          {!sidebarCollapsed && <p className="truncate text-sm font-semibold text-slate-700 dark:text-slate-200">Open Zen</p>}
+        <div className={`mb-2 flex items-center ${sidebarCollapsed ? 'justify-center pr-3' : 'justify-between pl-[6px] pr-[10px]'}`}>
+          {!sidebarCollapsed && (
+            <p className="truncate text-sm pl-3 font-medium text-[#0d0d0d] dark:text-slate-200">Open Zen</p>
+          )}
           <button
-            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-[#2a2a2a]"
+            className="rounded-lg p-2 text-[#8f8f8f] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a]"
             onClick={() => setSidebarCollapsed((prev) => !prev)}
             title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
             type="button"
@@ -3101,24 +3546,49 @@ const ChatPage: React.FC = () => {
           </button>
         </div>
 
-        <button
-          className={`mb-3 flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700 dark:bg-[#2f2f2f] dark:hover:bg-[#3a3a3a] ${sidebarCollapsed ? 'w-10 h-10 mx-auto px-0 py-0' : 'w-full'}`}
-          onClick={() => void handleCreateSession()}
-          title="新建会话"
-          type="button"
-        >
-          <PlusIcon />
-          {!sidebarCollapsed && <span>新建会话</span>}
-        </button>
+        <div className="mb-3 space-y-1">
+          <button
+            className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
+              sidebarCollapsed
+                ? 'mx-auto h-10 w-10 justify-center px-0 py-0'
+                : 'mx-[6px] w-[calc(100%-12px)] justify-start bg-[rgb(234,234,234)] px-[10px] py-[6px]'
+            }`}
+            onClick={() => void handleCreateSession()}
+            title="新建会话"
+            type="button"
+          >
+            <NewChatIcon />
+            {!sidebarCollapsed && <span>新建会话</span>}
+          </button>
 
-        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+          <Link
+            to="/apps"
+            className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
+              sidebarCollapsed
+                ? 'mx-auto h-10 w-10 justify-center px-0 py-0'
+                : 'mx-[6px] w-[calc(100%-12px)] justify-start px-[10px] py-[6px]'
+            }`}
+            title="应用中心"
+          >
+            <SidebarAppsIcon />
+            {!sidebarCollapsed && <span>应用中心</span>}
+          </Link>
+        </div>
+
+        {!sidebarCollapsed && (
+          <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">
+            聊天
+          </p>
+        )}
+
+        <div className="chat-sidebar-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0">
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
               session={session}
               collapsed={sidebarCollapsed}
               active={currentSessionId === session.id}
-              onSelect={() => void selectSession(session.id)}
+              onSelect={() => navigate(`/chat/${session.id}`)}
               onAbout={() => void handleOpenSessionAbout(session)}
               onRename={() => setRenameDialog({ open: true, session, title: session.title })}
               onCopy={() =>
@@ -3133,7 +3603,7 @@ const ChatPage: React.FC = () => {
           ))}
 
           {sessions.length === 0 && !sidebarCollapsed && (
-            <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-slate-700">
+            <div className="mx-[6px] rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-[#8f8f8f] dark:border-slate-700">
               还没有会话，点击上方按钮开始
             </div>
           )}
@@ -3149,15 +3619,17 @@ const ChatPage: React.FC = () => {
               setHeaderMoreOpen(false);
               setSidebarSettingsOpen((prev) => !prev);
             }}
-            className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100 ${
-              sidebarCollapsed ? 'h-9 w-9 justify-center px-0' : 'w-full justify-start'
+            className={`inline-flex items-center gap-1.5 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100 ${
+              sidebarCollapsed
+                ? 'mx-auto h-9 w-9 justify-center px-0 py-0'
+                : 'mx-[6px] w-[calc(100%-12px)] justify-start px-[10px] py-[6px]'
             }`}
             title="设置"
           >
             <SettingsIcon />
             {!sidebarCollapsed && <span>设置</span>}
             {!sidebarCollapsed && (
-              <ChevronDownIcon className={`ml-auto h-4 w-4 text-slate-400 transition-transform ${sidebarSettingsOpen ? 'rotate-180' : ''}`} />
+              <ChevronDownIcon className={`ml-auto h-4 w-4 text-[#8f8f8f] transition-transform ${sidebarSettingsOpen ? 'rotate-180' : ''}`} />
             )}
           </button>
 
@@ -3170,7 +3642,7 @@ const ChatPage: React.FC = () => {
               <Link
                 to="/models"
                 onClick={() => setSidebarSettingsOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
               >
                 <ModelManageIcon />
                 <span>模型管理</span>
@@ -3178,7 +3650,7 @@ const ChatPage: React.FC = () => {
               <Link
                 to="/agents"
                 onClick={() => setSidebarSettingsOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
               >
                 <AgentManageIcon />
                 <span>智能体管理</span>
@@ -3248,6 +3720,17 @@ const ChatPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => {
+                      void handleShareCurrentSession();
+                    }}
+                    disabled={!hasCurrentSession}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                  >
+                    <ShareIcon />
+                    <span>{shareCopied ? '链接已复制' : '分享'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
                       if (!currentSession) {
                         return;
                       }
@@ -3285,17 +3768,29 @@ const ChatPage: React.FC = () => {
           ) : (
             <div className="space-y-7 pb-3">
               {messages.map((message) => (
-                <MessageCard
+                <div
                   key={message.id}
-                  message={message}
-                  isStreaming={activeStreamingMessageId === message.id}
-                  copied={copiedMessageId === message.id}
-                  assistantProfile={resolveMessageAssistantProfile(message)}
-                  onCopy={handleCopyMessage}
-                  onBranch={handleBranchMessage}
-                  onDelete={handleDeleteMessage}
-                  onSelectForAction={handleSelectForAction}
-                />
+                  data-message-id={message.id}
+                  className={`rounded-2xl transition-[background-color,box-shadow] duration-500 ${
+                    highlightedMessageId === message.id
+                      ? 'bg-amber-50/70 shadow-[0_0_0_1px_rgba(245,158,11,0.35)] dark:bg-amber-500/10 dark:shadow-[0_0_0_1px_rgba(251,191,36,0.45)]'
+                      : ''
+                  }`}
+                >
+                  <MessageCard
+                    message={message}
+                    isStreaming={activeStreamingMessageId === message.id}
+                    copied={copiedMessageId === message.id}
+                    sessionTitle={currentSession?.title ?? null}
+                    assistantProfile={resolveMessageAssistantProfile(message)}
+                    onCopy={handleCopyMessage}
+                    onBranch={handleBranchMessage}
+                    onDelete={handleDeleteMessage}
+                    onSelectForAction={handleSelectForAction}
+                    onAddToAppCenter={handleOpenSaveCodeBlock}
+                    savedSourceKeySet={appSourceKeySet}
+                  />
+                </div>
               ))}
               <div ref={messagesEndRef} />
             </div>
@@ -3552,6 +4047,170 @@ const ChatPage: React.FC = () => {
         state={sessionAboutDialog}
         onClose={() => setSessionAboutDialog(initialSessionAboutState)}
       />
+
+      <Dialog
+        open={saveAppDialog.open}
+        onClose={closeSaveAppDialog}
+        title="添加到应用中心"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <Input
+            label="应用名称"
+            value={saveAppDialog.name}
+            onChange={(event) => {
+              const nextName = event.target.value;
+              setSaveAppDialog((prev) => ({
+                ...prev,
+                name: nextName,
+                error: null,
+              }));
+            }}
+            placeholder="例如：销售报表看板"
+            disabled={saveAppSubmitting}
+          />
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">图标</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant={saveAppDialog.iconMode === 'none' ? 'primary' : 'secondary'}
+                size="sm"
+                type="button"
+                disabled={saveAppSubmitting}
+                onClick={() => {
+                  setSaveAppDialog((prev) => ({
+                    ...prev,
+                    iconMode: 'none',
+                    iconImage: '',
+                    error: null,
+                  }));
+                }}
+              >
+                使用 AI
+              </Button>
+              <Button
+                variant={saveAppDialog.iconMode === 'emoji' ? 'primary' : 'secondary'}
+                size="sm"
+                type="button"
+                disabled={saveAppSubmitting}
+                onClick={() => {
+                  setSaveAppDialog((prev) => ({
+                    ...prev,
+                    iconMode: 'emoji',
+                    iconEmoji: prev.iconEmoji || APP_ICON_EMOJIS[0],
+                    error: null,
+                  }));
+                }}
+              >
+                Emoji
+              </Button>
+              <Button
+                variant={saveAppDialog.iconMode === 'image' ? 'primary' : 'secondary'}
+                size="sm"
+                type="button"
+                disabled={saveAppSubmitting}
+                onClick={() => {
+                  setSaveAppDialog((prev) => ({
+                    ...prev,
+                    iconMode: 'image',
+                    error: null,
+                  }));
+                  void saveAppIconInputRef.current?.click();
+                }}
+              >
+                上传图片
+              </Button>
+              <input
+                ref={saveAppIconInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (!file) {
+                    return;
+                  }
+
+                  void fileToDataUrl(file)
+                    .then((dataUrl) => {
+                      setSaveAppDialog((prev) => ({
+                        ...prev,
+                        iconMode: 'image',
+                        iconImage: dataUrl,
+                        error: null,
+                      }));
+                    })
+                    .catch((error) => {
+                      setSaveAppDialog((prev) => ({
+                        ...prev,
+                        error: error?.message ?? '图标读取失败',
+                      }));
+                    });
+                }}
+              />
+            </div>
+
+            {saveAppDialog.iconMode === 'emoji' && (
+              <div className="flex flex-wrap gap-2 rounded-lg border border-gray-200 p-2 dark:border-gray-700">
+                {APP_ICON_EMOJIS.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    disabled={saveAppSubmitting}
+                    onClick={() => {
+                      setSaveAppDialog((prev) => ({
+                        ...prev,
+                        iconEmoji: emoji,
+                        error: null,
+                      }));
+                    }}
+                    className={`h-8 w-8 rounded-md text-lg transition-colors ${
+                      saveAppDialog.iconEmoji === emoji
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {saveAppDialog.iconMode === 'image' && saveAppDialog.iconImage && (
+              <img
+                src={saveAppDialog.iconImage}
+                alt="应用图标预览"
+                className="h-16 w-16 rounded-xl border border-slate-200 object-cover dark:border-slate-700"
+              />
+            )}
+          </div>
+
+          <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-[#2a2a2a] dark:text-slate-300">
+            <p>语言：{toCodeLanguageLabel(normalizeCodeLanguage(saveAppDialog.language) || 'html')}</p>
+            <p className="mt-1 truncate">来源：{saveAppDialog.sourceKey}</p>
+            <p className="mt-1 truncate">来源会话：{saveAppDialog.sourceSessionTitle || '-'}</p>
+            <p className="mt-1 truncate">来源模型：{saveAppDialog.sourceModelName || '-'}</p>
+            <p className="mt-1">来源消息 ID：{saveAppDialog.sourceMessageId ?? '-'}</p>
+          </div>
+
+          {saveAppDialog.error && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+              {saveAppDialog.error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={closeSaveAppDialog} disabled={saveAppSubmitting}>
+              取消
+            </Button>
+            <Button onClick={() => void handleSubmitSaveApp()} disabled={saveAppSubmitting}>
+              {saveAppSubmitting ? '保存中...' : '保存到应用中心'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog
         open={renameDialog.open}

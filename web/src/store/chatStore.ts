@@ -77,7 +77,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
     } catch (e: any) {
-      set({ loading: false, error: e.message });
+      set({
+        loading: false,
+        error: e.message,
+        currentSessionId: null,
+        currentSession: null,
+        messages: [],
+        selectedModelId: null,
+      });
     }
   },
 
@@ -150,7 +157,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         loading: false,
       });
     } catch (e: any) {
-      set({ loading: false, error: e.message });
+      set({
+        loading: false,
+        error: e.message,
+        currentSessionId: null,
+        currentSession: null,
+        messages: [],
+        selectedModelId: null,
+      });
     }
   },
 

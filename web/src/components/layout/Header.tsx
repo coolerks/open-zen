@@ -10,6 +10,7 @@ export const Header: React.FC = () => {
     { path: '/chat', label: '聊天' },
     { path: '/models', label: '模型管理' },
     { path: '/agents', label: '智能体' },
+    { path: '/apps', label: '应用中心' },
   ];
 
   return (
