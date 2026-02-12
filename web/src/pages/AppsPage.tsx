@@ -91,13 +91,7 @@ const AppsPage: React.FC = () => {
   return (
     <div className="flex-1 overflow-auto p-6">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-6 flex items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">应用中心</h1>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              保存 AI 生成的 HTML 应用，随时一键打开。
-            </p>
-          </div>
+        <div className="mb-4 flex items-center justify-end gap-3">
           <Input
             value={searchKeyword}
             onChange={(event) => setSearchKeyword(event.target.value)}

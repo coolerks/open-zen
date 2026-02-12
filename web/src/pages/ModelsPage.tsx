@@ -104,8 +104,6 @@ const ModelsPage: React.FC = () => {
   return (
     <div className="flex-1 overflow-auto p-6">
       <div className="max-w-5xl mx-auto">
-        <h1 className="text-2xl font-bold mb-6 text-gray-900 dark:text-gray-100">模型管理</h1>
-
         {/* Tabs */}
         <div className="flex gap-1 mb-6 border-b border-gray-200 dark:border-gray-700">
           <button

@@ -15,6 +15,9 @@ import { useThemeStore } from '../store/themeStore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
 import { Input } from '../components/ui/Input';
+import ModelsPage from './ModelsPage';
+import AgentsPage from './AgentsPage';
+import AppsPage from './AppsPage';
 import type { ChatMessage, ChatSession, ChatSessionContextStats } from '../types';
 
 const TOKENS_PER_MILLION = 1_000_000;
@@ -2679,6 +2682,28 @@ const ChatPage: React.FC = () => {
     return parsed;
   }, [location.search]);
 
+  const pageMode = useMemo<'chat' | 'models' | 'agents' | 'apps'>(() => {
+    if (location.pathname === '/models') {
+      return 'models';
+    }
+    if (location.pathname === '/agents') {
+      return 'agents';
+    }
+    if (location.pathname === '/apps') {
+      return 'apps';
+    }
+    return 'chat';
+  }, [location.pathname]);
+
+  const isChatRoute = pageMode === 'chat';
+  const topBarTitle = pageMode === 'models'
+    ? '模型管理'
+    : pageMode === 'agents'
+      ? '智能体管理'
+      : pageMode === 'apps'
+        ? '应用中心'
+        : '';
+
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
   const defaultModel = useMemo(
@@ -2787,7 +2812,7 @@ const ChatPage: React.FC = () => {
 
     return null;
   }, [messages, streaming]);
-  const hasCurrentSession = currentSessionId != null && currentSession != null;
+  const hasCurrentSession = isChatRoute && currentSessionId != null && currentSession != null;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
   const askActionLabel = activeAgent && !activeAgent.isDefault ? `问${activeAgent.name}` : '问AI';
   const appSourceKeySet = useMemo(() => new Set(appCenterItems.map((item) => item.sourceKey)), [appCenterItems]);
@@ -2800,11 +2825,19 @@ const ChatPage: React.FC = () => {
   }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      routeSessionAttemptedRef.current = null;
+      routeSessionSelectingRef.current = false;
+      return;
+    }
     // 路由会话 ID 变化后，允许对新 ID 重新尝试加载一次。
     routeSessionAttemptedRef.current = null;
-  }, [routeSessionId]);
+  }, [isChatRoute, routeSessionId]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
     if (routeSessionId == null) {
       routeSessionSelectingRef.current = false;
       routeSessionAttemptedRef.current = null;
@@ -2828,9 +2861,12 @@ const ChatPage: React.FC = () => {
     void selectSession(routeSessionId).finally(() => {
       routeSessionSelectingRef.current = false;
     });
-  }, [routeSessionId, currentSessionId, selectSession]);
+  }, [isChatRoute, routeSessionId, currentSessionId, selectSession]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
     if (routeSessionId != null && routeSessionId !== currentSessionId) {
       // URL 已指定目标会话且尚未切换完成时，不要把地址改回旧会话。
       return;
@@ -2840,9 +2876,12 @@ const ChatPage: React.FC = () => {
     if (location.pathname !== targetPath) {
       navigate(targetPath, { replace: true });
     }
-  }, [routeSessionId, currentSessionId, location.pathname, navigate]);
+  }, [isChatRoute, routeSessionId, currentSessionId, location.pathname, navigate]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
     if (routeSessionId == null || currentSessionId != null || loading) {
       return;
     }
@@ -2851,9 +2890,13 @@ const ChatPage: React.FC = () => {
     }
     // 非法会话链接回退到聊天主页，避免停留在无效地址。
     navigate('/chat', { replace: true });
-  }, [routeSessionId, currentSessionId, loading, error, navigate]);
+  }, [isChatRoute, routeSessionId, currentSessionId, loading, error, navigate]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      routeMessageJumpRef.current = null;
+      return;
+    }
     if (!currentSessionId || !routeMessageId) {
       routeMessageJumpRef.current = null;
       return;
@@ -2879,23 +2922,29 @@ const ChatPage: React.FC = () => {
     routeMessageJumpTimerRef.current = window.setTimeout(() => {
       setHighlightedMessageId((current) => (current === routeMessageId ? null : current));
     }, 2200);
-  }, [currentSessionId, routeMessageId, messages]);
+  }, [isChatRoute, currentSessionId, routeMessageId, messages]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
     if (!shouldAutoScrollRef.current) {
       return;
     }
     messagesEndRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' });
-  }, [messages, streaming]);
+  }, [isChatRoute, messages, streaming]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
     // 切换会话或进入草稿后，默认回到底部。
     shouldAutoScrollRef.current = true;
     lastMessagesScrollTopRef.current = 0;
     setSelectionAction(null);
     setQuotedSelection(null);
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [currentSessionId]);
+  }, [isChatRoute, currentSessionId]);
 
   useEffect(() => {
     const onSelectionChange = () => {
@@ -2941,10 +2990,27 @@ const ChatPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (pageMode === 'models') {
+      document.title = '模型管理 · Open Zen';
+      return;
+    }
+    if (pageMode === 'agents') {
+      document.title = '智能体管理 · Open Zen';
+      return;
+    }
+    if (pageMode === 'apps') {
+      document.title = '应用中心 · Open Zen';
+      return;
+    }
     document.title = currentSession?.title ? `${currentSession.title} · Open Zen` : 'Open Zen';
-  }, [currentSession?.title]);
+  }, [pageMode, currentSession?.title]);
 
   useEffect(() => {
+    if (!isChatRoute) {
+      setContextStats(null);
+      setContextStatsLoading(false);
+      return;
+    }
     if (!currentSessionId) {
       setContextStats(null);
       setContextStatsLoading(false);
@@ -2978,7 +3044,7 @@ const ChatPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [currentSessionId, effectiveSelectedModelId, streaming, messages.length]);
+  }, [isChatRoute, currentSessionId, effectiveSelectedModelId, streaming, messages.length]);
 
   useEffect(() => {
     if (!currentSessionId && draftAgentId == null && defaultAgent) {
@@ -3580,7 +3646,11 @@ const ChatPage: React.FC = () => {
 
           <Link
             to="/apps"
-            className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
+            className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors dark:text-slate-100 ${
+              pageMode === 'apps'
+                ? 'bg-[rgb(234,234,234)] dark:bg-[#2a2a2a]'
+                : 'hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:hover:bg-[#2a2a2a]'
+            } ${
               sidebarCollapsed
                 ? 'mx-auto h-10 w-10 justify-center px-0 py-0'
                 : 'mx-[6px] w-[calc(100%-12px)] justify-start px-[10px] py-[6px]'
@@ -3663,7 +3733,11 @@ const ChatPage: React.FC = () => {
               <Link
                 to="/models"
                 onClick={() => setSidebarSettingsOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors dark:text-slate-200 ${
+                  pageMode === 'models'
+                    ? 'bg-[rgb(245,245,245)] text-[#0d0d0d] dark:bg-[#242424]'
+                    : 'text-[#0d0d0d] hover:bg-[rgb(245,245,245)] dark:hover:bg-[#242424]'
+                }`}
               >
                 <ModelManageIcon />
                 <span>模型管理</span>
@@ -3671,7 +3745,11 @@ const ChatPage: React.FC = () => {
               <Link
                 to="/agents"
                 onClick={() => setSidebarSettingsOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors dark:text-slate-200 ${
+                  pageMode === 'agents'
+                    ? 'bg-[rgb(245,245,245)] text-[#0d0d0d] dark:bg-[#242424]'
+                    : 'text-[#0d0d0d] hover:bg-[rgb(245,245,245)] dark:hover:bg-[#242424]'
+                }`}
               >
                 <AgentManageIcon />
                 <span>智能体管理</span>
@@ -3683,11 +3761,15 @@ const ChatPage: React.FC = () => {
 
       <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
         <div className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-5 dark:border-[#2f2f2f] dark:bg-[#212121]">
-          <ChatModelSelect
-            options={enabledModels.map((model) => ({ value: model.id, label: model.displayName }))}
-            value={effectiveSelectedModelId}
-            onChange={(value) => void handleModelChange(value)}
-          />
+          {isChatRoute ? (
+            <ChatModelSelect
+              options={enabledModels.map((model) => ({ value: model.id, label: model.displayName }))}
+              value={effectiveSelectedModelId}
+              onChange={(value) => void handleModelChange(value)}
+            />
+          ) : (
+            <h1 className="text-lg font-semibold text-[#0d0d0d] dark:text-slate-100">{topBarTitle}</h1>
+          )}
 
           <div className="ml-auto flex items-center gap-1">
             <button
@@ -3770,285 +3852,293 @@ const ChatPage: React.FC = () => {
           </div>
         </div>
 
-        <div
-          ref={messagesContainerRef}
-          onScroll={handleMessagesScroll}
-          onWheel={handleMessagesWheel}
-          className="flex-1 overflow-y-auto px-4 pb-4 pt-6"
-        >
-          {!currentSessionId ? (
-            <div className="mx-auto mt-24 max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100">
-              <h2 className="mb-3 text-[30px] font-semibold tracking-tight">今天想聊点什么？</h2>
-              <p className="text-sm">选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。</p>
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="mx-auto mt-24 max-w-2xl rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-[#212121] dark:text-slate-400">
-              <p className="text-lg">会话已创建</p>
-              <p className="mt-2 text-sm">输入你的问题，或拖拽/上传图片开始对话。</p>
-            </div>
-          ) : (
-            <div className="space-y-7 pb-3">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  data-message-id={message.id}
-                  className={`rounded-2xl transition-[background-color,box-shadow] duration-500 ${
-                    highlightedMessageId === message.id
-                      ? 'bg-amber-50/70 shadow-[0_0_0_1px_rgba(245,158,11,0.35)] dark:bg-amber-500/10 dark:shadow-[0_0_0_1px_rgba(251,191,36,0.45)]'
-                      : ''
-                  }`}
-                >
-                  <MessageCard
-                    message={message}
-                    isStreaming={activeStreamingMessageId === message.id}
-                    copied={copiedMessageId === message.id}
-                    sessionTitle={currentSession?.title ?? null}
-                    assistantProfile={resolveMessageAssistantProfile(message)}
-                    onCopy={handleCopyMessage}
-                    onBranch={handleBranchMessage}
-                    onDelete={handleDeleteMessage}
-                    onSelectForAction={handleSelectForAction}
-                    onAddToAppCenter={handleOpenSaveCodeBlock}
-                    savedSourceKeySet={appSourceKeySet}
-                  />
+        {isChatRoute ? (
+          <>
+            <div
+              ref={messagesContainerRef}
+              onScroll={handleMessagesScroll}
+              onWheel={handleMessagesWheel}
+              className="flex-1 overflow-y-auto px-4 pb-4 pt-6"
+            >
+              {!currentSessionId ? (
+                <div className="mx-auto mt-24 max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100">
+                  <h2 className="mb-3 text-[30px] font-semibold tracking-tight">今天想聊点什么？</h2>
+                  <p className="text-sm">选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。</p>
                 </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
-        </div>
-
-        <div className="bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]">
-          <div className="mx-auto max-w-[860px]">
-            {error && (
-              <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
-                {error}
-              </div>
-            )}
-
-            {pendingImages.length > 0 && (
-              <div className="mb-3 flex flex-wrap gap-2">
-                {pendingImages.map((image, index) => (
-                  <div key={`${image.slice(0, 32)}-${index}`} className="relative">
-                    <img
-                      src={image}
-                      alt={`待发送图片-${index + 1}`}
-                      className="h-16 w-16 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
-                    />
-                    <button
-                      onClick={() => setPendingImages((prev) => prev.filter((_, i) => i !== index))}
-                      className="absolute -right-1 -top-1 rounded-full bg-slate-900 px-1 text-xs text-white"
-                      type="button"
+              ) : messages.length === 0 ? (
+                <div className="mx-auto mt-24 max-w-2xl rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-[#212121] dark:text-slate-400">
+                  <p className="text-lg">会话已创建</p>
+                  <p className="mt-2 text-sm">输入你的问题，或拖拽/上传图片开始对话。</p>
+                </div>
+              ) : (
+                <div className="space-y-7 pb-3">
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      data-message-id={message.id}
+                      className={`rounded-2xl transition-[background-color,box-shadow] duration-500 ${
+                        highlightedMessageId === message.id
+                          ? 'bg-amber-50/70 shadow-[0_0_0_1px_rgba(245,158,11,0.35)] dark:bg-amber-500/10 dark:shadow-[0_0_0_1px_rgba(251,191,36,0.45)]'
+                          : ''
+                      }`}
                     >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {!selectedModel?.supportsVision && pendingImages.length > 0 && (
-              <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">当前模型不支持图片输入，发送时会报错，请切换视觉模型。</p>
-            )}
-
-            <div className="rounded-[30px] border border-[rgb(208,208,208)] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
-              {quotedSelection && (
-                <div className="mb-2 flex items-start gap-2 rounded-2xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-[#3a3a3a] dark:text-slate-200">
-                  <span className="mt-0.5 shrink-0 text-slate-500 dark:text-slate-400">
-                    <QuoteContextIcon />
-                  </span>
-                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                    “{quotedSelection.text}”
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setQuotedSelection(null)}
-                    className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-[#444444] dark:hover:text-slate-100"
-                    title="移除引用"
-                  >
-                    ×
-                  </button>
+                      <MessageCard
+                        message={message}
+                        isStreaming={activeStreamingMessageId === message.id}
+                        copied={copiedMessageId === message.id}
+                        sessionTitle={currentSession?.title ?? null}
+                        assistantProfile={resolveMessageAssistantProfile(message)}
+                        onCopy={handleCopyMessage}
+                        onBranch={handleBranchMessage}
+                        onDelete={handleDeleteMessage}
+                        onSelectForAction={handleSelectForAction}
+                        onAddToAppCenter={handleOpenSaveCodeBlock}
+                        savedSourceKeySet={appSourceKeySet}
+                      />
+                    </div>
+                  ))}
+                  <div ref={messagesEndRef} />
                 </div>
               )}
+            </div>
 
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                onCompositionStart={() => {
-                  composingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  composingRef.current = false;
-                }}
-                onPaste={(event) => void handlePaste(event)}
-                placeholder="输入消息，Enter 发送，Shift + Enter 换行"
-                rows={1}
-                disabled={streaming}
-                className="w-full resize-none border-none bg-transparent text-sm leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100"
-              />
-
-              <div className="mt-2 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="relative" ref={addMenuRef}>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                      onChange={(event) => void handleUploadImages(event)}
-                    />
-
-                    <button
-                      onClick={() => {
-                        setAddMenuOpen((prev) => !prev);
-                        setAddMenuAgentOpen(false);
-                        setAgentPickerOpen(false);
-                      }}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                      type="button"
-                      title="更多"
-                    >
-                      <PlusIcon />
-                    </button>
-
-                    {addMenuOpen && (
-                      <div className="absolute bottom-11 left-0 z-30 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
-                        <button
-                          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-                          onClick={() => {
-                            fileInputRef.current?.click();
-                            setAddMenuOpen(false);
-                            setAddMenuAgentOpen(false);
-                          }}
-                          type="button"
-                        >
-                          <UploadIcon />
-                          <span>上传图片</span>
-                        </button>
-
-                        <button
-                          className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-                          onClick={() => setAddMenuAgentOpen((prev) => !prev)}
-                          onMouseEnter={() => setAddMenuAgentOpen(true)}
-                          type="button"
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            <SparkIcon />
-                            选择智能体
-                          </span>
-                          <ChevronRightIcon className="h-4 w-4 text-slate-400" />
-                        </button>
-
-                        {addMenuAgentOpen && (
-                          <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
-                            {visibleAgents.map((agent) => (
-                              <button
-                                key={agent.id}
-                                onClick={() => void handleSelectAgent(agent.id)}
-                                className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
-                                  activeAgentId === agent.id
-                                    ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                                    : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
-                                }`}
-                                type="button"
-                              >
-                                <span className="inline-flex items-center gap-2">
-                                  <SparkIcon />
-                                  {agent.name}
-                                </span>
-                                {activeAgentId === agent.id && <CheckIcon />}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
+            <div className="bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]">
+              <div className="mx-auto max-w-[860px]">
+                {error && (
+                  <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+                    {error}
                   </div>
+                )}
 
-                  {activeAgent && (
-                    <div className="relative" ref={agentPickerRef}>
+                {pendingImages.length > 0 && (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {pendingImages.map((image, index) => (
+                      <div key={`${image.slice(0, 32)}-${index}`} className="relative">
+                        <img
+                          src={image}
+                          alt={`待发送图片-${index + 1}`}
+                          className="h-16 w-16 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
+                        />
+                        <button
+                          onClick={() => setPendingImages((prev) => prev.filter((_, i) => i !== index))}
+                          className="absolute -right-1 -top-1 rounded-full bg-slate-900 px-1 text-xs text-white"
+                          type="button"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!selectedModel?.supportsVision && pendingImages.length > 0 && (
+                  <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">当前模型不支持图片输入，发送时会报错，请切换视觉模型。</p>
+                )}
+
+                <div className="rounded-[30px] border border-[rgb(208,208,208)] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
+                  {quotedSelection && (
+                    <div className="mb-2 flex items-start gap-2 rounded-2xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-[#3a3a3a] dark:text-slate-200">
+                      <span className="mt-0.5 shrink-0 text-slate-500 dark:text-slate-400">
+                        <QuoteContextIcon />
+                      </span>
+                      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                        “{quotedSelection.text}”
+                      </p>
                       <button
-                        className="inline-flex h-9 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 text-xs text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-200 dark:hover:bg-[#2d2d2d]"
                         type="button"
-                        onClick={() => {
-                          setAgentPickerOpen((prev) => !prev);
-                          setAddMenuOpen(false);
-                          setAddMenuAgentOpen(false);
-                        }}
-                        title="切换智能体"
+                        onClick={() => setQuotedSelection(null)}
+                        className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-[#444444] dark:hover:text-slate-100"
+                        title="移除引用"
                       >
-                        <SparkIcon />
-                        <span>{activeAgent.name}</span>
-                        <ChevronDownIcon className={`h-3.5 w-3.5 text-slate-400 transition-transform ${agentPickerOpen ? 'rotate-180' : ''}`} />
+                        ×
                       </button>
+                    </div>
+                  )}
 
-                      {agentPickerOpen && (
-                        <div className="absolute bottom-10 left-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
-                          {visibleAgents.map((agent) => (
+                  <textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    onCompositionStart={() => {
+                      composingRef.current = true;
+                    }}
+                    onCompositionEnd={() => {
+                      composingRef.current = false;
+                    }}
+                    onPaste={(event) => void handlePaste(event)}
+                    placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                    rows={1}
+                    disabled={streaming}
+                    className="w-full resize-none border-none bg-transparent text-sm leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100"
+                  />
+
+                  <div className="mt-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="relative" ref={addMenuRef}>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={(event) => void handleUploadImages(event)}
+                        />
+
+                        <button
+                          onClick={() => {
+                            setAddMenuOpen((prev) => !prev);
+                            setAddMenuAgentOpen(false);
+                            setAgentPickerOpen(false);
+                          }}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                          type="button"
+                          title="更多"
+                        >
+                          <PlusIcon />
+                        </button>
+
+                        {addMenuOpen && (
+                          <div className="absolute bottom-11 left-0 z-30 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
                             <button
-                              key={agent.id}
-                              onClick={() => void handleSelectAgent(agent.id)}
-                              className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
-                                activeAgentId === agent.id
-                                  ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                                  : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
-                              }`}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+                              onClick={() => {
+                                fileInputRef.current?.click();
+                                setAddMenuOpen(false);
+                                setAddMenuAgentOpen(false);
+                              }}
+                              type="button"
+                            >
+                              <UploadIcon />
+                              <span>上传图片</span>
+                            </button>
+
+                            <button
+                              className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+                              onClick={() => setAddMenuAgentOpen((prev) => !prev)}
+                              onMouseEnter={() => setAddMenuAgentOpen(true)}
                               type="button"
                             >
                               <span className="inline-flex items-center gap-2">
                                 <SparkIcon />
-                                {agent.name}
+                                选择智能体
                               </span>
-                              {activeAgentId === agent.id && <CheckIcon />}
+                              <ChevronRightIcon className="h-4 w-4 text-slate-400" />
                             </button>
-                          ))}
+
+                            {addMenuAgentOpen && (
+                              <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                                {visibleAgents.map((agent) => (
+                                  <button
+                                    key={agent.id}
+                                    onClick={() => void handleSelectAgent(agent.id)}
+                                    className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                      activeAgentId === agent.id
+                                        ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                        : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                    }`}
+                                    type="button"
+                                  >
+                                    <span className="inline-flex items-center gap-2">
+                                      <SparkIcon />
+                                      {agent.name}
+                                    </span>
+                                    {activeAgentId === agent.id && <CheckIcon />}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {activeAgent && (
+                        <div className="relative" ref={agentPickerRef}>
+                          <button
+                            className="inline-flex h-9 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 text-xs text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-200 dark:hover:bg-[#2d2d2d]"
+                            type="button"
+                            onClick={() => {
+                              setAgentPickerOpen((prev) => !prev);
+                              setAddMenuOpen(false);
+                              setAddMenuAgentOpen(false);
+                            }}
+                            title="切换智能体"
+                          >
+                            <SparkIcon />
+                            <span>{activeAgent.name}</span>
+                            <ChevronDownIcon className={`h-3.5 w-3.5 text-slate-400 transition-transform ${agentPickerOpen ? 'rotate-180' : ''}`} />
+                          </button>
+
+                          {agentPickerOpen && (
+                            <div className="absolute bottom-10 left-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                              {visibleAgents.map((agent) => (
+                                <button
+                                  key={agent.id}
+                                  onClick={() => void handleSelectAgent(agent.id)}
+                                  className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                    activeAgentId === agent.id
+                                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                  }`}
+                                  type="button"
+                                >
+                                  <span className="inline-flex items-center gap-2">
+                                    <SparkIcon />
+                                    {agent.name}
+                                  </span>
+                                  {activeAgentId === agent.id && <CheckIcon />}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
+
+                    <div className="flex items-center gap-2">
+                      <ContextUsageIndicator stats={contextStats} loading={contextStatsLoading} />
+                      {streaming ? (
+                        <button
+                          onClick={() => void stopStreaming()}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
+                          title="停止生成"
+                          type="button"
+                        >
+                          <svg className="h-[18px] w-[18px]" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="3.5" y="3.5" width="13" height="13" rx="2.2" fill="currentColor" />
+                          </svg>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => void handleSend()}
+                          disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
+                          title="发送"
+                          type="button"
+                        >
+                          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M10 3L10 15M10 3L5 8M10 3L15 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <ContextUsageIndicator stats={contextStats} loading={contextStatsLoading} />
-                  {streaming ? (
-                    <button
-                      onClick={() => void stopStreaming()}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
-                      title="停止生成"
-                      type="button"
-                    >
-                      <svg className="h-[18px] w-[18px]" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="3.5" y="3.5" width="13" height="13" rx="2.2" fill="currentColor" />
-                      </svg>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => void handleSend()}
-                      disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
-                      title="发送"
-                      type="button"
-                    >
-                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M10 3L10 15M10 3L5 8M10 3L15 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
+                <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500">
+                  AI 可能会犯错，请注意核验关键信息
+                </p>
               </div>
             </div>
-
-            <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500">
-              AI 可能会犯错，请注意核验关键信息
-            </p>
+          </>
+        ) : (
+          <div className="flex-1 overflow-hidden">
+            {pageMode === 'models' ? <ModelsPage /> : pageMode === 'agents' ? <AgentsPage /> : <AppsPage />}
           </div>
-        </div>
+        )}
       </main>
 
-      {selectionAction && (
+      {isChatRoute && selectionAction && (
         <button
           type="button"
           onMouseDown={(event) => {
