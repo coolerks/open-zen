@@ -10,6 +10,11 @@
   --app-text-light: rgb(13, 13, 13);
   --app-text-dark: #f8fafc;
   --app-placeholder: rgb(143, 143, 143);
+  --app-soft-249: rgb(249, 249, 249);
+  --app-soft-245: rgb(245, 245, 245);
+  --app-soft-236: rgb(236, 236, 236);
+  --app-border-209: rgb(209, 209, 209);
+  --app-disabled-217: rgb(217, 217, 217);
 }
 
 * {
@@ -248,7 +253,7 @@ pre,
 
 .chat-markdown code {
   border-radius: 0.35rem;
-  background: #f1f5f9;
+  background: var(--app-soft-236);
   padding: 0.15rem 0.38rem;
   font-size: 0.86em;
 }
@@ -257,11 +262,16 @@ pre,
   background: #1f2937;
 }
 
+.dark .chat-markdown pre {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
 .chat-markdown pre {
   overflow-x: auto;
   border-radius: 0.8rem;
-  background: #0f172a;
-  color: #f8fafc;
+  background: var(--app-soft-249);
+  color: rgb(13, 13, 13);
   padding: 0.85rem;
 }
 
@@ -273,9 +283,9 @@ pre,
 
 .chat-code-block {
   margin: 0 0 0.85rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--app-border-209);
   border-radius: 0.8rem;
-  background: #f8fafc;
+  background: var(--app-soft-249);
 }
 
 .chat-code-toolbar {
@@ -283,7 +293,7 @@ pre,
   align-items: center;
   justify-content: space-between;
   border-radius: 0.8rem 0.8rem 0 0;
-  background: #f8fafc;
+  background: var(--app-soft-249);
   padding: 0.34rem 0.52rem;
 }
 

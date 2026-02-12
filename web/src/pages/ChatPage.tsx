@@ -1600,15 +1600,15 @@ const SidebarAppsIcon: React.FC = () => (
 
 const CollapseIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M7.5 5L2.5 10L7.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M17 4V16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <rect x="2.8" y="3.2" width="14.4" height="13.6" rx="3.8" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M7.6 4.6V15.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
   </svg>
 );
 
 const ExpandIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M12.5 5L17.5 10L12.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M3 4V16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <rect x="2.8" y="3.2" width="14.4" height="13.6" rx="3.8" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M7.6 4.6V15.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
   </svg>
 );
 
@@ -1898,9 +1898,9 @@ const SessionItem: React.FC<{
         </button>
 
         {menuOpen && (
-          <div className="absolute right-0 top-9 z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
+          <div className="absolute right-0 top-9 z-40 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
               onClick={() => {
                 setMenuOpen(false);
                 onAbout();
@@ -1911,7 +1911,7 @@ const SessionItem: React.FC<{
               <span>关于此聊天</span>
             </button>
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
               onClick={() => {
                 setMenuOpen(false);
                 onRename();
@@ -1922,7 +1922,7 @@ const SessionItem: React.FC<{
               <span>重命名</span>
             </button>
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#0d0d0d] hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
               onClick={() => {
                 setMenuOpen(false);
                 onCopy();
@@ -2193,7 +2193,7 @@ const ChatModelSelect: React.FC<{
 
       {open && (
         <div
-          className="absolute top-12 z-40 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]"
+          className="absolute top-12 z-40 overflow-hidden rounded-xl border border-[rgb(209,209,209)] bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]"
           style={{ width: `${selectWidth}px` }}
         >
           <div className="px-2 pb-1 pt-1">
@@ -2201,7 +2201,7 @@ const ChatModelSelect: React.FC<{
               ref={searchInputRef}
               value={searchKeyword}
               onChange={(event) => setSearchKeyword(event.target.value)}
-              className="h-8 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
+              className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white px-2.5 text-sm text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
               placeholder="搜索模型..."
             />
           </div>
@@ -2213,8 +2213,8 @@ const ChatModelSelect: React.FC<{
                   key={option.value}
                 className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
                   active
-                    ? 'bg-slate-100 text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                    : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]'
+                    ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                    : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
                 }`}
                 type="button"
                   onClick={() => {
@@ -2411,7 +2411,7 @@ const MessageCardBase: React.FC<{
         <details
           open={reasoningOpen}
           onToggle={(event) => setReasoningOpen(event.currentTarget.open)}
-          className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
+          className="mb-3 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
         >
           <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{reasoningSummary}</summary>
           <div className="mt-2 whitespace-pre-wrap text-slate-500 dark:text-slate-400">{reasoning}</div>
@@ -2651,6 +2651,7 @@ const ChatPage: React.FC = () => {
   const copiedTimerRef = useRef<number | null>(null);
   const composingRef = useRef(false);
   const routeSessionSelectingRef = useRef(false);
+  const routeSessionAttemptedRef = useRef<number | null>(null);
   const routeMessageJumpRef = useRef<string | null>(null);
   const routeMessageJumpTimerRef = useRef<number | null>(null);
   const shareCopiedTimerRef = useRef<number | null>(null);
@@ -2799,15 +2800,31 @@ const ChatPage: React.FC = () => {
   }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems]);
 
   useEffect(() => {
+    // 路由会话 ID 变化后，允许对新 ID 重新尝试加载一次。
+    routeSessionAttemptedRef.current = null;
+  }, [routeSessionId]);
+
+  useEffect(() => {
     if (routeSessionId == null) {
       routeSessionSelectingRef.current = false;
+      routeSessionAttemptedRef.current = null;
       return;
     }
     if (currentSessionId === routeSessionId) {
       routeSessionSelectingRef.current = false;
+      routeSessionAttemptedRef.current = routeSessionId;
       return;
     }
+    if (routeSessionSelectingRef.current) {
+      return;
+    }
+    if (routeSessionAttemptedRef.current === routeSessionId) {
+      // 同一路由 ID 已尝试过，避免在“会话不存在/加载失败”时循环请求。
+      return;
+    }
+
     routeSessionSelectingRef.current = true;
+    routeSessionAttemptedRef.current = routeSessionId;
     void selectSession(routeSessionId).finally(() => {
       routeSessionSelectingRef.current = false;
     });
@@ -3530,14 +3547,14 @@ const ChatPage: React.FC = () => {
   return (
     <div className="flex h-full bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
       <aside
-        className={`${sidebarCollapsed ? 'w-[72px]' : 'w-[260px]'} flex shrink-0 flex-col border-r border-slate-200 bg-[#f5f5f5] py-3 pr-0 transition-[width] duration-200 dark:border-[#2f2f2f] dark:bg-[#171717]`}
+        className={`${sidebarCollapsed ? 'w-[52px] bg-white dark:bg-[#171717]' : 'w-[260px] bg-[#f5f5f5] dark:bg-[#171717]'} flex shrink-0 flex-col border-r border-slate-200 py-3 pr-0 transition-[width] duration-200 dark:border-[#2f2f2f]`}
       >
-        <div className={`mb-2 flex items-center ${sidebarCollapsed ? 'justify-center pr-3' : 'justify-between pl-[6px] pr-[10px]'}`}>
+        <div className={`mb-2 flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between pl-[6px] pr-[10px]'}`}>
           {!sidebarCollapsed && (
             <p className="truncate text-sm pl-3 font-medium text-[#0d0d0d] dark:text-slate-200">Open Zen</p>
           )}
           <button
-            className="rounded-lg p-2 text-[#8f8f8f] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a]"
+            className="rounded-lg p-2 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a]"
             onClick={() => setSidebarCollapsed((prev) => !prev)}
             title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
             type="button"
@@ -3546,7 +3563,7 @@ const ChatPage: React.FC = () => {
           </button>
         </div>
 
-        <div className="mb-3 space-y-1">
+        <div className={`mb-3 space-y-1 ${sidebarCollapsed ? 'flex flex-col items-center' : ''}`}>
           <button
             className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
               sidebarCollapsed
@@ -3576,38 +3593,42 @@ const ChatPage: React.FC = () => {
         </div>
 
         {!sidebarCollapsed && (
-          <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">
-            聊天
-          </p>
+          <>
+            <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">
+              聊天
+            </p>
+
+            <div className="chat-sidebar-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0">
+              {sessions.map((session) => (
+                <SessionItem
+                  key={session.id}
+                  session={session}
+                  collapsed={sidebarCollapsed}
+                  active={currentSessionId === session.id}
+                  onSelect={() => navigate(`/chat/${session.id}`)}
+                  onAbout={() => void handleOpenSessionAbout(session)}
+                  onRename={() => setRenameDialog({ open: true, session, title: session.title })}
+                  onCopy={() =>
+                    setCopyDialog({
+                      open: true,
+                      session,
+                      title: `${session.title}（副本）`,
+                    })
+                  }
+                  onDelete={() => setDeleteSessionTarget(session)}
+                />
+              ))}
+
+              {sessions.length === 0 && (
+                <div className="mx-[6px] rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-[#8f8f8f] dark:border-slate-700">
+                  还没有会话，点击上方按钮开始
+                </div>
+              )}
+            </div>
+          </>
         )}
 
-        <div className="chat-sidebar-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0">
-          {sessions.map((session) => (
-            <SessionItem
-              key={session.id}
-              session={session}
-              collapsed={sidebarCollapsed}
-              active={currentSessionId === session.id}
-              onSelect={() => navigate(`/chat/${session.id}`)}
-              onAbout={() => void handleOpenSessionAbout(session)}
-              onRename={() => setRenameDialog({ open: true, session, title: session.title })}
-              onCopy={() =>
-                setCopyDialog({
-                  open: true,
-                  session,
-                  title: `${session.title}（副本）`,
-                })
-              }
-              onDelete={() => setDeleteSessionTarget(session)}
-            />
-          ))}
-
-          {sessions.length === 0 && !sidebarCollapsed && (
-            <div className="mx-[6px] rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-[#8f8f8f] dark:border-slate-700">
-              还没有会话，点击上方按钮开始
-            </div>
-          )}
-        </div>
+        {sidebarCollapsed && <div className="flex-1" />}
 
         <div
           ref={sidebarSettingsRef}
@@ -3635,14 +3656,14 @@ const ChatPage: React.FC = () => {
 
           {sidebarSettingsOpen && (
             <div
-              className={`absolute z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f] ${
+              className={`absolute z-40 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f] ${
                 sidebarCollapsed ? 'bottom-0 left-[calc(100%+8px)]' : 'bottom-11 left-0'
               }`}
             >
               <Link
                 to="/models"
                 onClick={() => setSidebarSettingsOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
               >
                 <ModelManageIcon />
                 <span>模型管理</span>
@@ -3650,7 +3671,7 @@ const ChatPage: React.FC = () => {
               <Link
                 to="/agents"
                 onClick={() => setSidebarSettingsOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-[#0d0d0d] transition-colors hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
               >
                 <AgentManageIcon />
                 <span>智能体管理</span>
@@ -3692,7 +3713,7 @@ const ChatPage: React.FC = () => {
               </button>
 
               {headerMoreOpen && (
-                <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
+                <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
                   <button
                     type="button"
                     onClick={() => {
@@ -3700,7 +3721,7 @@ const ChatPage: React.FC = () => {
                       handleExportPdf();
                     }}
                     disabled={!canExportCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
                   >
                     <ExportPdfIcon />
                     <span>导出 PDF</span>
@@ -3712,7 +3733,7 @@ const ChatPage: React.FC = () => {
                       handleExportMarkdown();
                     }}
                     disabled={!canExportCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
                   >
                     <ExportMarkdownIcon />
                     <span>导出 Markdown</span>
@@ -3723,7 +3744,7 @@ const ChatPage: React.FC = () => {
                       void handleShareCurrentSession();
                     }}
                     disabled={!hasCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
                   >
                     <ShareIcon />
                     <span>{shareCopied ? '链接已复制' : '分享'}</span>
@@ -3894,9 +3915,9 @@ const ChatPage: React.FC = () => {
                     </button>
 
                     {addMenuOpen && (
-                      <div className="absolute bottom-11 left-0 z-30 min-w-[180px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                      <div className="absolute bottom-11 left-0 z-30 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
                         <button
-                          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
                           onClick={() => {
                             fileInputRef.current?.click();
                             setAddMenuOpen(false);
@@ -3909,7 +3930,7 @@ const ChatPage: React.FC = () => {
                         </button>
 
                         <button
-                          className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]"
+                          className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
                           onClick={() => setAddMenuAgentOpen((prev) => !prev)}
                           onMouseEnter={() => setAddMenuAgentOpen(true)}
                           type="button"
@@ -3922,15 +3943,15 @@ const ChatPage: React.FC = () => {
                         </button>
 
                         {addMenuAgentOpen && (
-                          <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                          <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
                             {visibleAgents.map((agent) => (
                               <button
                                 key={agent.id}
                                 onClick={() => void handleSelectAgent(agent.id)}
                                 className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
                                   activeAgentId === agent.id
-                                    ? 'bg-slate-100 text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                                    : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]'
+                                    ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                    : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
                                 }`}
                                 type="button"
                               >
@@ -3965,15 +3986,15 @@ const ChatPage: React.FC = () => {
                       </button>
 
                       {agentPickerOpen && (
-                        <div className="absolute bottom-10 left-0 z-40 min-w-[220px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                        <div className="absolute bottom-10 left-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
                           {visibleAgents.map((agent) => (
                             <button
                               key={agent.id}
                               onClick={() => void handleSelectAgent(agent.id)}
                               className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
                                 activeAgentId === agent.id
-                                  ? 'bg-slate-100 text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-[#242424]'
+                                  ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                  : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
                               }`}
                               type="button"
                             >
@@ -4007,7 +4028,7 @@ const ChatPage: React.FC = () => {
                     <button
                       onClick={() => void handleSend()}
                       disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
                       title="发送"
                       type="button"
                     >

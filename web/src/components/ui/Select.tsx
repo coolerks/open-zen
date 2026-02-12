@@ -132,16 +132,16 @@ export const Select: React.FC<SelectProps> = ({
 
         {open && (
           <div
-            className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-md border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800"
+            className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-md border border-[rgb(209,209,209)] bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800"
             role="listbox"
           >
             {searchable && (
-              <div className="border-b border-gray-200 p-2 dark:border-gray-700">
+              <div className="border-b border-[rgb(209,209,209)] p-2 dark:border-gray-700">
                 <input
                   ref={searchInputRef}
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
-                  className="h-8 w-full rounded-md border border-gray-200 bg-white px-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                  className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white px-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
                   placeholder={searchPlaceholder}
                 />
               </div>
@@ -162,8 +162,8 @@ export const Select: React.FC<SelectProps> = ({
                       }}
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
                         active
-                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700'
+                          ? 'bg-[rgb(245,245,245)] text-[#0d0d0d] dark:bg-blue-900/30 dark:text-blue-300'
+                          : 'text-gray-700 hover:bg-[rgb(245,245,245)] dark:text-gray-200 dark:hover:bg-gray-700'
                       }`}
                       role="option"
                       aria-selected={active}
@@ -171,7 +171,7 @@ export const Select: React.FC<SelectProps> = ({
                       <span className="min-w-0 flex-1 truncate">{option.label}</span>
                       <div className="ml-auto flex shrink-0 items-center gap-2">
                         {option.meta && (
-                          <span className={`text-[11px] ${active ? 'text-blue-500 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'}`}>
+                          <span className={`text-[11px] ${active ? 'text-[#0d0d0d] dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'}`}>
                             {option.meta}
                           </span>
                         )}
