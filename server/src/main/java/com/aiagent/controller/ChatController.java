@@ -68,6 +68,14 @@ public class ChatController {
         return ApiResult.ok();
     }
 
+    @PostMapping("/sessions/{id}/auto-title")
+    public ApiResult<ChatSession> autoGenerateSessionTitle(@PathVariable Long id,
+                                                           @RequestBody(required = false) ChatSessionAutoTitleRequest request) {
+        Long modelId = request != null ? request.getModelId() : null;
+        String firstQuestion = request != null ? request.getFirstQuestion() : null;
+        return ApiResult.ok(chatService.autoGenerateSessionTitle(id, modelId, firstQuestion));
+    }
+
     @GetMapping("/sessions/{sessionId}/messages")
     public ApiResult<List<ChatMessage>> getMessages(@PathVariable Long sessionId) {
         return ApiResult.ok(chatService.getMessages(sessionId));

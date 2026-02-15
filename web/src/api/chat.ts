@@ -72,6 +72,8 @@ export const chatApi = {
     post<ChatSession>(`/chat/sessions/${id}/copy`, { title }),
   branchSession: (id: number, messageId: number, title?: string) =>
     post<ChatSession>(`/chat/sessions/${id}/branch`, { messageId, title }),
+  autoGenerateTitle: (sessionId: number, data: { modelId?: number; firstQuestion?: string }) =>
+    post<ChatSession>(`/chat/sessions/${sessionId}/auto-title`, data),
   updateSession: (id: number, data: ChatSessionUpdateRequest) =>
     patch<void>(`/chat/sessions/${id}`, data),
   updateSessionTitle: (id: number, title: string) =>

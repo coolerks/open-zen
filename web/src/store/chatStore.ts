@@ -37,6 +37,7 @@ interface ChatState {
 const STREAM_RENDER_INTERVAL_MS = 32;
 const STREAM_RENDER_MIN_CHARS = 2;
 const STREAM_RENDER_MAX_CHARS = 48;
+const DEFAULT_SESSION_TITLE = '新会话';
 
 function appendStreamField(original: string | null, delta: string): string {
   return `${original ?? ''}${delta}`;
@@ -49,6 +50,13 @@ function resolveStreamStepSize(queueLength: number): number {
   // 队列越长，单帧吐字越多，避免大段积压后明显延迟。
   const dynamicStep = Math.ceil(queueLength / 24);
   return Math.min(STREAM_RENDER_MAX_CHARS, Math.max(STREAM_RENDER_MIN_CHARS, dynamicStep));
+}
+
+function isDefaultSessionTitle(title: string | null | undefined): boolean {
+  if (!title) {
+    return true;
+  }
+  return title.trim() === '' || title.trim() === DEFAULT_SESSION_TITLE;
 }
 
 let activeStreamAbortController: AbortController | null = null;
@@ -178,7 +186,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content, images = []) => {
-    const { currentSessionId, selectedModelId, messages } = get();
+    const { currentSessionId, selectedModelId, messages, currentSession } = get();
     if (!currentSessionId || !selectedModelId) {
       set({ error: '请先选择会话和模型' });
       return;
@@ -189,6 +197,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!normalizedContent && normalizedImages.length === 0) {
       return;
     }
+
+    const persistedUserMessageCount = messages.filter(
+      (item) => item.id > 0 && item.role === 'user',
+    ).length;
+    const shouldAutoGenerateTitle =
+      persistedUserMessageCount === 0 && isDefaultSessionTitle(currentSession?.title);
 
     const tempUserId = -Date.now();
     const tempAssistantId = tempUserId - 1;
@@ -250,6 +264,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...messages, optimisticUser, optimisticAssistant],
     });
     activeStreamAbortController = new AbortController();
+
+    if (shouldAutoGenerateTitle) {
+      // 标题生成独立调用后端，不阻塞首轮对话，也不影响主链路的成功/失败。
+      void chatApi.autoGenerateTitle(currentSessionId, {
+        modelId: selectedModelId,
+        firstQuestion: normalizedContent || undefined,
+      }).then((updatedSession) => {
+        set((state) => {
+          const nextTitle = updatedSession.title?.trim() ?? '';
+          const localCurrentTitle = state.currentSession?.title?.trim() ?? '';
+          // 防止并发回包把已有有效标题回退成“新会话”。
+          if (isDefaultSessionTitle(nextTitle) && !isDefaultSessionTitle(localCurrentTitle)) {
+            return state;
+          }
+          return {
+            currentSession:
+              state.currentSessionId === currentSessionId && state.currentSession
+                ? { ...state.currentSession, title: updatedSession.title }
+                : state.currentSession,
+            sessions: state.sessions.map((item) =>
+              item.id === currentSessionId ? { ...item, title: updatedSession.title } : item,
+            ),
+          };
+        });
+      }).catch(() => {
+        // 自动标题失败时静默降级，保持聊天流程无感知。
+      });
+    }
 
     const donePayloadHolder: { value: StreamDonePayload | null } = { value: null };
     const streamQueue = {

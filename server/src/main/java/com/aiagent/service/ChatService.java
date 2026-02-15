@@ -40,6 +40,8 @@ public class ChatService {
 
     private static final int MAX_TOOL_ROUNDS = 5;
     private static final int TITLE_MAX_LENGTH = 20;
+    private static final int TITLE_GENERATION_MAX_TOKENS = 960;
+    private static final double TITLE_GENERATION_TEMPERATURE = 0.2d;
     private static final String DEFAULT_ASSISTANT_NAME = "AI";
     private static final long DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000L;
     private static final int DEFAULT_RESERVED_OUTPUT_TOKENS = 4096;
@@ -287,6 +289,47 @@ public class ChatService {
         ChatSessionUpdateRequest request = new ChatSessionUpdateRequest();
         request.setTitle(title);
         updateSession(id, request);
+    }
+
+    /**
+     * 使用当前会话模型为会话生成标题。
+     * 该流程独立于聊天发送接口，失败时降级为首条问题截断标题，不影响主对话链路。
+     */
+    public ChatSession autoGenerateSessionTitle(Long sessionId, Long modelId, String firstQuestion) {
+        ChatSession session = getSession(sessionId);
+        if (!isDefaultSessionTitle(session.getTitle())) {
+            return session;
+        }
+
+        ChatMessage firstUserMessage = getFirstUserMessage(sessionId);
+        String baseQuestion = normalizeContent(firstQuestion);
+        if (baseQuestion == null && firstUserMessage != null) {
+            baseQuestion = normalizeContent(firstUserMessage.getContent());
+        }
+
+        List<String> firstImages = firstUserMessage != null
+                ? parseImages(firstUserMessage.getImageUrls())
+                : List.of();
+        String fallbackTitle = buildFallbackTitle(baseQuestion, firstImages);
+
+        String generatedTitle = null;
+        Long resolvedModelId = resolveTitleModelId(session, firstUserMessage, modelId);
+        if (resolvedModelId != null && baseQuestion != null) {
+            generatedTitle = generateTitleByModel(resolvedModelId, baseQuestion);
+        }
+
+        String finalTitle = normalizeGeneratedTitle(generatedTitle);
+        if (finalTitle == null) {
+            finalTitle = fallbackTitle;
+        }
+        if (finalTitle == null || finalTitle.isBlank()) {
+            finalTitle = "新会话";
+        }
+
+        session.setTitle(finalTitle);
+        session.setUpdatedAt(LocalDateTime.now());
+        sessionMapper.updateById(session);
+        return getSession(sessionId);
     }
 
     public List<ChatMessage> getMessages(Long sessionId) {
@@ -668,9 +711,9 @@ public class ChatService {
         }
 
         ChatSession session = getSession(request.getSessionId());
+        updateSessionModelOnly(session.getId(), model.getId());
         session.setModelId(model.getId());
         session.setUpdatedAt(LocalDateTime.now());
-        sessionMapper.updateById(session);
 
         CustomAgent agent = resolveSessionAgent(session.getAgentId());
 
@@ -684,8 +727,6 @@ public class ChatService {
         applyAgentSnapshot(userMessage, agent);
         userMessage.setCreatedAt(LocalDateTime.now());
         messageMapper.insert(userMessage);
-
-        applyAutoTitleIfNeeded(session, userMessage.getContent(), images);
 
         Map<String, Object> defaultParams = parseDefaultParams(model.getDefaultParams());
         if (!defaultParams.containsKey("max_tokens")
@@ -718,6 +759,80 @@ public class ChatService {
                 history,
                 compressionResult
         );
+    }
+
+    private ChatMessage getFirstUserMessage(Long sessionId) {
+        return messageMapper.selectOne(
+                new LambdaQueryWrapper<ChatMessage>()
+                        .eq(ChatMessage::getSessionId, sessionId)
+                        .eq(ChatMessage::getRole, "user")
+                        .orderByAsc(ChatMessage::getCreatedAt)
+                        .orderByAsc(ChatMessage::getId)
+                        .last("LIMIT 1")
+        );
+    }
+
+    private Long resolveTitleModelId(ChatSession session, ChatMessage firstUserMessage, Long requestModelId) {
+        if (requestModelId != null) {
+            return requestModelId;
+        }
+        if (session.getModelId() != null) {
+            return session.getModelId();
+        }
+        if (firstUserMessage != null && firstUserMessage.getModelId() != null) {
+            return firstUserMessage.getModelId();
+        }
+        return aiModelService.resolvePreferredEnabledModelId();
+    }
+
+    private String generateTitleByModel(Long modelId, String firstQuestion) {
+        try {
+            AiModel model = aiModelService.getEntityById(modelId);
+            if (!Boolean.TRUE.equals(model.getEnabled())) {
+                return null;
+            }
+            Provider provider = providerService.getEntityById(model.getProviderId());
+            if (!Boolean.TRUE.equals(provider.getEnabled())) {
+                return null;
+            }
+            String apiKey = encryptionUtil.decrypt(provider.getApiKey());
+
+            ChatCompletionRequest request = new ChatCompletionRequest();
+            request.setModel(model.getModelKey());
+            request.setStream(false);
+            request.setMessages(buildTitleMessages(firstQuestion));
+            request.setMaxTokens(TITLE_GENERATION_MAX_TOKENS);
+            request.setTemperature(TITLE_GENERATION_TEMPERATURE);
+
+            ChatCompletionResponse response = openRouterClient.chatCompletion(
+                    provider.getBaseUrl(),
+                    apiKey,
+                    request
+            );
+            if (response == null || response.getChoices() == null || response.getChoices().isEmpty()) {
+                return null;
+            }
+            ChatCompletionResponse.Choice choice = response.getChoices().get(0);
+            if (choice == null || choice.getMessage() == null) {
+                return null;
+            }
+            return normalizeContent(choice.getMessage().getContent());
+        } catch (Exception e) {
+            log.warn("自动生成标题失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private List<ChatCompletionRequest.Message> buildTitleMessages(String firstQuestion) {
+        ChatCompletionRequest.Message system = new ChatCompletionRequest.Message();
+        system.setRole("system");
+        system.setContent("你是一个会话标题生成器。直接输出最终标题，不要思考过程，不要解释，不要标点结尾，不要引号，长度不超过20个汉字。");
+
+        ChatCompletionRequest.Message user = new ChatCompletionRequest.Message();
+        user.setRole("user");
+        user.setContent("基于首个问题生成一个简短标题：\n" + firstQuestion);
+
+        return List.of(system, user);
     }
 
     private ChatSession createSessionInternal(String title,
@@ -881,27 +996,7 @@ public class ChatService {
         return content;
     }
 
-    private void applyAutoTitleIfNeeded(ChatSession session, String content, List<String> images) {
-        if (!isDefaultSessionTitle(session.getTitle())) {
-            return;
-        }
-
-        Long userMessageCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<ChatMessage>()
-                        .eq(ChatMessage::getSessionId, session.getId())
-                        .eq(ChatMessage::getRole, "user")
-        );
-        if (userMessageCount == null || userMessageCount != 1) {
-            return;
-        }
-
-        String autoTitle = generateAutoTitle(content, images);
-        session.setTitle(autoTitle);
-        session.setUpdatedAt(LocalDateTime.now());
-        sessionMapper.updateById(session);
-    }
-
-    private String generateAutoTitle(String content, List<String> images) {
+    private String buildFallbackTitle(String content, List<String> images) {
         String normalized = normalizeContent(content);
         if (normalized == null || normalized.isBlank()) {
             if (images != null && !images.isEmpty()) {
@@ -918,7 +1013,30 @@ public class ChatService {
         if (plainText.length() <= TITLE_MAX_LENGTH) {
             return plainText;
         }
-        return plainText.substring(0, TITLE_MAX_LENGTH) + "...";
+        return plainText.substring(0, TITLE_MAX_LENGTH);
+    }
+
+    private String normalizeGeneratedTitle(String generatedTitle) {
+        String normalized = normalizeContent(generatedTitle);
+        if (normalized == null) {
+            return null;
+        }
+        String singleLine = normalized
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replaceAll("\\s+", " ")
+                .replaceAll("^[\"'“”‘’《》【】「」]+", "")
+                .replaceAll("[\"'“”‘’《》【】「」]+$", "")
+                .replaceAll("^#+\\s*", "")
+                .trim();
+        if (singleLine.isBlank()) {
+            return null;
+        }
+        // 模型未遵循“仅输出标题”时，按长度直接判定不合格并走回退标题。
+        if (singleLine.length() > TITLE_MAX_LENGTH) {
+            return null;
+        }
+        return singleLine;
     }
 
     private String loadSystemPrompt(CustomAgent agent) {
@@ -1113,9 +1231,21 @@ public class ChatService {
     }
 
     private void touchSession(ChatSession session, Long modelId) {
+        // 仅更新模型与时间，避免并发时把旧 session 对象里的标题覆盖回去。
+        updateSessionModelOnly(session.getId(), modelId);
         session.setModelId(modelId);
         session.setUpdatedAt(LocalDateTime.now());
-        sessionMapper.updateById(session);
+    }
+
+    /**
+     * 会话局部更新：只写入模型与更新时间。
+     */
+    private void updateSessionModelOnly(Long sessionId, Long modelId) {
+        ChatSession patch = new ChatSession();
+        patch.setId(sessionId);
+        patch.setModelId(modelId);
+        patch.setUpdatedAt(LocalDateTime.now());
+        sessionMapper.updateById(patch);
     }
 
     private void sendEvent(SseEmitter emitter, String event, Object data) throws IOException {
