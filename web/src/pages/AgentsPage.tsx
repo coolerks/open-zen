@@ -48,7 +48,7 @@ const AgentsPage: React.FC = () => {
   }, [fetchAgents]);
 
   return (
-    <div className="flex-1 overflow-auto p-6">
+    <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-5xl">
         <div className="mb-4 flex items-center justify-end">
           <Button onClick={() => { setEditing(null); setDialogOpen(true); }}>新建智能体</Button>

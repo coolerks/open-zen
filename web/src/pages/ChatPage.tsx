@@ -4132,7 +4132,7 @@ const ChatPage: React.FC = () => {
             </div>
           </>
         ) : (
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-hidden">
             {pageMode === 'models' ? <ModelsPage /> : pageMode === 'agents' ? <AgentsPage /> : <AppsPage />}
           </div>
         )}

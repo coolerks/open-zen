@@ -102,7 +102,7 @@ const ModelsPage: React.FC = () => {
   const [tab, setTab] = useState<Tab>('providers');
 
   return (
-    <div className="flex-1 overflow-auto p-6">
+    <div className="h-full overflow-y-auto p-6">
       <div className="max-w-5xl mx-auto">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 border-b border-gray-200 dark:border-gray-700">
