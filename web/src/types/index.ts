@@ -115,6 +115,7 @@ export interface AppCenterItem {
   sourceModelName: string | null;
   language: string;
   codeContent: string;
+  originalCodeContent: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -131,12 +132,15 @@ export interface AppCenterItemCreateRequest {
   sourceModelName?: string;
   language: string;
   codeContent: string;
+  originalCodeContent?: string;
 }
 
 export interface AppCenterItemUpdateRequest {
   name: string;
   iconType?: 'emoji' | 'image';
   iconValue?: string;
+  codeContent?: string;
+  resetToOriginal?: boolean;
 }
 
 // 会话

@@ -38,6 +38,8 @@ public class AppCenterItem {
 
     private String codeContent;
 
+    private String originalCodeContent;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

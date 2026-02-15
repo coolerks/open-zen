@@ -31,6 +31,8 @@ public class AppCenterItemResponse {
 
     private String codeContent;
 
+    private String originalCodeContent;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;

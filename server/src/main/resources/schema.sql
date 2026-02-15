@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS app_center_item (
     source_model_name    VARCHAR(200),
     language             VARCHAR(40)  NOT NULL,
     code_content         CLOB         NOT NULL,
+    original_code_content CLOB,
     created_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -128,6 +129,10 @@ ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_model_id BIGINT;
 ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS source_model_name VARCHAR(200);
 ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS language VARCHAR(40);
 ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS code_content CLOB;
+ALTER TABLE app_center_item ADD COLUMN IF NOT EXISTS original_code_content CLOB;
+UPDATE app_center_item
+SET original_code_content = code_content
+WHERE original_code_content IS NULL;
 COMMENT ON TABLE app_center_item IS '应用中心条目表';
 COMMENT ON COLUMN app_center_item.id IS '主键 ID';
 COMMENT ON COLUMN app_center_item.name IS '应用名称';
@@ -141,6 +146,7 @@ COMMENT ON COLUMN app_center_item.source_model_id IS '来源模型 ID';
 COMMENT ON COLUMN app_center_item.source_model_name IS '来源模型名称快照';
 COMMENT ON COLUMN app_center_item.language IS '代码语言';
 COMMENT ON COLUMN app_center_item.code_content IS '应用源码（通常为 HTML）';
+COMMENT ON COLUMN app_center_item.original_code_content IS '应用初始源码快照（用于重置代码）';
 COMMENT ON COLUMN app_center_item.created_at IS '创建时间';
 COMMENT ON COLUMN app_center_item.updated_at IS '更新时间';
 CREATE UNIQUE INDEX IF NOT EXISTS uk_app_source_key ON app_center_item(source_key);

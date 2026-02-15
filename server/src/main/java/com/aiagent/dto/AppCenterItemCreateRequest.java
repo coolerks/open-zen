@@ -31,4 +31,7 @@ public class AppCenterItemCreateRequest {
 
     @NotBlank(message = "应用代码不能为空")
     private String codeContent;
+
+    // 可选：若未传，则后端自动使用 codeContent 作为原始快照。
+    private String originalCodeContent;
 }

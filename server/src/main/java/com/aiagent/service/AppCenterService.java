@@ -53,6 +53,11 @@ public class AppCenterService {
         item.setSourceModelName(normalizeText(request.getSourceModelName()));
         item.setLanguage(normalizeText(request.getLanguage()));
         item.setCodeContent(request.getCodeContent());
+        // 原始代码快照用于“重置代码”；未传时默认等于初始 codeContent。
+        String originalCodeContent = hasText(request.getOriginalCodeContent())
+                ? request.getOriginalCodeContent()
+                : request.getCodeContent();
+        item.setOriginalCodeContent(originalCodeContent);
         applyIcon(item, request.getIconType(), request.getIconValue());
         item.setCreatedAt(LocalDateTime.now());
         item.setUpdatedAt(LocalDateTime.now());
@@ -71,6 +76,13 @@ public class AppCenterService {
         AppCenterItem item = getEntityById(id);
         item.setName(normalizeText(request.getName()));
         applyIcon(item, request.getIconType(), request.getIconValue());
+        // resetToOriginal 优先级更高，便于前端“一键重置”。
+        if (Boolean.TRUE.equals(request.getResetToOriginal())) {
+            String originalCodeContent = item.getOriginalCodeContent();
+            item.setCodeContent(hasText(originalCodeContent) ? originalCodeContent : item.getCodeContent());
+        } else if (hasText(request.getCodeContent())) {
+            item.setCodeContent(request.getCodeContent());
+        }
         item.setUpdatedAt(LocalDateTime.now());
         appCenterItemMapper.updateById(item);
         return toResponse(item);
@@ -128,6 +140,10 @@ public class AppCenterService {
         return value;
     }
 
+    private boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
     private AppCenterItemResponse toResponse(AppCenterItem item) {
         AppCenterItemResponse response = new AppCenterItemResponse();
         response.setId(item.getId());
@@ -142,6 +158,7 @@ public class AppCenterService {
         response.setSourceModelName(item.getSourceModelName());
         response.setLanguage(item.getLanguage());
         response.setCodeContent(item.getCodeContent());
+        response.setOriginalCodeContent(item.getOriginalCodeContent());
         response.setCreatedAt(item.getCreatedAt());
         response.setUpdatedAt(item.getUpdatedAt());
         return response;

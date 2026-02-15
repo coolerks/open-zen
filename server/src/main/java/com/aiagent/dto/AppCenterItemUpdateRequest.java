@@ -12,4 +12,10 @@ public class AppCenterItemUpdateRequest {
     private String iconType;
 
     private String iconValue;
+
+    // 可选：更新后的应用代码内容。
+    private String codeContent;
+
+    // 可选：是否将 codeContent 重置为 originalCodeContent。
+    private Boolean resetToOriginal;
 }

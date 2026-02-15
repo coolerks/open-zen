@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import Editor, { DiffEditor } from '@monaco-editor/react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
 import { Input } from '../components/ui/Input';
 import { useAppCenterStore } from '../store/appCenterStore';
-import type { AppCenterItem, AppCenterItemUpdateRequest } from '../types';
+import { useThemeStore } from '../store/themeStore';
+import type { AppCenterItem, AppCenterItemCreateRequest, AppCenterItemUpdateRequest } from '../types';
 
 const APP_ICON_EMOJIS = ['🚀', '📊', '🧩', '🛠️', '💡', '🧠', '🌐', '📚', '🎨', '📦'];
 
@@ -26,6 +28,56 @@ function openHtmlPreview(codeContent: string): void {
     URL.revokeObjectURL(previewUrl);
   }, 60_000);
 }
+
+function createManualSourceKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `manual-${crypto.randomUUID()}`;
+  }
+  return `manual-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveMonacoLanguage(language: string): string {
+  const normalized = language.trim().toLowerCase();
+  if (!normalized) {
+    return 'html';
+  }
+  if (normalized === 'js') {
+    return 'javascript';
+  }
+  if (normalized === 'ts') {
+    return 'typescript';
+  }
+  if (normalized === 'yml') {
+    return 'yaml';
+  }
+  if (normalized === 'md') {
+    return 'markdown';
+  }
+  if (normalized === 'sh') {
+    return 'shell';
+  }
+  return normalized;
+}
+
+const DEFAULT_HTML_TEMPLATE = `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>我的应用</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        padding: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Hello App Center</h1>
+    <p>在这里编写你的 HTML 应用。</p>
+  </body>
+</html>
+`;
 
 const AppIconPreview: React.FC<{ item: Pick<AppCenterItem, 'iconType' | 'iconValue' | 'name'> }> = ({ item }) => {
   if (item.iconType === 'image' && item.iconValue) {
@@ -55,12 +107,493 @@ const LocateSourceIcon: React.FC = () => (
   </svg>
 );
 
+type IconMode = 'none' | 'emoji' | 'image';
+
+type AppEditorDialogProps = {
+  open: boolean;
+  mode: 'create' | 'edit';
+  theme: 'light' | 'dark';
+  item: AppCenterItem | null;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (payload: AppCenterItemCreateRequest | AppCenterItemUpdateRequest) => Promise<void>;
+};
+
+const AppEditorDialog: React.FC<AppEditorDialogProps> = ({
+  open,
+  mode,
+  theme,
+  item,
+  submitting,
+  onClose,
+  onSubmit,
+}) => {
+  const [name, setName] = useState('');
+  const [language, setLanguage] = useState('html');
+  const [codeContent, setCodeContent] = useState('');
+  const [lastSavedCodeContent, setLastSavedCodeContent] = useState('');
+  const [iconMode, setIconMode] = useState<IconMode>('none');
+  const [iconEmoji, setIconEmoji] = useState(APP_ICON_EMOJIS[0]);
+  const [iconImage, setIconImage] = useState('');
+  const [showDiff, setShowDiff] = useState(false);
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const iconInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    if (mode === 'create') {
+      setName('未命名应用');
+      setLanguage('html');
+      setCodeContent(DEFAULT_HTML_TEMPLATE);
+      setLastSavedCodeContent(DEFAULT_HTML_TEMPLATE);
+      setIconMode('none');
+      setIconEmoji(APP_ICON_EMOJIS[0]);
+      setIconImage('');
+      setShowDiff(false);
+      setEditorFullscreen(false);
+      setError(null);
+      return;
+    }
+
+    if (!item) {
+      return;
+    }
+
+    setName(item.name || '未命名应用');
+    setLanguage(item.language || 'html');
+    setCodeContent(item.codeContent || '');
+    // 记录“上次保存代码”作为 Diff 基线。
+    setLastSavedCodeContent(item.codeContent || '');
+    if (item.iconType === 'emoji' && item.iconValue) {
+      setIconMode('emoji');
+      setIconEmoji(item.iconValue);
+      setIconImage('');
+    } else if (item.iconType === 'image' && item.iconValue) {
+      setIconMode('image');
+      setIconImage(item.iconValue);
+      setIconEmoji(APP_ICON_EMOJIS[0]);
+    } else {
+      setIconMode('none');
+      setIconEmoji(APP_ICON_EMOJIS[0]);
+      setIconImage('');
+    }
+    setShowDiff(false);
+    setEditorFullscreen(false);
+    setError(null);
+  }, [open, mode, item]);
+
+  const handleResetCode = () => {
+    if (!item) {
+      return;
+    }
+    const originalCode = item.originalCodeContent ?? item.codeContent;
+    if (!originalCode) {
+      return;
+    }
+    setCodeContent(originalCode);
+    setError(null);
+  };
+
+  const handleImageSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+
+    void fileToDataUrl(file)
+      .then((dataUrl) => {
+        setIconMode('image');
+        setIconImage(dataUrl);
+        setError(null);
+      })
+      .catch((uploadError: any) => {
+        setError(uploadError?.message ?? '图标读取失败');
+      });
+  };
+
+  const isCodeDirtyFromOriginal = Boolean(
+    mode === 'edit' &&
+      item &&
+      (item.originalCodeContent ?? item.codeContent ?? '') !== codeContent,
+  );
+  const isCodeDirtyFromLastSaved = mode === 'edit' && codeContent !== lastSavedCodeContent;
+  const hasUnsavedCodeChanges = codeContent !== lastSavedCodeContent;
+
+  const handleEditorCodeChange = (value?: string) => {
+    setCodeContent(value ?? '');
+    setError(null);
+  };
+
+  const handleDialogClose = () => {
+    if (submitting) {
+      return;
+    }
+    // 代码有未保存改动时，关闭前二次确认，避免误触丢失编辑内容。
+    if (hasUnsavedCodeChanges) {
+      const confirmed = window.confirm('代码已修改但未保存，确认关闭并放弃本次修改吗？');
+      if (!confirmed) {
+        return;
+      }
+    }
+    setShowDiff(false);
+    setEditorFullscreen(false);
+    onClose();
+  };
+
+  const handleSubmit = async () => {
+    const trimmedName = name.trim() || '未命名应用';
+    const normalizedLanguage = language.trim() || 'html';
+    if (!codeContent.trim()) {
+      setError('应用代码不能为空');
+      return;
+    }
+
+    if (mode === 'create') {
+      const payload: AppCenterItemCreateRequest = {
+        name: trimmedName,
+        sourceKey: createManualSourceKey(),
+        sourceSessionTitle: '手动创建',
+        sourceModelName: '手动创建',
+        language: normalizedLanguage,
+        codeContent,
+        originalCodeContent: codeContent,
+      };
+
+      if (iconMode === 'emoji') {
+        payload.iconType = 'emoji';
+        payload.iconValue = iconEmoji;
+      }
+      if (iconMode === 'image' && iconImage) {
+        payload.iconType = 'image';
+        payload.iconValue = iconImage;
+      }
+      await onSubmit(payload);
+      return;
+    }
+
+    const payload: AppCenterItemUpdateRequest = {
+      name: trimmedName,
+      codeContent,
+    };
+    if (iconMode === 'emoji') {
+      payload.iconType = 'emoji';
+      payload.iconValue = iconEmoji;
+    }
+    if (iconMode === 'image' && iconImage) {
+      payload.iconType = 'image';
+      payload.iconValue = iconImage;
+    }
+    await onSubmit(payload);
+  };
+
+  const renderCodeEditor = (height: string) => {
+    if (showDiff && mode === 'edit') {
+      return (
+        <DiffEditor
+          height={height}
+          language={resolveMonacoLanguage(language)}
+          original={lastSavedCodeContent}
+          modified={codeContent}
+          theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 14,
+            wordWrap: 'on',
+            automaticLayout: true,
+            scrollBeyondLastLine: false,
+            renderSideBySide: true,
+            originalEditable: false,
+            readOnly: true,
+          }}
+        />
+      );
+    }
+
+    return (
+      <Editor
+        height={height}
+        language={resolveMonacoLanguage(language)}
+        value={codeContent}
+        theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+        onChange={handleEditorCodeChange}
+        options={{
+          minimap: { enabled: false },
+          fontSize: 14,
+          wordWrap: 'on',
+          automaticLayout: true,
+          scrollBeyondLastLine: false,
+          lineNumbers: 'on',
+          tabSize: 2,
+        }}
+      />
+    );
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={handleDialogClose}
+      title={mode === 'create' ? '新增应用' : '编辑应用'}
+      size="3xl"
+    >
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Input
+            label="应用名称"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+            disabled={submitting}
+          />
+          <Input
+            label="语言"
+            value={language}
+            onChange={(event) => {
+              setLanguage(event.target.value);
+              setError(null);
+            }}
+            placeholder="例如：html"
+            disabled={submitting}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-300">图标</p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant={iconMode === 'none' ? 'primary' : 'secondary'}
+              size="sm"
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setIconMode('none');
+                setIconImage('');
+                setError(null);
+              }}
+            >
+              使用 AI
+            </Button>
+            <Button
+              variant={iconMode === 'emoji' ? 'primary' : 'secondary'}
+              size="sm"
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setIconMode('emoji');
+                setError(null);
+              }}
+            >
+              Emoji
+            </Button>
+            <Button
+              variant={iconMode === 'image' ? 'primary' : 'secondary'}
+              size="sm"
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setIconMode('image');
+                setError(null);
+                void iconInputRef.current?.click();
+              }}
+            >
+              上传图片
+            </Button>
+            <input
+              ref={iconInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageSelect}
+            />
+          </div>
+
+          {iconMode === 'emoji' && (
+            <div className="flex flex-wrap gap-2 rounded-lg border border-gray-200 p-2 dark:border-gray-700">
+              {APP_ICON_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => setIconEmoji(emoji)}
+                  className={`h-8 w-8 rounded-md text-lg transition-colors ${
+                    iconEmoji === emoji
+                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                      : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {iconMode === 'image' && iconImage && (
+            <img
+              src={iconImage}
+              alt="图标预览"
+              className="h-16 w-16 rounded-xl border border-slate-200 object-cover dark:border-slate-700"
+            />
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">应用代码</p>
+            <div className="flex items-center gap-2">
+              {mode === 'edit' && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={submitting || (!isCodeDirtyFromLastSaved && !showDiff)}
+                  onClick={() => setShowDiff((prev) => !prev)}
+                >
+                  {showDiff ? '返回编辑' : '查看 Diff'}
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={submitting}
+                onClick={() => setEditorFullscreen((prev) => !prev)}
+              >
+                {editorFullscreen ? '退出全屏' : '全屏'}
+              </Button>
+              {mode === 'edit' && item && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={submitting || !isCodeDirtyFromOriginal}
+                  onClick={() => {
+                    handleResetCode();
+                    setShowDiff(false);
+                  }}
+                >
+                  重置到原始代码
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={!codeContent.trim()}
+                onClick={() => openHtmlPreview(codeContent)}
+              >
+                预览
+              </Button>
+            </div>
+          </div>
+
+          {!editorFullscreen && (
+            <div className="overflow-hidden rounded-xl border border-[rgb(209,209,209)]">
+              {renderCodeEditor('420px')}
+            </div>
+          )}
+        </div>
+
+        {mode === 'edit' && item && (
+          <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-[#2a2a2a] dark:text-slate-300">
+            <p className="truncate">来源：{item.sourceKey}</p>
+            <p className="mt-1 truncate">来源会话：{item.sourceSessionTitle ?? '-'}</p>
+            <p className="mt-1 truncate">来源模型：{item.sourceModelName ?? '-'}</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" disabled={submitting} onClick={handleDialogClose}>
+            取消
+          </Button>
+          <Button
+            disabled={submitting}
+            onClick={() => {
+              void handleSubmit().catch((submitError: any) => {
+                setError(submitError?.message ?? (mode === 'create' ? '新增应用失败' : '更新应用失败'));
+              });
+            }}
+          >
+            {submitting ? '保存中...' : '保存'}
+          </Button>
+        </div>
+      </div>
+
+      {editorFullscreen && (
+        <div className="fixed inset-0 z-[80] bg-white p-3 dark:bg-[#0d0d0d]">
+          <div className="mx-auto flex h-full max-w-[1700px] flex-col gap-3">
+            <div className="flex items-center justify-between rounded-xl border border-[rgb(209,209,209)] bg-white px-3 py-2 dark:bg-[#171717]">
+              <p className="text-sm font-medium text-[rgb(13,13,13)] dark:text-slate-100">全屏代码编辑</p>
+              <div className="flex items-center gap-2">
+                {mode === 'edit' && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={submitting || (!isCodeDirtyFromLastSaved && !showDiff)}
+                    onClick={() => setShowDiff((prev) => !prev)}
+                  >
+                    {showDiff ? '返回编辑' : '查看 Diff'}
+                  </Button>
+                )}
+                {mode === 'edit' && item && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={submitting || !isCodeDirtyFromOriginal}
+                    onClick={() => {
+                      handleResetCode();
+                      setShowDiff(false);
+                    }}
+                  >
+                    重置到原始代码
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={!codeContent.trim()}
+                  onClick={() => openHtmlPreview(codeContent)}
+                >
+                  预览
+                </Button>
+                <Button type="button" size="sm" variant="secondary" onClick={() => setEditorFullscreen(false)}>
+                  退出全屏
+                </Button>
+              </div>
+            </div>
+            <div className="h-[calc(100vh-90px)] overflow-hidden rounded-xl border border-[rgb(209,209,209)]">
+              {renderCodeEditor('100%')}
+            </div>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+};
+
 const AppsPage: React.FC = () => {
   const navigate = useNavigate();
-  const { items, loading, error, fetchItems, updateItem, deleteItem } = useAppCenterStore();
+  const { theme } = useThemeStore();
+  const { items, loading, error, fetchItems, createItem, updateItem, deleteItem } = useAppCenterStore();
   const [searchKeyword, setSearchKeyword] = useState('');
   const [editing, setEditing] = useState<AppCenterItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AppCenterItem | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     void fetchItems();
@@ -91,7 +624,8 @@ const AppsPage: React.FC = () => {
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-4 flex items-center justify-end gap-3">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <Button onClick={() => setCreateOpen(true)}>新增应用</Button>
           <Input
             value={searchKeyword}
             onChange={(event) => setSearchKeyword(event.target.value)}
@@ -110,7 +644,7 @@ const AppsPage: React.FC = () => {
           <p className="text-sm text-gray-500 dark:text-gray-400">加载中...</p>
         ) : filteredItems.length === 0 ? (
           <div className="rounded-xl border border-dashed border-gray-300 py-16 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            暂无应用，请先在聊天代码块中点击“添加到应用中心”。
+            暂无应用，可在聊天代码块中“添加到应用中心”，或点击上方“新增应用”。
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -167,16 +701,50 @@ const AppsPage: React.FC = () => {
         )}
       </div>
 
-      <AppEditDialog
+      <AppEditorDialog
+        open={createOpen}
+        mode="create"
+        theme={theme}
+        item={null}
+        submitting={submitting}
+        onClose={() => {
+          if (!submitting) {
+            setCreateOpen(false);
+          }
+        }}
+        onSubmit={async (payload) => {
+          setSubmitting(true);
+          try {
+            await createItem(payload as AppCenterItemCreateRequest);
+            setCreateOpen(false);
+          } finally {
+            setSubmitting(false);
+          }
+        }}
+      />
+
+      <AppEditorDialog
         open={Boolean(editing)}
+        mode="edit"
+        theme={theme}
         item={editing}
-        onClose={() => setEditing(null)}
+        submitting={submitting}
+        onClose={() => {
+          if (!submitting) {
+            setEditing(null);
+          }
+        }}
         onSubmit={async (payload) => {
           if (!editing) {
             return;
           }
-          await updateItem(editing.id, payload);
-          setEditing(null);
+          setSubmitting(true);
+          try {
+            await updateItem(editing.id, payload as AppCenterItemUpdateRequest);
+            setEditing(null);
+          } finally {
+            setSubmitting(false);
+          }
         }}
       />
 
@@ -203,162 +771,6 @@ const AppsPage: React.FC = () => {
         </div>
       </Dialog>
     </div>
-  );
-};
-
-const AppEditDialog: React.FC<{
-  open: boolean;
-  item: AppCenterItem | null;
-  onClose: () => void;
-  onSubmit: (payload: AppCenterItemUpdateRequest) => Promise<void>;
-}> = ({ open, item, onClose, onSubmit }) => {
-  const [name, setName] = useState('');
-  const [avatarMode, setAvatarMode] = useState<'none' | 'emoji' | 'image'>('none');
-  const [avatarEmoji, setAvatarEmoji] = useState<string>('');
-  const [avatarImage, setAvatarImage] = useState<string>('');
-  const [submitting, setSubmitting] = useState(false);
-  const avatarInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!open || !item) {
-      return;
-    }
-
-    setName(item.name);
-    if (item.iconType === 'emoji' && item.iconValue) {
-      setAvatarMode('emoji');
-      setAvatarEmoji(item.iconValue);
-      setAvatarImage('');
-    } else if (item.iconType === 'image' && item.iconValue) {
-      setAvatarMode('image');
-      setAvatarImage(item.iconValue);
-      setAvatarEmoji('');
-    } else {
-      setAvatarMode('none');
-      setAvatarEmoji('');
-      setAvatarImage('');
-    }
-  }, [open, item]);
-
-  return (
-    <Dialog open={open} onClose={onClose} title="编辑应用" size="lg">
-      <div className="space-y-4">
-        <Input label="名称" value={name} onChange={(event) => setName(event.target.value)} />
-
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-gray-700 dark:text-gray-300">图标</p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant={avatarMode === 'none' ? 'primary' : 'secondary'}
-              size="sm"
-              type="button"
-              onClick={() => {
-                setAvatarMode('none');
-                setAvatarEmoji('');
-                setAvatarImage('');
-              }}
-            >
-              使用 AI
-            </Button>
-            <Button
-              variant={avatarMode === 'emoji' ? 'primary' : 'secondary'}
-              size="sm"
-              type="button"
-              onClick={() => {
-                setAvatarMode('emoji');
-                if (!avatarEmoji) {
-                  setAvatarEmoji(APP_ICON_EMOJIS[0]);
-                }
-              }}
-            >
-              Emoji
-            </Button>
-            <Button
-              variant={avatarMode === 'image' ? 'primary' : 'secondary'}
-              size="sm"
-              type="button"
-              onClick={() => {
-                setAvatarMode('image');
-                void avatarInputRef.current?.click();
-              }}
-            >
-              上传图片
-            </Button>
-            <input
-              ref={avatarInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = '';
-                if (!file) {
-                  return;
-                }
-                void fileToDataUrl(file)
-                  .then((dataUrl) => {
-                    setAvatarMode('image');
-                    setAvatarImage(dataUrl);
-                  })
-                  .catch((error) => {
-                    console.error(error);
-                  });
-              }}
-            />
-          </div>
-
-          {avatarMode === 'emoji' && (
-            <div className="flex flex-wrap gap-2 rounded-lg border border-gray-200 p-2 dark:border-gray-700">
-              {APP_ICON_EMOJIS.map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  onClick={() => setAvatarEmoji(emoji)}
-                  className={`h-8 w-8 rounded-md text-lg transition-colors ${
-                    avatarEmoji === emoji
-                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                      : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {avatarMode === 'image' && avatarImage && (
-            <img src={avatarImage} alt="图标预览" className="h-14 w-14 rounded-lg border border-gray-200 object-cover dark:border-gray-700" />
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={submitting}>取消</Button>
-          <Button
-            onClick={async () => {
-              const payload: AppCenterItemUpdateRequest = { name: name.trim() || '未命名应用' };
-              if (avatarMode === 'emoji' && avatarEmoji) {
-                payload.iconType = 'emoji';
-                payload.iconValue = avatarEmoji;
-              }
-              if (avatarMode === 'image' && avatarImage) {
-                payload.iconType = 'image';
-                payload.iconValue = avatarImage;
-              }
-
-              setSubmitting(true);
-              try {
-                await onSubmit(payload);
-              } finally {
-                setSubmitting(false);
-              }
-            }}
-            disabled={submitting}
-          >
-            保存
-          </Button>
-        </div>
-      </div>
-    </Dialog>
   );
 };
 
