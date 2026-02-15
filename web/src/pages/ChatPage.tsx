@@ -2648,6 +2648,7 @@ const ChatPage: React.FC = () => {
   const sidebarSettingsRef = useRef<HTMLDivElement>(null);
   const headerMoreRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const lastMessagesScrollTopRef = useRef(0);
@@ -2931,7 +2932,12 @@ const ChatPage: React.FC = () => {
     if (!shouldAutoScrollRef.current) {
       return;
     }
-    messagesEndRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' });
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+    // 会话切换或消息更新时立即吸底，避免 smooth 动画阶段出现短暂底部留白。
+    container.scrollTop = container.scrollHeight;
   }, [isChatRoute, messages, streaming]);
 
   useEffect(() => {
@@ -2943,8 +2949,35 @@ const ChatPage: React.FC = () => {
     lastMessagesScrollTopRef.current = 0;
     setSelectionAction(null);
     setQuotedSelection(null);
-    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
   }, [isChatRoute, currentSessionId]);
+
+  useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
+
+    const container = messagesContainerRef.current;
+    const content = messagesContentRef.current;
+    if (!container || !content || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    // Markdown/代码高亮等异步渲染会改变消息高度，这里在“自动跟随”模式下持续吸底。
+    const observer = new ResizeObserver(() => {
+      if (!shouldAutoScrollRef.current) {
+        return;
+      }
+      container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+    };
+  }, [isChatRoute, currentSessionId, messages.length]);
 
   useEffect(() => {
     const onSelectionChange = () => {
@@ -3611,7 +3644,7 @@ const ChatPage: React.FC = () => {
   };
 
   return (
-    <div className="flex h-full bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
+    <div className="flex h-full min-h-0 bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
       <aside
         className={`${sidebarCollapsed ? 'w-[52px] bg-white dark:bg-[#171717]' : 'w-[260px] bg-[#f5f5f5] dark:bg-[#171717]'} flex shrink-0 flex-col border-r border-slate-200 py-3 pr-0 transition-[width] duration-200 dark:border-[#2f2f2f]`}
       >
@@ -3634,7 +3667,7 @@ const ChatPage: React.FC = () => {
             className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
               sidebarCollapsed
                 ? 'mx-auto h-10 w-10 justify-center px-0 py-0'
-                : 'mx-[6px] w-[calc(100%-12px)] justify-start bg-[rgb(234,234,234)] px-[10px] py-[6px]'
+                : 'mx-[6px] w-[calc(100%-12px)] justify-start px-[10px] py-[6px]'
             }`}
             onClick={() => void handleCreateSession()}
             title="新建会话"
@@ -3759,7 +3792,7 @@ const ChatPage: React.FC = () => {
         </div>
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
         <div className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-5 dark:border-[#2f2f2f] dark:bg-[#212121]">
           {isChatRoute ? (
             <ChatModelSelect
@@ -3858,7 +3891,7 @@ const ChatPage: React.FC = () => {
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
               onWheel={handleMessagesWheel}
-              className="flex-1 overflow-y-auto px-4 pb-4 pt-6"
+              className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 pt-6"
             >
               {!currentSessionId ? (
                 <div className="mx-auto mt-24 max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100">
@@ -3871,7 +3904,7 @@ const ChatPage: React.FC = () => {
                   <p className="mt-2 text-sm">输入你的问题，或拖拽/上传图片开始对话。</p>
                 </div>
               ) : (
-                <div className="space-y-7 pb-3">
+                <div ref={messagesContentRef} className="space-y-7 pb-3">
                   {messages.map((message) => (
                     <div
                       key={message.id}

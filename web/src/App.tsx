@@ -4,7 +4,7 @@ import ChatPage from './pages/ChatPage';
 
 const AppShell: React.FC = () => {
   return (
-    <div className="h-screen flex flex-col bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+    <div className="h-screen min-h-0 overflow-hidden flex flex-col bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       <Routes>
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/chat/:sessionId" element={<ChatPage />} />
