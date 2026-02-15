@@ -39,8 +39,8 @@ import java.util.*;
 public class ChatService {
 
     private static final int MAX_TOOL_ROUNDS = 5;
-    private static final int TITLE_MAX_LENGTH = 20;
-    private static final int TITLE_GENERATION_MAX_TOKENS = 960;
+    private static final int TITLE_MAX_LENGTH = 100;
+    private static final int TITLE_GENERATION_MAX_TOKENS = 4096;
     private static final double TITLE_GENERATION_TEMPERATURE = 0.2d;
     private static final String DEFAULT_ASSISTANT_NAME = "AI";
     private static final long DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000L;

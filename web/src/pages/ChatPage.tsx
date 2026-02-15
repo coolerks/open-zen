@@ -3348,6 +3348,7 @@ const ChatPage: React.FC = () => {
     return null;
   }, [messages, streaming]);
   const hasCurrentSession = isChatRoute && currentSessionId != null && currentSession != null;
+  const shouldCenterComposer = isChatRoute && !currentSessionId;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
   const askActionLabel = activeAgent && !activeAgent.isDefault ? `问${activeAgent.name}` : '问AI';
   const appSourceKeySet = useMemo(() => new Set(appCenterItems.map((item) => item.sourceKey)), [appCenterItems]);
@@ -4923,10 +4924,14 @@ const ChatPage: React.FC = () => {
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
               onWheel={handleMessagesWheel}
-              className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 pt-6"
+              className={
+                shouldCenterComposer
+                  ? 'px-4 pt-28'
+                  : 'flex-1 min-h-0 overflow-y-auto px-4 pb-4 pt-6'
+              }
             >
               {!currentSessionId ? (
-                <div className="mx-auto mt-24 max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100">
+                <div className={`mx-auto max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100 ${shouldCenterComposer ? 'mt-6' : 'mt-24'}`}>
                   <h2 className="mb-3 text-[30px] font-semibold tracking-tight">今天想聊点什么？</h2>
                   <p className="text-sm">选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。</p>
                 </div>
@@ -4967,7 +4972,13 @@ const ChatPage: React.FC = () => {
               )}
             </div>
 
-            <div className="bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]">
+            <div
+              className={
+                shouldCenterComposer
+                  ? 'px-4 pb-5 pt-8'
+                  : 'bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]'
+              }
+            >
               <div className="mx-auto max-w-[860px]">
                 {error && (
                   <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
