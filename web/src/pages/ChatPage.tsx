@@ -1862,23 +1862,73 @@ const ShareIcon: React.FC = () => (
   </svg>
 );
 
-function calcModelSelectWidth(options: { value: number; label: string }[]): number {
+type ChatModelOption = {
+  value: number;
+  label: string;
+  supportsTools: boolean;
+  supportsVision: boolean;
+  supportsReasoning: boolean;
+};
+
+const ReasoningCapabilityIcon: React.FC<{ className?: string }> = ({ className = 'h-5 w-5' }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+    <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
+    <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
+    <path d="M3.477 10.896a4 4 0 0 1 .585-.396" />
+    <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
+    <path d="M6 18a4 4 0 0 1-1.938-.5" />
+    <path d="M19.938 17.5A4 4 0 0 1 18 18" />
+  </svg>
+);
+
+const VisionCapabilityIcon: React.FC<{ className?: string }> = ({ className = 'h-5 w-5' }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const ToolsCapabilityIcon: React.FC<{ className?: string }> = ({ className = 'h-5 w-5' }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.9 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  </svg>
+);
+
+function calcModelSelectWidths(options: ChatModelOption[], activeLabel: string): { triggerWidth: number; menuWidth: number } {
   const labels = ['选择模型', ...options.map((item) => item.label)];
-  const maxLabelLength = Math.max(...labels.map((item) => item.length));
+  const triggerLabels = ['选择模型', activeLabel];
+  const maxCapabilityCount = Math.max(
+    0,
+    ...options.map((item) => Number(item.supportsReasoning) + Number(item.supportsVision) + Number(item.supportsTools)),
+  );
+  const capabilityExtra = maxCapabilityCount * 18;
 
   if (typeof document === 'undefined') {
-    return Math.max(160, maxLabelLength * 14 + 34);
+    const triggerWidth = Math.max(220, Math.min(380, Math.max(...triggerLabels.map((item) => item.length)) * 13 + 42));
+    const menuWidth = Math.max(triggerWidth + 16, Math.max(300, Math.min(460, Math.max(...labels.map((item) => item.length)) * 13 + capabilityExtra + 62)));
+    return { triggerWidth, menuWidth };
   }
 
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
   if (!context) {
-    return Math.max(160, maxLabelLength * 14 + 34);
+    const triggerWidth = Math.max(220, Math.min(380, Math.max(...triggerLabels.map((item) => item.length)) * 13 + 42));
+    const menuWidth = Math.max(triggerWidth + 16, Math.max(300, Math.min(460, Math.max(...labels.map((item) => item.length)) * 13 + capabilityExtra + 62)));
+    return { triggerWidth, menuWidth };
   }
 
   context.font = "600 16px 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+  const maxTriggerWidth = Math.max(...triggerLabels.map((item) => context.measureText(item).width));
   const maxLabelWidth = Math.max(...labels.map((item) => context.measureText(item).width));
-  return Math.max(160, Math.ceil(maxLabelWidth + 34));
+  const viewportCap = typeof window !== 'undefined' ? Math.max(320, window.innerWidth - 320) : 460;
+  const triggerWidth = Math.max(220, Math.min(380, Math.ceil(maxTriggerWidth + 42)));
+  const desiredMenuWidth = Math.ceil(maxLabelWidth + capabilityExtra + 62);
+  const menuMax = Math.min(460, viewportCap);
+  const menuWidth = Math.max(triggerWidth + 16, Math.max(300, Math.min(menuMax, desiredMenuWidth)));
+  return { triggerWidth, menuWidth };
 }
 
 const SessionItem: React.FC<{
@@ -2384,18 +2434,22 @@ const ContextUsageIndicator: React.FC<{
 
 const ChatModelSelect: React.FC<{
   value: number | null;
-  options: { value: number; label: string }[];
+  options: ChatModelOption[];
   onChange: (value: number | null) => void;
 }> = ({ value, options, onChange }) => {
   const [open, setOpen] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const selectWidth = useMemo(() => calcModelSelectWidth(options), [options]);
 
   const activeOption = useMemo(
     () => options.find((option) => option.value === value) ?? null,
     [options, value],
+  );
+  const activeLabel = activeOption?.label ?? '选择模型';
+  const { triggerWidth, menuWidth } = useMemo(
+    () => calcModelSelectWidths(options, activeLabel),
+    [options, activeLabel],
   );
   const filteredOptions = useMemo(() => {
     const keyword = searchKeyword.trim().toLowerCase();
@@ -2435,10 +2489,10 @@ const ChatModelSelect: React.FC<{
   }, [open]);
 
   return (
-    <div ref={containerRef} className="relative" style={{ width: `${selectWidth}px` }}>
+    <div ref={containerRef} className="relative" style={{ width: `${triggerWidth}px` }}>
       <button
         className="inline-flex h-10 items-center gap-1 rounded-xl px-3 text-sm font-semibold text-[#2f2f2f] transition-colors hover:bg-[#f3f4f6] dark:text-slate-100 dark:hover:bg-[#2f2f2f]"
-        style={{ width: `${selectWidth}px` }}
+        style={{ width: `${triggerWidth}px` }}
         type="button"
         onClick={() =>
           setOpen((prev) => {
@@ -2452,14 +2506,16 @@ const ChatModelSelect: React.FC<{
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="whitespace-nowrap">{activeOption?.label ?? '选择模型'}</span>
+        <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left" title={activeOption?.label ?? '选择模型'}>
+          {activeOption?.label ?? '选择模型'}
+        </span>
         <ChevronDownIcon className={`h-4 w-4 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
         <div
           className="absolute top-12 z-40 overflow-hidden rounded-xl border border-[rgb(209,209,209)] bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]"
-          style={{ width: `${selectWidth}px` }}
+          style={{ width: `${menuWidth}px` }}
         >
           <div className="px-2 pb-1 pt-1">
             <input
@@ -2476,12 +2532,12 @@ const ChatModelSelect: React.FC<{
               return (
                 <button
                   key={option.value}
-                className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
-                  active
-                    ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                    : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
-                }`}
-                type="button"
+                  className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                    active
+                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                  }`}
+                  type="button"
                   onClick={() => {
                     onChange(option.value);
                     setSearchKeyword('');
@@ -2490,7 +2546,26 @@ const ChatModelSelect: React.FC<{
                   role="option"
                   aria-selected={active}
                 >
-                <span className="whitespace-nowrap">{option.label}</span>
+                  <span className="min-w-0 flex-1 truncate whitespace-nowrap" title={option.label}>
+                    {option.label}
+                  </span>
+                  <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-slate-500 dark:text-slate-300">
+                    {option.supportsReasoning && (
+                      <span className="inline-flex h-4 w-4 items-center justify-center" title="支持推理" aria-label="支持推理">
+                        <ReasoningCapabilityIcon />
+                      </span>
+                    )}
+                    {option.supportsVision && (
+                      <span className="inline-flex h-4 w-4 items-center justify-center" title="支持视觉" aria-label="支持视觉">
+                        <VisionCapabilityIcon />
+                      </span>
+                    )}
+                    {option.supportsTools && (
+                      <span className="inline-flex h-4 w-4 items-center justify-center" title="支持工具" aria-label="支持工具">
+                        <ToolsCapabilityIcon />
+                      </span>
+                    )}
+                  </span>
                   {active && <CheckIcon />}
                 </button>
               );
@@ -4208,7 +4283,13 @@ const ChatPage: React.FC = () => {
         <div className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-5 dark:border-[#2f2f2f] dark:bg-[#212121]">
           {isChatRoute ? (
             <ChatModelSelect
-              options={enabledModels.map((model) => ({ value: model.id, label: model.displayName }))}
+              options={enabledModels.map((model) => ({
+                value: model.id,
+                label: model.displayName,
+                supportsReasoning: Boolean(model.supportsReasoning),
+                supportsVision: Boolean(model.supportsVision),
+                supportsTools: Boolean(model.supportsTools),
+              }))}
               value={effectiveSelectedModelId}
               onChange={(value) => void handleModelChange(value)}
             />
