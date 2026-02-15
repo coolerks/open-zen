@@ -18,7 +18,7 @@ import { Input } from '../components/ui/Input';
 import ModelsPage from './ModelsPage';
 import AgentsPage from './AgentsPage';
 import AppsPage from './AppsPage';
-import type { ChatMessage, ChatSession, ChatSessionContextStats } from '../types';
+import type { ChatMessage, ChatSearchResult, ChatSession, ChatSessionContextStats } from '../types';
 
 const TOKENS_PER_MILLION = 1_000_000;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'chat.sidebar.collapsed';
@@ -176,6 +176,46 @@ function formatDateTime(value: string | null): string {
     minute: '2-digit',
     hour12: false,
   });
+}
+
+function formatMonthDay(value: string | null | undefined): string {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleDateString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+  });
+}
+
+function isWithinDays(value: string | null | undefined, days: number): boolean {
+  if (!value) {
+    return false;
+  }
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+  return Date.now() - timestamp <= days * 24 * 60 * 60 * 1000;
+}
+
+function isTextInputLikeElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === 'textarea') {
+    return true;
+  }
+  if (tagName === 'input') {
+    const input = target as HTMLInputElement;
+    return input.type !== 'checkbox' && input.type !== 'radio' && input.type !== 'button';
+  }
+  return target.isContentEditable;
 }
 
 function formatUsd(value: string | number | null): string {
@@ -1592,6 +1632,24 @@ const NewChatIcon: React.FC = () => (
   </svg>
 );
 
+const SearchChatIcon: React.FC<{ className?: string }> = ({ className = 'h-4 w-4' }) => (
+  <svg className={className} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="8.6" cy="8.6" r="5.5" stroke="currentColor" strokeWidth="1.7" />
+    <path d="M12.8 12.8L16.4 16.4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+  </svg>
+);
+
+const SearchSessionIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M10 3.6C6.35 3.6 3.4 6.26 3.4 9.55C3.4 10.96 3.95 12.24 4.86 13.24L4.45 16.2L7.54 15.18C8.28 15.4 9.11 15.5 10 15.5C13.65 15.5 16.6 12.84 16.6 9.55C16.6 6.26 13.65 3.6 10 3.6Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 const SidebarAppsIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="6.2" cy="6.2" r="2.1" stroke="currentColor" strokeWidth="1.6" />
@@ -2047,6 +2105,210 @@ const SessionAboutDialog: React.FC<{
         </div>
       </div>
     </Dialog>
+  );
+};
+
+const ChatSearchDialog: React.FC<{
+  open: boolean;
+  keyword: string;
+  sessions: ChatSession[];
+  searchResults: ChatSearchResult[];
+  searchLoading: boolean;
+  currentSessionId: number | null;
+  onKeywordChange: (keyword: string) => void;
+  onClose: () => void;
+  onCreateSession: () => void;
+  onSelectSession: (sessionId: number, messageId?: number | null) => void;
+}> = ({
+  open,
+  keyword,
+  sessions,
+  searchResults,
+  searchLoading,
+  currentSessionId,
+  onKeywordChange,
+  onClose,
+  onCreateSession,
+  onSelectSession,
+}) => {
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const trimmedKeyword = keyword.trim();
+
+  const groupedSessionsWhenIdle = useMemo(() => {
+    const recent: ChatSession[] = [];
+    const older: ChatSession[] = [];
+    sessions.forEach((session) => {
+      const timestamp = session.updatedAt || session.createdAt;
+      if (isWithinDays(timestamp, 7)) {
+        recent.push(session);
+      } else {
+        older.push(session);
+      }
+    });
+    return { recent, older };
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, onClose]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[1.5px]" onClick={onClose}>
+      <div
+        className="mx-auto mt-20 w-[min(840px,calc(100vw-30px))] overflow-hidden rounded-2xl border border-[rgb(209,209,209)] bg-[#f7f7f8] shadow-2xl dark:border-slate-700 dark:bg-[#2a2a2a]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 border-b border-[rgb(209,209,209)] px-4 py-3 dark:border-slate-700">
+          <SearchChatIcon className="h-5 w-5 text-[#8f8f8f]" />
+          <input
+            ref={searchInputRef}
+            value={keyword}
+            onChange={(event) => onKeywordChange(event.target.value)}
+            placeholder="搜索聊天..."
+            className="h-10 flex-1 border-none bg-transparent text-[15px] font-normal text-[#0d0d0d] outline-none placeholder:text-[#8f8f8f] dark:text-slate-100"
+          />
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-[#8f8f8f] transition-colors hover:bg-[rgb(239,239,239)] hover:text-[#0d0d0d] dark:hover:bg-[#3a3a3a] dark:hover:text-slate-100"
+            title="关闭"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5.2 5.2L14.8 14.8M14.8 5.2L5.2 14.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="max-h-[62vh] overflow-y-auto p-2">
+          <button
+            type="button"
+            onClick={onCreateSession}
+            className="mb-2 flex w-full items-center gap-2 rounded-xl bg-[rgb(234,234,234)] px-4 py-3 text-left text-[15px] font-medium text-[#0d0d0d] transition-colors hover:bg-[rgb(228,228,228)] dark:bg-[#3a3a3a] dark:text-slate-100 dark:hover:bg-[#454545]"
+          >
+            <NewChatIcon />
+            <span>新聊天</span>
+          </button>
+
+          {trimmedKeyword ? (
+            searchLoading ? (
+              <div className="px-2 py-6 text-center text-sm text-[#8f8f8f] dark:text-slate-400">正在搜索...</div>
+            ) : searchResults.length === 0 ? (
+              <div className="px-2 py-6 text-center text-sm text-[#8f8f8f] dark:text-slate-400">没有匹配的聊天</div>
+            ) : (
+              <div className="space-y-1">
+                {searchResults.map((result) => {
+                  const active = currentSessionId === result.sessionId;
+                  return (
+                    <button
+                      key={`${result.sessionId}-${result.matchedMessageId ?? 'title'}`}
+                      type="button"
+                      onClick={() => onSelectSession(result.sessionId, result.matchedMessageId)}
+                      className={`flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left transition-colors ${
+                        active
+                          ? 'bg-[rgb(234,234,234)] text-[#0d0d0d] dark:bg-[#3a3a3a] dark:text-slate-100'
+                          : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#343434]'
+                      }`}
+                    >
+                      <span className="mt-0.5 shrink-0 text-[#4b5563] dark:text-slate-400">
+                        <SearchSessionIcon />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-[15px] font-medium leading-6">{result.title}</span>
+                          {result.matchedAt && (
+                            <span className="shrink-0 text-[12px] text-[#8f8f8f]">{formatMonthDay(result.matchedAt)}</span>
+                          )}
+                        </span>
+                        {result.snippet && (
+                          <span className="mt-0.5 block truncate text-[13px] leading-5 text-[#6b7280] dark:text-slate-400">
+                            {result.snippet}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          ) : (
+            <>
+              {groupedSessionsWhenIdle.recent.length > 0 && (
+                <p className="px-3 pb-1 pt-2 text-xs font-medium text-[#8f8f8f]">前 7 天</p>
+              )}
+              {groupedSessionsWhenIdle.recent.map((session) => {
+                const active = currentSessionId === session.id;
+                return (
+                  <button
+                    key={session.id}
+                    type="button"
+                    onClick={() => onSelectSession(session.id)}
+                    className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[14px] transition-colors ${
+                      active
+                        ? 'bg-[rgb(234,234,234)] text-[#0d0d0d] dark:bg-[#3a3a3a] dark:text-slate-100'
+                        : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#343434]'
+                    }`}
+                  >
+                    <SearchSessionIcon />
+                    <span className="truncate">{session.title}</span>
+                  </button>
+                );
+              })}
+
+              {groupedSessionsWhenIdle.older.length > 0 && (
+                <p className="px-3 pb-1 pt-3 text-xs font-medium text-[#8f8f8f]">更早</p>
+              )}
+              {groupedSessionsWhenIdle.older.map((session) => {
+                const active = currentSessionId === session.id;
+                return (
+                  <button
+                    key={session.id}
+                    type="button"
+                    onClick={() => onSelectSession(session.id)}
+                    className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[14px] transition-colors ${
+                      active
+                        ? 'bg-[rgb(234,234,234)] text-[#0d0d0d] dark:bg-[#3a3a3a] dark:text-slate-100'
+                        : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#343434]'
+                    }`}
+                  >
+                    <SearchSessionIcon />
+                    <span className="truncate">{session.title}</span>
+                  </button>
+                );
+              })}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -2613,6 +2875,10 @@ const ChatPage: React.FC = () => {
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
   const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [chatSearchKeyword, setChatSearchKeyword] = useState('');
+  const [chatSearchResults, setChatSearchResults] = useState<ChatSearchResult[]>([]);
+  const [chatSearchLoading, setChatSearchLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [saveAppDialog, setSaveAppDialog] = useState<SaveAppDialogState>(() => createInitialSaveAppDialogState());
   const [saveAppSubmitting, setSaveAppSubmitting] = useState(false);
@@ -2659,6 +2925,7 @@ const ChatPage: React.FC = () => {
   const routeMessageJumpRef = useRef<string | null>(null);
   const routeMessageJumpTimerRef = useRef<number | null>(null);
   const shareCopiedTimerRef = useRef<number | null>(null);
+  const chatSearchRequestIdRef = useRef(0);
 
   const routeSessionId = useMemo(() => {
     if (!routeSessionIdParam) {
@@ -3191,6 +3458,68 @@ const ChatPage: React.FC = () => {
   }, [sidebarSettingsOpen, headerMoreOpen]);
 
   useEffect(() => {
+    if (!chatSearchOpen) {
+      setChatSearchResults([]);
+      setChatSearchLoading(false);
+      return;
+    }
+
+    const normalizedKeyword = chatSearchKeyword.trim();
+    if (!normalizedKeyword) {
+      setChatSearchResults([]);
+      setChatSearchLoading(false);
+      return;
+    }
+
+    const requestId = chatSearchRequestIdRef.current + 1;
+    chatSearchRequestIdRef.current = requestId;
+    const timer = window.setTimeout(() => {
+      setChatSearchLoading(true);
+      chatApi.searchSessions(normalizedKeyword, 120)
+        .then((results) => {
+          if (chatSearchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setChatSearchResults(results);
+        })
+        .catch(() => {
+          if (chatSearchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setChatSearchResults([]);
+        })
+        .finally(() => {
+          if (chatSearchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setChatSearchLoading(false);
+        });
+    }, 180);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [chatSearchOpen, chatSearchKeyword]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTextInputLikeElement(event.target)) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSidebarSettingsOpen(false);
+        setHeaderMoreOpen(false);
+        setChatSearchOpen(true);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
     if (sidebarCollapsed) {
       setSidebarSettingsOpen(false);
     }
@@ -3215,12 +3544,12 @@ const ChatPage: React.FC = () => {
     adjustInputHeight();
   }, [input]);
 
-  const resolvePreferredModelForNewSession = () => {
+  const resolvePreferredModelForNewSession = useCallback(() => {
     if (preferredModelId != null && enabledModelIdSet.has(preferredModelId)) {
       return preferredModelId;
     }
     return defaultModel?.id ?? null;
-  };
+  }, [preferredModelId, enabledModelIdSet, defaultModel?.id]);
 
   const persistPreferredModel = (modelId: number | null) => {
     setPreferredModelId(modelId);
@@ -3242,7 +3571,7 @@ const ChatPage: React.FC = () => {
     await setSelectedModelId(modelId);
   };
 
-  const handleCreateSession = async () => {
+  const handleCreateSession = useCallback(async () => {
     // “新建会话”仅进入草稿态，不立即落库，避免侧栏出现多个空会话。
     const desiredModelId = resolvePreferredModelForNewSession();
     navigate('/chat');
@@ -3257,7 +3586,30 @@ const ChatPage: React.FC = () => {
     if (desiredModelId != null && selectedModelId !== desiredModelId) {
       await setSelectedModelId(desiredModelId);
     }
-  };
+  }, [
+    resolvePreferredModelForNewSession,
+    navigate,
+    startDraftSession,
+    clearError,
+    selectedModelId,
+    setSelectedModelId,
+  ]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTextInputLikeElement(event.target)) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        void handleCreateSession();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [handleCreateSession]);
 
   const ensureSessionReady = async (): Promise<boolean> => {
     if (!currentSessionId) {
@@ -3643,6 +3995,34 @@ const ChatPage: React.FC = () => {
     }
   };
 
+  const closeChatSearchDialog = () => {
+    chatSearchRequestIdRef.current += 1;
+    setChatSearchOpen(false);
+    setChatSearchKeyword('');
+    setChatSearchResults([]);
+    setChatSearchLoading(false);
+  };
+
+  const handleOpenChatSearch = () => {
+    setSidebarSettingsOpen(false);
+    setHeaderMoreOpen(false);
+    setChatSearchOpen(true);
+  };
+
+  const handleCreateSessionFromSearch = () => {
+    closeChatSearchDialog();
+    void handleCreateSession();
+  };
+
+  const handleSelectSessionFromSearch = (sessionId: number, messageId?: number | null) => {
+    closeChatSearchDialog();
+    if (messageId != null && messageId > 0) {
+      navigate(`/chat/${sessionId}?messageId=${messageId}`);
+      return;
+    }
+    navigate(`/chat/${sessionId}`);
+  };
+
   return (
     <div className="flex h-full min-h-0 bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
       <aside
@@ -3664,7 +4044,7 @@ const ChatPage: React.FC = () => {
 
         <div className={`mb-3 space-y-1 ${sidebarCollapsed ? 'flex flex-col items-center' : ''}`}>
           <button
-            className={`inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
+            className={`group/new-chat inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${
               sidebarCollapsed
                 ? 'mx-auto h-10 w-10 justify-center px-0 py-0'
                 : 'mx-[6px] w-[calc(100%-12px)] justify-start px-[10px] py-[6px]'
@@ -3674,7 +4054,39 @@ const ChatPage: React.FC = () => {
             type="button"
           >
             <NewChatIcon />
-            {!sidebarCollapsed && <span>新建会话</span>}
+            {!sidebarCollapsed && (
+              <>
+                <span>新建会话</span>
+                <span className="ml-auto text-[12px] font-medium tracking-[0.02em] text-[#a1a1aa] opacity-0 transition-opacity group-hover/new-chat:opacity-100">
+                  ⇧⌘O
+                </span>
+              </>
+            )}
+          </button>
+
+          <button
+            className={`group/chat-search inline-flex items-center gap-2 rounded-xl text-sm font-normal leading-6 text-[#0d0d0d] transition-colors dark:text-slate-100 ${
+              chatSearchOpen
+                ? 'bg-[rgb(234,234,234)] dark:bg-[#2a2a2a]'
+                : 'hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:hover:bg-[#2a2a2a]'
+            } ${
+              sidebarCollapsed
+                ? 'mx-auto h-10 w-10 justify-center px-0 py-0'
+                : 'mx-[6px] w-[calc(100%-12px)] justify-start px-[10px] py-[6px]'
+            }`}
+            onClick={handleOpenChatSearch}
+            title="搜索聊天"
+            type="button"
+          >
+            <SearchChatIcon />
+            {!sidebarCollapsed && (
+              <>
+                <span>搜索聊天</span>
+                <span className="ml-auto text-[12px] font-medium tracking-[0.02em] text-[#a1a1aa] opacity-0 transition-opacity group-hover/chat-search:opacity-100">
+                  ⌘K
+                </span>
+              </>
+            )}
           </button>
 
           <Link
@@ -4186,6 +4598,19 @@ const ChatPage: React.FC = () => {
           <span>{askActionLabel}</span>
         </button>
       )}
+
+      <ChatSearchDialog
+        open={chatSearchOpen}
+        keyword={chatSearchKeyword}
+        sessions={sessions}
+        searchResults={chatSearchResults}
+        searchLoading={chatSearchLoading}
+        currentSessionId={currentSessionId}
+        onKeywordChange={setChatSearchKeyword}
+        onClose={closeChatSearchDialog}
+        onCreateSession={handleCreateSessionFromSearch}
+        onSelectSession={handleSelectSessionFromSearch}
+      />
 
       <SessionAboutDialog
         state={sessionAboutDialog}

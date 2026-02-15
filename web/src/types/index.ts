@@ -155,6 +155,15 @@ export interface ChatSession {
   updatedAt: string;
 }
 
+export interface ChatSearchResult {
+  sessionId: number;
+  title: string;
+  snippet: string | null;
+  matchedMessageId: number | null;
+  matchedBy: 'title' | 'message' | 'both';
+  matchedAt: string | null;
+}
+
 export interface ChatSessionCreateRequest {
   title?: string;
   agentId?: number | null;

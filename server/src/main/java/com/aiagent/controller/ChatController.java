@@ -31,6 +31,12 @@ public class ChatController {
         return ApiResult.ok(chatService.listSessions());
     }
 
+    @GetMapping("/sessions/search")
+    public ApiResult<List<ChatSessionSearchResultResponse>> searchSessions(@RequestParam String keyword,
+                                                                           @RequestParam(required = false) Integer limit) {
+        return ApiResult.ok(chatService.searchSessions(keyword, limit));
+    }
+
     @GetMapping("/sessions/{id}")
     public ApiResult<ChatSession> getSession(@PathVariable Long id) {
         return ApiResult.ok(chatService.getSession(id));

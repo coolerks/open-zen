@@ -1,6 +1,7 @@
 package com.aiagent.service;
 
 import com.aiagent.dto.ChatSendRequest;
+import com.aiagent.dto.ChatSessionSearchResultResponse;
 import com.aiagent.dto.ChatSessionContextStatsResponse;
 import com.aiagent.dto.ChatSessionUpdateRequest;
 import com.aiagent.dto.openrouter.ChatCompletionRequest;
@@ -66,6 +67,122 @@ public class ChatService {
     public List<ChatSession> listSessions() {
         return sessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSession>().orderByDesc(ChatSession::getUpdatedAt));
+    }
+
+    /**
+     * 搜索会话标题与聊天内容，返回去重后的会话结果。
+     */
+    public List<ChatSessionSearchResultResponse> searchSessions(String keyword, Integer limit) {
+        String normalizedKeyword = keyword == null ? "" : keyword.trim();
+        if (normalizedKeyword.isEmpty()) {
+            return List.of();
+        }
+
+        int resolvedLimit = limit == null ? 80 : Math.max(1, Math.min(200, limit));
+        int messageScanLimit = Math.max(60, resolvedLimit * 20);
+
+        Map<Long, ChatSessionSearchResultResponse> resultMap = new LinkedHashMap<>();
+
+        List<ChatSession> titleMatchedSessions = sessionMapper.selectList(
+                new LambdaQueryWrapper<ChatSession>()
+                        .like(ChatSession::getTitle, normalizedKeyword)
+                        .orderByDesc(ChatSession::getUpdatedAt)
+                        .orderByDesc(ChatSession::getId)
+                        .last("LIMIT " + resolvedLimit)
+        );
+        for (ChatSession session : titleMatchedSessions) {
+            ChatSessionSearchResultResponse item = new ChatSessionSearchResultResponse();
+            item.setSessionId(session.getId());
+            item.setTitle(session.getTitle());
+            item.setSnippet(null);
+            item.setMatchedMessageId(null);
+            item.setMatchedBy("title");
+            item.setMatchedAt(session.getUpdatedAt() != null ? session.getUpdatedAt() : session.getCreatedAt());
+            resultMap.put(session.getId(), item);
+        }
+
+        List<ChatMessage> matchedMessages = messageMapper.selectList(
+                new LambdaQueryWrapper<ChatMessage>()
+                        .in(ChatMessage::getRole, List.of("user", "assistant", "tool"))
+                        .isNotNull(ChatMessage::getContent)
+                        .like(ChatMessage::getContent, normalizedKeyword)
+                        .orderByDesc(ChatMessage::getCreatedAt)
+                        .orderByDesc(ChatMessage::getId)
+                        .last("LIMIT " + messageScanLimit)
+        );
+
+        if (matchedMessages.isEmpty()) {
+            return resultMap.values().stream()
+                    .sorted(Comparator.comparing(
+                            (ChatSessionSearchResultResponse item) -> item.getMatchedAt() != null ? item.getMatchedAt() : LocalDateTime.MIN
+                    ).reversed())
+                    .limit(resolvedLimit)
+                    .toList();
+        }
+
+        Set<Long> messageSessionIds = matchedMessages.stream()
+                .map(ChatMessage::getSessionId)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        if (messageSessionIds.isEmpty()) {
+            return resultMap.values().stream()
+                    .sorted(Comparator.comparing(
+                            (ChatSessionSearchResultResponse item) -> item.getMatchedAt() != null ? item.getMatchedAt() : LocalDateTime.MIN
+                    ).reversed())
+                    .limit(resolvedLimit)
+                    .toList();
+        }
+
+        Map<Long, ChatSession> sessionMap = sessionMapper.selectBatchIds(messageSessionIds).stream()
+                .collect(java.util.stream.Collectors.toMap(ChatSession::getId, session -> session));
+
+        for (ChatMessage message : matchedMessages) {
+            Long sessionId = message.getSessionId();
+            if (sessionId == null) {
+                continue;
+            }
+            ChatSession session = sessionMap.get(sessionId);
+            if (session == null) {
+                continue;
+            }
+
+            String snippet = buildSearchSnippet(message.getContent(), normalizedKeyword);
+            ChatSessionSearchResultResponse existing = resultMap.get(sessionId);
+            if (existing == null) {
+                ChatSessionSearchResultResponse item = new ChatSessionSearchResultResponse();
+                item.setSessionId(sessionId);
+                item.setTitle(session.getTitle());
+                item.setSnippet(snippet);
+                item.setMatchedMessageId(message.getId());
+                item.setMatchedBy("message");
+                item.setMatchedAt(message.getCreatedAt() != null ? message.getCreatedAt() : session.getUpdatedAt());
+                resultMap.put(sessionId, item);
+                continue;
+            }
+
+            // 标题和正文同时命中时，合并结果并优先展示正文摘要。
+            if (existing.getSnippet() == null || existing.getSnippet().isBlank()) {
+                existing.setSnippet(snippet);
+            }
+            if ("title".equals(existing.getMatchedBy())) {
+                existing.setMatchedBy("both");
+            }
+            if (existing.getMatchedMessageId() == null) {
+                existing.setMatchedMessageId(message.getId());
+            }
+            LocalDateTime messageMatchedAt = message.getCreatedAt();
+            if (messageMatchedAt != null && (existing.getMatchedAt() == null || messageMatchedAt.isAfter(existing.getMatchedAt()))) {
+                existing.setMatchedAt(messageMatchedAt);
+                existing.setMatchedMessageId(message.getId());
+            }
+        }
+
+        return resultMap.values().stream()
+                .sorted(Comparator.comparing(
+                        (ChatSessionSearchResultResponse item) -> item.getMatchedAt() != null ? item.getMatchedAt() : LocalDateTime.MIN
+                ).reversed())
+                .limit(resolvedLimit)
+                .toList();
     }
 
     public ChatSession getSession(Long id) {
@@ -1046,6 +1163,62 @@ public class ChatService {
             return defaultTitle;
         }
         return title.trim();
+    }
+
+    /**
+     * 根据命中位置裁剪一段上下文摘要，避免搜索结果行过长。
+     */
+    private String buildSearchSnippet(String rawContent, String keyword) {
+        String normalizedContent = normalizeSearchContent(rawContent);
+        if (normalizedContent == null) {
+            return null;
+        }
+        if (keyword == null || keyword.isBlank()) {
+            return clampText(normalizedContent, 120);
+        }
+
+        String lowerContent = normalizedContent.toLowerCase(Locale.ROOT);
+        String lowerKeyword = keyword.toLowerCase(Locale.ROOT);
+        int hitIndex = lowerContent.indexOf(lowerKeyword);
+        if (hitIndex < 0) {
+            return clampText(normalizedContent, 120);
+        }
+
+        int prefixLength = 28;
+        int suffixLength = 84;
+        int start = Math.max(0, hitIndex - prefixLength);
+        int end = Math.min(normalizedContent.length(), hitIndex + keyword.length() + suffixLength);
+        String snippet = normalizedContent.substring(start, end);
+        if (start > 0) {
+            snippet = "..." + snippet;
+        }
+        if (end < normalizedContent.length()) {
+            snippet = snippet + "...";
+        }
+        return snippet;
+    }
+
+    private String normalizeSearchContent(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replace('\t', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (normalized.isBlank()) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private String clampText(String value, int maxLength) {
+        if (value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength) + "...";
     }
 
     private boolean isDefaultSessionTitle(String title) {
