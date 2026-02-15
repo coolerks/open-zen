@@ -206,6 +206,8 @@ export interface ChatSendRequest {
   modelId: number;
   content?: string;
   images?: string[];
+  maxTokens?: number;
+  temperature?: number;
 }
 
 export interface StreamDonePayload {

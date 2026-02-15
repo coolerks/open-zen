@@ -734,6 +734,19 @@ public class ChatService {
                 && model.getMaxCompletionTokens() > 0) {
             defaultParams.put("max_tokens", model.getMaxCompletionTokens());
         }
+        // 前端可按单条消息覆盖输出长度与温度，不修改模型默认配置。
+        if (request.getTemperature() != null) {
+            defaultParams.put("temperature", request.getTemperature());
+        }
+        if (request.getMaxTokens() != null && request.getMaxTokens() > 0) {
+            int resolvedMaxTokens = request.getMaxTokens();
+            if (model.getMaxCompletionTokens() != null && model.getMaxCompletionTokens() > 0) {
+                long modelMax = model.getMaxCompletionTokens();
+                int safeModelMax = modelMax > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) modelMax;
+                resolvedMaxTokens = Math.min(resolvedMaxTokens, safeModelMax);
+            }
+            defaultParams.put("max_tokens", resolvedMaxTokens);
+        }
         List<ChatMessage> history = getMessages(request.getSessionId());
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();

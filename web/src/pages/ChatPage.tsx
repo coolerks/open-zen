@@ -91,6 +91,26 @@ const CODE_EXTENSION_MAP: Record<string, string> = {
 };
 
 const APP_ICON_EMOJIS = ['🚀', '📊', '🧩', '🛠️', '💡', '🧠', '🌐', '📚', '🎨', '📦'];
+type MaxTokensPresetKey = 'default' | 'low' | 'medium' | 'high' | 'ultra' | 'custom';
+type TemperaturePresetKey = 'default' | 'precise' | 'balanced' | 'creative' | 'divergent' | 'custom';
+
+const MAX_TOKENS_PRESETS: Array<{ key: MaxTokensPresetKey; label: string; value: number | null }> = [
+  { key: 'default', label: '默认（模型配置）', value: null },
+  { key: 'low', label: '短', value: 2048 },
+  { key: 'medium', label: '中', value: 4096 },
+  { key: 'high', label: '长', value: 8192 },
+  { key: 'ultra', label: '超长', value: 16384 },
+  { key: 'custom', label: '自定义', value: null },
+];
+
+const TEMPERATURE_PRESETS: Array<{ key: TemperaturePresetKey; label: string; value: number | null }> = [
+  { key: 'default', label: '默认（模型配置）', value: null },
+  { key: 'precise', label: '严谨', value: 0.2 },
+  { key: 'balanced', label: '平衡', value: 0.7 },
+  { key: 'creative', label: '创意', value: 1.0 },
+  { key: 'divergent', label: '发散', value: 1.3 },
+  { key: 'custom', label: '自定义', value: null },
+];
 
 function resolveStreamMarkdownInterval(contentLength: number): number {
   // 内容越长，Markdown 重渲染间隔越大，用于平衡流畅度与性能。
@@ -284,6 +304,41 @@ function formatReasoningDuration(durationMs: number | null | undefined): string 
     return `${minutes}分钟`;
   }
   return `${minutes}分钟${seconds}秒`;
+}
+
+function parsePositiveInteger(value: string): number | null {
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (!/^\d+$/.test(normalized)) {
+    return null;
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseTemperature(value: string): number | null {
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  if (parsed < 0 || parsed > 2) {
+    return null;
+  }
+  return parsed;
+}
+
+function formatShortNumber(value: number): string {
+  const withTwo = value.toFixed(2);
+  return withTwo.replace(/\.?0+$/, '');
 }
 
 function formatQuotedTextForPrompt(value: string): string {
@@ -1764,6 +1819,27 @@ const SparkIcon: React.FC = () => (
   </svg>
 );
 
+const OutputLengthIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4.5 6H15.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <path d="M4.5 10H12.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <path d="M4.5 14H10.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+  </svg>
+);
+
+const TemperatureIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 4.2V11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <path
+      d="M12 11.3V4.9C12 3.85 11.15 3 10.1 3H9.9C8.85 3 8 3.85 8 4.9V11.3C7.01 11.92 6.4 13 6.4 14.2C6.4 16.08 7.92 17.6 9.8 17.6H10.2C12.08 17.6 13.6 16.08 13.6 14.2C13.6 13 12.99 11.92 12 11.3Z"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 const MoreIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="5" cy="10" r="1.4" fill="currentColor" />
@@ -2365,12 +2441,17 @@ const ChatSearchDialog: React.FC<{
 const ContextUsageIndicator: React.FC<{
   stats: ChatSessionContextStats | null;
   loading: boolean;
-}> = ({ stats, loading }) => {
+  tooltipPlacement?: 'top' | 'bottom';
+}> = ({ stats, loading, tooltipPlacement = 'top' }) => {
   const ratio = Math.max(0, Math.min(1, stats?.contextUsageRatio ?? 0));
   const degree = Math.round(ratio * 360);
   const ringColor = ratio >= 0.85 ? '#ef4444' : ratio >= 0.65 ? '#f59e0b' : '#64748b';
   const ratioText = `${(ratio * 100).toFixed(1)}%`;
   const ratioCenterText = `${Math.round(ratio * 100)}%`;
+  const tooltipPositionClass =
+    tooltipPlacement === 'bottom'
+      ? 'right-0 top-10'
+      : 'bottom-10 right-0';
 
   return (
     <div className="group/context relative">
@@ -2387,43 +2468,45 @@ const ContextUsageIndicator: React.FC<{
         </div>
       </div>
 
-      <div className="pointer-events-none absolute bottom-10 right-0 z-40 w-[280px] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 opacity-0 shadow-xl transition-opacity group-hover/context:opacity-100 dark:border-slate-700 dark:bg-[#2f2f2f] dark:text-slate-300">
+      <div
+        className={`pointer-events-none absolute z-40 w-[320px] max-w-[calc(100vw-24px)] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 opacity-0 shadow-xl transition-opacity group-hover/context:opacity-100 dark:border-slate-700 dark:bg-[#2f2f2f] dark:text-slate-300 ${tooltipPositionClass}`}
+      >
         <p className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-100">上下文信息</p>
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span>模型</span>
-            <span className="max-w-[170px] truncate font-medium">{stats?.modelName ?? '-'}</span>
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0">模型</span>
+            <span className="min-w-0 text-right font-medium break-words">{stats?.modelName ?? '-'}</span>
           </div>
-          <div className="flex items-center justify-between">
-            <span>当前上下文</span>
-            <span className="font-medium">
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0">当前上下文</span>
+            <span className="min-w-0 text-right font-medium break-all">
               {formatTokenNumber(stats?.contextUsedTokens)} / {formatTokenNumber(stats?.contextWindowTokens)}
             </span>
           </div>
-          <div className="flex items-center justify-between">
-            <span>窗口占比</span>
-            <span className="font-medium">{ratioText}</span>
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0">窗口占比</span>
+            <span className="min-w-0 text-right font-medium break-all">{ratioText}</span>
           </div>
           <div className="mt-2 border-t border-slate-200 pt-2 dark:border-slate-700">
-            <div className="flex items-center justify-between">
-              <span>输入价格（M）</span>
-              <span className="font-medium">{formatUsdPerMillion(stats?.inputPrice ?? null)}</span>
+            <div className="flex items-start justify-between gap-3">
+              <span className="shrink-0">输入价格（M）</span>
+              <span className="min-w-0 text-right font-medium break-all">{formatUsdPerMillion(stats?.inputPrice ?? null)}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span>输出价格（M）</span>
-              <span className="font-medium">{formatUsdPerMillion(stats?.outputPrice ?? null)}</span>
+            <div className="flex items-start justify-between gap-3">
+              <span className="shrink-0">输出价格（M）</span>
+              <span className="min-w-0 text-right font-medium break-all">{formatUsdPerMillion(stats?.outputPrice ?? null)}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span>缓存读价格（M）</span>
-              <span className="font-medium">{formatUsdPerMillion(stats?.cacheReadPrice ?? null)}</span>
+            <div className="flex items-start justify-between gap-3">
+              <span className="shrink-0">缓存读价格（M）</span>
+              <span className="min-w-0 text-right font-medium break-all">{formatUsdPerMillion(stats?.cacheReadPrice ?? null)}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span>缓存写价格（M）</span>
-              <span className="font-medium">{formatUsdPerMillion(stats?.cacheWritePrice ?? null)}</span>
+            <div className="flex items-start justify-between gap-3">
+              <span className="shrink-0">缓存写价格（M）</span>
+              <span className="min-w-0 text-right font-medium break-all">{formatUsdPerMillion(stats?.cacheWritePrice ?? null)}</span>
             </div>
-            <div className="mt-1 flex items-center justify-between text-slate-800 dark:text-slate-100">
-              <span>当前会话花费</span>
-              <span className="font-semibold">{formatUsd(stats?.sessionCostUsd ?? null)}</span>
+            <div className="mt-1 flex items-start justify-between gap-3 text-slate-800 dark:text-slate-100">
+              <span className="shrink-0">当前会话花费</span>
+              <span className="min-w-0 text-right font-semibold break-all">{formatUsd(stats?.sessionCostUsd ?? null)}</span>
             </div>
           </div>
         </div>
@@ -2947,6 +3030,10 @@ const ChatPage: React.FC = () => {
   });
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addMenuAgentOpen, setAddMenuAgentOpen] = useState(false);
+  const [addMenuOutputLengthOpen, setAddMenuOutputLengthOpen] = useState(false);
+  const [addMenuTemperatureOpen, setAddMenuTemperatureOpen] = useState(false);
+  const [quickOutputMenuOpen, setQuickOutputMenuOpen] = useState(false);
+  const [quickTemperatureMenuOpen, setQuickTemperatureMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
   const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
@@ -2970,6 +3057,13 @@ const ChatPage: React.FC = () => {
     title: '',
   });
   const [preferredModelId, setPreferredModelId] = useState<number | null>(() => readStoredModelId());
+  const [maxTokensPreset, setMaxTokensPreset] = useState<MaxTokensPresetKey>('default');
+  const [maxTokensCustomInput, setMaxTokensCustomInput] = useState('4096');
+  const [temperaturePreset, setTemperaturePreset] = useState<TemperaturePresetKey>('default');
+  const [temperatureCustomInput, setTemperatureCustomInput] = useState('0.7');
+  const [composerParamError, setComposerParamError] = useState<string | null>(null);
+  const [inputVisualLineCount, setInputVisualLineCount] = useState(1);
+  const [hasWrappedInCompactComposer, setHasWrappedInCompactComposer] = useState(false);
 
   const [branchDialog, setBranchDialog] = useState<{ open: boolean; message: ChatMessage | null; title: string }>({
     open: false,
@@ -2986,6 +3080,8 @@ const ChatPage: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const agentPickerRef = useRef<HTMLDivElement>(null);
+  const quickOutputMenuRef = useRef<HTMLDivElement>(null);
+  const quickTemperatureMenuRef = useRef<HTMLDivElement>(null);
   const sidebarSettingsRef = useRef<HTMLDivElement>(null);
   const headerMoreRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3077,6 +3173,99 @@ const ChatPage: React.FC = () => {
     [enabledModels, effectiveSelectedModelId],
   );
 
+  const selectedModelMaxCompletionTokens = useMemo(() => {
+    if (!selectedModel?.maxCompletionTokens || selectedModel.maxCompletionTokens <= 0) {
+      return null;
+    }
+    return selectedModel.maxCompletionTokens;
+  }, [selectedModel?.maxCompletionTokens]);
+
+  const parsedCustomMaxTokens = useMemo(
+    () => parsePositiveInteger(maxTokensCustomInput),
+    [maxTokensCustomInput],
+  );
+  const parsedCustomTemperature = useMemo(
+    () => parseTemperature(temperatureCustomInput),
+    [temperatureCustomInput],
+  );
+
+  const resolvedMaxTokens = useMemo(() => {
+    if (maxTokensPreset === 'default') {
+      return null;
+    }
+    const presetValue = MAX_TOKENS_PRESETS.find((item) => item.key === maxTokensPreset)?.value ?? null;
+    const rawValue = maxTokensPreset === 'custom' ? parsedCustomMaxTokens : presetValue;
+    if (rawValue == null) {
+      return null;
+    }
+    if (selectedModelMaxCompletionTokens != null) {
+      return Math.min(rawValue, selectedModelMaxCompletionTokens);
+    }
+    return rawValue;
+  }, [maxTokensPreset, parsedCustomMaxTokens, selectedModelMaxCompletionTokens]);
+
+  const resolvedTemperature = useMemo(() => {
+    if (temperaturePreset === 'default') {
+      return null;
+    }
+    const presetValue = TEMPERATURE_PRESETS.find((item) => item.key === temperaturePreset)?.value ?? null;
+    return temperaturePreset === 'custom' ? parsedCustomTemperature : presetValue;
+  }, [temperaturePreset, parsedCustomTemperature]);
+
+  const maxTokensDisplayText = useMemo(() => {
+    if (maxTokensPreset === 'default' || resolvedMaxTokens == null) {
+      return null;
+    }
+    if (maxTokensPreset === 'custom') {
+      return `输出长度：自定义（${resolvedMaxTokens}）`;
+    }
+    const label = MAX_TOKENS_PRESETS.find((item) => item.key === maxTokensPreset)?.label ?? '自定义';
+    return `输出长度：${label}（${resolvedMaxTokens}）`;
+  }, [maxTokensPreset, resolvedMaxTokens]);
+
+  const temperatureDisplayText = useMemo(() => {
+    if (temperaturePreset === 'default' || resolvedTemperature == null) {
+      return null;
+    }
+    if (temperaturePreset === 'custom') {
+      return `温度：自定义（${formatShortNumber(resolvedTemperature)}）`;
+    }
+    const label = TEMPERATURE_PRESETS.find((item) => item.key === temperaturePreset)?.label ?? '自定义';
+    return `温度：${label}（${formatShortNumber(resolvedTemperature)}）`;
+  }, [temperaturePreset, resolvedTemperature]);
+
+  const maxTokensShortLabel = useMemo(() => {
+    if (!maxTokensDisplayText) {
+      return null;
+    }
+    const map: Record<Exclude<MaxTokensPresetKey, 'default'>, string> = {
+      low: '短',
+      medium: '中',
+      high: '长',
+      ultra: '超长',
+      custom: '自定义',
+    };
+    return map[maxTokensPreset as Exclude<MaxTokensPresetKey, 'default'>] ?? null;
+  }, [maxTokensDisplayText, maxTokensPreset]);
+
+  const temperatureShortLabel = useMemo(() => {
+    if (!temperatureDisplayText) {
+      return null;
+    }
+    const map: Record<Exclude<TemperaturePresetKey, 'default'>, string> = {
+      precise: '严谨',
+      balanced: '平衡',
+      creative: '创意',
+      divergent: '发散',
+      custom: '自定义',
+    };
+    return map[temperaturePreset as Exclude<TemperaturePresetKey, 'default'>] ?? null;
+  }, [temperatureDisplayText, temperaturePreset]);
+
+  const hasComposerParamSummary = Boolean(maxTokensShortLabel || temperatureShortLabel);
+  const maxTokensCustomInvalid = maxTokensPreset === 'custom' && parsedCustomMaxTokens == null;
+  const temperatureCustomInvalid = temperaturePreset === 'custom' && parsedCustomTemperature == null;
+
   const defaultAgent = useMemo(
     () => enabledAgents.find((agent) => agent.isDefault) ?? enabledAgents[0] ?? null,
     [enabledAgents],
@@ -3100,6 +3289,9 @@ const ChatPage: React.FC = () => {
     () => enabledAgents.find((agent) => agent.id === activeAgentId) ?? defaultAgent,
     [enabledAgents, activeAgentId, defaultAgent],
   );
+  const showAgentChip = Boolean(activeAgent && !activeAgent.isDefault);
+  const allComposerSettingsDefault = !showAgentChip && maxTokensPreset === 'default' && temperaturePreset === 'default';
+  const isCompactComposer = allComposerSettingsDefault && !hasWrappedInCompactComposer && inputVisualLineCount <= 1;
 
   const assistantProfile = useMemo<AssistantProfile>(() => {
     if (!activeAgent || activeAgent.isDefault) {
@@ -3492,7 +3684,7 @@ const ChatPage: React.FC = () => {
   );
 
   useEffect(() => {
-    if (!addMenuOpen && !agentPickerOpen) {
+    if (!addMenuOpen && !agentPickerOpen && !quickOutputMenuOpen && !quickTemperatureMenuOpen) {
       return;
     }
 
@@ -3503,14 +3695,24 @@ const ChatPage: React.FC = () => {
       if (agentPickerRef.current?.contains(event.target as Node)) {
         return;
       }
+      if (quickOutputMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      if (quickTemperatureMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
       setAddMenuOpen(false);
       setAddMenuAgentOpen(false);
+      setAddMenuOutputLengthOpen(false);
+      setAddMenuTemperatureOpen(false);
+      setQuickOutputMenuOpen(false);
+      setQuickTemperatureMenuOpen(false);
       setAgentPickerOpen(false);
     };
 
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
-  }, [addMenuOpen, agentPickerOpen]);
+  }, [addMenuOpen, agentPickerOpen, quickOutputMenuOpen, quickTemperatureMenuOpen]);
 
   useEffect(() => {
     if (!sidebarSettingsOpen && !headerMoreOpen) {
@@ -3610,6 +3812,8 @@ const ChatPage: React.FC = () => {
     const maxHeight = lineHeight * 8;
 
     element.style.height = 'auto';
+    const visualLineCount = Math.max(1, Math.ceil(element.scrollHeight / lineHeight));
+    setInputVisualLineCount((prev) => (prev === visualLineCount ? prev : visualLineCount));
     const nextHeight = Math.min(Math.max(element.scrollHeight, lineHeight), maxHeight);
     element.style.height = `${nextHeight}px`;
     element.style.overflowY = element.scrollHeight > maxHeight ? 'auto' : 'hidden';
@@ -3618,6 +3822,29 @@ const ChatPage: React.FC = () => {
   useEffect(() => {
     adjustInputHeight();
   }, [input]);
+
+  useEffect(() => {
+    if (!allComposerSettingsDefault || input.length === 0) {
+      if (hasWrappedInCompactComposer) {
+        setHasWrappedInCompactComposer(false);
+      }
+      return;
+    }
+
+    if (!hasWrappedInCompactComposer && inputVisualLineCount > 1) {
+      // 一旦在紧凑模式触发自动换行，锁定为展开布局，避免首行与按钮区域反复抖动。
+      setHasWrappedInCompactComposer(true);
+    }
+  }, [allComposerSettingsDefault, input.length, inputVisualLineCount, hasWrappedInCompactComposer]);
+
+  useEffect(() => {
+    if (!composerParamError) {
+      return;
+    }
+    if (!maxTokensCustomInvalid && !temperatureCustomInvalid) {
+      setComposerParamError(null);
+    }
+  }, [composerParamError, maxTokensCustomInvalid, temperatureCustomInvalid]);
 
   const resolvePreferredModelForNewSession = useCallback(() => {
     if (preferredModelId != null && enabledModelIdSet.has(preferredModelId)) {
@@ -3717,7 +3944,17 @@ const ChatPage: React.FC = () => {
       return;
     }
 
+    if (maxTokensCustomInvalid) {
+      setComposerParamError('自定义输出长度无效，请输入大于 0 的整数。');
+      return;
+    }
+    if (temperatureCustomInvalid) {
+      setComposerParamError('自定义温度无效，请输入 0 到 2 之间的数字。');
+      return;
+    }
+
     clearError();
+    setComposerParamError(null);
     shouldAutoScrollRef.current = true;
     const ready = await ensureSessionReady();
     if (!ready) {
@@ -3731,7 +3968,10 @@ const ChatPage: React.FC = () => {
     setQuotedSelection(null);
     setSelectionAction(null);
 
-    await sendMessage(text, images);
+    await sendMessage(text, images, {
+      maxTokens: resolvedMaxTokens,
+      temperature: resolvedTemperature,
+    });
   };
 
   const handleCopyMessage = useCallback(async (message: ChatMessage) => {
@@ -3899,6 +4139,10 @@ const ChatPage: React.FC = () => {
     }
     setAddMenuOpen(false);
     setAddMenuAgentOpen(false);
+    setAddMenuOutputLengthOpen(false);
+    setAddMenuTemperatureOpen(false);
+    setQuickOutputMenuOpen(false);
+    setQuickTemperatureMenuOpen(false);
     setAgentPickerOpen(false);
   };
 
@@ -4097,6 +4341,293 @@ const ChatPage: React.FC = () => {
     }
     navigate(`/chat/${sessionId}`);
   };
+
+  const renderComposerSendControls = () => (
+    <div className="flex items-center gap-2">
+      {streaming ? (
+        <button
+          onClick={() => void stopStreaming()}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
+          title="停止生成"
+          type="button"
+        >
+          <svg className="h-[18px] w-[18px]" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3.5" y="3.5" width="13" height="13" rx="2.2" fill="currentColor" />
+          </svg>
+        </button>
+      ) : (
+        <button
+          onClick={() => void handleSend()}
+          disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
+          title="发送"
+          type="button"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10 3L10 15M10 3L5 8M10 3L15 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+
+  const renderComposerAddMenuButton = () => (
+    <div className="relative" ref={addMenuRef}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(event) => void handleUploadImages(event)}
+      />
+
+      <button
+        onClick={() => {
+          setAddMenuOpen((prev) => !prev);
+          setAddMenuAgentOpen(false);
+          setAddMenuOutputLengthOpen(false);
+          setAddMenuTemperatureOpen(false);
+          setQuickOutputMenuOpen(false);
+          setQuickTemperatureMenuOpen(false);
+          setAgentPickerOpen(false);
+        }}
+        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        type="button"
+        title="更多"
+      >
+        <PlusIcon />
+      </button>
+
+      {addMenuOpen && (
+        <div className="absolute bottom-11 left-0 z-30 min-w-[180px] overflow-visible rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+          <button
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={() => {
+              fileInputRef.current?.click();
+              setAddMenuOpen(false);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            onMouseEnter={() => {
+              // 鼠标回到一级菜单项时，收起所有二级菜单，避免“悬挂”在右侧。
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+            }}
+            type="button"
+          >
+            <UploadIcon />
+            <span>上传图片</span>
+          </button>
+
+          <button
+            className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={() => {
+              setAddMenuOutputLengthOpen((prev) => !prev);
+              setAddMenuAgentOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            onMouseEnter={() => {
+              setAddMenuOutputLengthOpen(true);
+              setAddMenuAgentOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            type="button"
+          >
+            <span className="inline-flex items-center gap-2">
+              <OutputLengthIcon />
+              输出长度
+            </span>
+            <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+          </button>
+
+          {addMenuOutputLengthOpen && (
+            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+              {MAX_TOKENS_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  onClick={() => {
+                    setMaxTokensPreset(preset.key);
+                    if (preset.key !== 'custom') {
+                      setAddMenuOpen(false);
+                      setAddMenuOutputLengthOpen(false);
+                      setAddMenuTemperatureOpen(false);
+                      setAddMenuAgentOpen(false);
+                      setQuickOutputMenuOpen(false);
+                      setQuickTemperatureMenuOpen(false);
+                    }
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                    maxTokensPreset === preset.key
+                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                  }`}
+                  type="button"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <OutputLengthIcon />
+                    {preset.label}
+                    {preset.value != null && (
+                      <span className="text-xs text-slate-400 dark:text-slate-500">
+                        {preset.value}
+                      </span>
+                    )}
+                  </span>
+                  {maxTokensPreset === preset.key && <CheckIcon />}
+                </button>
+              ))}
+
+              {maxTokensPreset === 'custom' && (
+                <div className="px-2 pb-2 pt-1">
+                  <input
+                    value={maxTokensCustomInput}
+                    onChange={(event) => setMaxTokensCustomInput(event.target.value)}
+                    placeholder="输入 max_tokens（整数）"
+                    className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white px-2.5 text-xs text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
+                  />
+                  {selectedModelMaxCompletionTokens != null && (
+                    <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                      当前模型上限：{selectedModelMaxCompletionTokens}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={() => {
+              setAddMenuTemperatureOpen((prev) => !prev);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            onMouseEnter={() => {
+              setAddMenuTemperatureOpen(true);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            type="button"
+          >
+            <span className="inline-flex items-center gap-2">
+              <TemperatureIcon />
+              温度
+            </span>
+            <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+          </button>
+
+          {addMenuTemperatureOpen && (
+            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+              {TEMPERATURE_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  onClick={() => {
+                    setTemperaturePreset(preset.key);
+                    if (preset.key !== 'custom') {
+                      setAddMenuOpen(false);
+                      setAddMenuOutputLengthOpen(false);
+                      setAddMenuTemperatureOpen(false);
+                      setAddMenuAgentOpen(false);
+                      setQuickOutputMenuOpen(false);
+                      setQuickTemperatureMenuOpen(false);
+                    }
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                    temperaturePreset === preset.key
+                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                  }`}
+                  type="button"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <TemperatureIcon />
+                    {preset.label}
+                    {preset.value != null && (
+                      <span className="text-xs text-slate-400 dark:text-slate-500">
+                        {formatShortNumber(preset.value)}
+                      </span>
+                    )}
+                  </span>
+                  {temperaturePreset === preset.key && <CheckIcon />}
+                </button>
+              ))}
+
+              {temperaturePreset === 'custom' && (
+                <div className="px-2 pb-2 pt-1">
+                  <input
+                    value={temperatureCustomInput}
+                    onChange={(event) => setTemperatureCustomInput(event.target.value)}
+                    placeholder="输入温度（0 - 2）"
+                    className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white px-2.5 text-xs text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={() => {
+              setAddMenuAgentOpen((prev) => !prev);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            onMouseEnter={() => {
+              setAddMenuAgentOpen(true);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+            }}
+            type="button"
+          >
+            <span className="inline-flex items-center gap-2">
+              <SparkIcon />
+              选择智能体
+            </span>
+            <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+          </button>
+
+          {addMenuAgentOpen && (
+            <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+              {visibleAgents.map((agent) => (
+                <button
+                  key={agent.id}
+                  onClick={() => void handleSelectAgent(agent.id)}
+                  className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                    activeAgentId === agent.id
+                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                  }`}
+                  type="button"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <SparkIcon />
+                    {agent.name}
+                  </span>
+                  {activeAgentId === agent.id && <CheckIcon />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex h-full min-h-0 bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
@@ -4298,6 +4829,14 @@ const ChatPage: React.FC = () => {
           )}
 
           <div className="ml-auto flex items-center gap-1">
+            {isChatRoute && (
+              <ContextUsageIndicator
+                stats={contextStats}
+                loading={contextStatsLoading}
+                tooltipPlacement="bottom"
+              />
+            )}
+
             <button
               type="button"
               onClick={toggleTheme}
@@ -4481,104 +5020,42 @@ const ChatPage: React.FC = () => {
                     </div>
                   )}
 
-                  <textarea
-                    ref={textareaRef}
-                    value={input}
-                    onChange={handleInputChange}
-                    onKeyDown={handleKeyDown}
-                    onCompositionStart={() => {
-                      composingRef.current = true;
-                    }}
-                    onCompositionEnd={() => {
-                      composingRef.current = false;
-                    }}
-                    onPaste={(event) => void handlePaste(event)}
-                    placeholder="输入消息，Enter 发送，Shift + Enter 换行"
-                    rows={1}
-                    disabled={streaming}
-                    className="w-full resize-none border-none bg-transparent text-sm leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100"
-                  />
+                  <div className={isCompactComposer ? 'grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2' : ''}>
+                    {isCompactComposer && <div className="shrink-0">{renderComposerAddMenuButton()}</div>}
 
-                  <div className="mt-2 flex items-center justify-between">
+                    <textarea
+                      ref={textareaRef}
+                      value={input}
+                      onChange={handleInputChange}
+                      onKeyDown={handleKeyDown}
+                      onCompositionStart={() => {
+                        composingRef.current = true;
+                      }}
+                      onCompositionEnd={() => {
+                        composingRef.current = false;
+                      }}
+                      onPaste={(event) => void handlePaste(event)}
+                      placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                      rows={1}
+                      disabled={streaming}
+                      className={`resize-none border-none bg-transparent text-sm leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100 ${
+                        isCompactComposer ? 'min-h-[24px] min-w-0 w-full' : 'w-full'
+                      }`}
+                    />
+
+                    {isCompactComposer && <div className="shrink-0">{renderComposerSendControls()}</div>}
+                  </div>
+
+                  {composerParamError && (
+                    <p className="mt-2 text-xs text-rose-500 dark:text-rose-300">{composerParamError}</p>
+                  )}
+
+                  {!isCompactComposer && (
+                    <div className="mt-2 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <div className="relative" ref={addMenuRef}>
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          className="hidden"
-                          onChange={(event) => void handleUploadImages(event)}
-                        />
+                      {renderComposerAddMenuButton()}
 
-                        <button
-                          onClick={() => {
-                            setAddMenuOpen((prev) => !prev);
-                            setAddMenuAgentOpen(false);
-                            setAgentPickerOpen(false);
-                          }}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                          type="button"
-                          title="更多"
-                        >
-                          <PlusIcon />
-                        </button>
-
-                        {addMenuOpen && (
-                          <div className="absolute bottom-11 left-0 z-30 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
-                            <button
-                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-                              onClick={() => {
-                                fileInputRef.current?.click();
-                                setAddMenuOpen(false);
-                                setAddMenuAgentOpen(false);
-                              }}
-                              type="button"
-                            >
-                              <UploadIcon />
-                              <span>上传图片</span>
-                            </button>
-
-                            <button
-                              className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-                              onClick={() => setAddMenuAgentOpen((prev) => !prev)}
-                              onMouseEnter={() => setAddMenuAgentOpen(true)}
-                              type="button"
-                            >
-                              <span className="inline-flex items-center gap-2">
-                                <SparkIcon />
-                                选择智能体
-                              </span>
-                              <ChevronRightIcon className="h-4 w-4 text-slate-400" />
-                            </button>
-
-                            {addMenuAgentOpen && (
-                              <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
-                                {visibleAgents.map((agent) => (
-                                  <button
-                                    key={agent.id}
-                                    onClick={() => void handleSelectAgent(agent.id)}
-                                    className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
-                                      activeAgentId === agent.id
-                                        ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
-                                        : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
-                                    }`}
-                                    type="button"
-                                  >
-                                    <span className="inline-flex items-center gap-2">
-                                      <SparkIcon />
-                                      {agent.name}
-                                    </span>
-                                    {activeAgentId === agent.id && <CheckIcon />}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {activeAgent && (
+                      {showAgentChip && activeAgent && (
                         <div className="relative" ref={agentPickerRef}>
                           <button
                             className="inline-flex h-9 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 text-xs text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-200 dark:hover:bg-[#2d2d2d]"
@@ -4587,6 +5064,10 @@ const ChatPage: React.FC = () => {
                               setAgentPickerOpen((prev) => !prev);
                               setAddMenuOpen(false);
                               setAddMenuAgentOpen(false);
+                              setAddMenuOutputLengthOpen(false);
+                              setAddMenuTemperatureOpen(false);
+                              setQuickOutputMenuOpen(false);
+                              setQuickTemperatureMenuOpen(false);
                             }}
                             title="切换智能体"
                           >
@@ -4619,36 +5100,153 @@ const ChatPage: React.FC = () => {
                           )}
                         </div>
                       )}
-                    </div>
 
-                    <div className="flex items-center gap-2">
-                      <ContextUsageIndicator stats={contextStats} loading={contextStatsLoading} />
-                      {streaming ? (
-                        <button
-                          onClick={() => void stopStreaming()}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
-                          title="停止生成"
-                          type="button"
-                        >
-                          <svg className="h-[18px] w-[18px]" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <rect x="3.5" y="3.5" width="13" height="13" rx="2.2" fill="currentColor" />
-                          </svg>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => void handleSend()}
-                          disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
-                          title="发送"
-                          type="button"
-                        >
-                          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M10 3L10 15M10 3L5 8M10 3L15 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        </button>
+                      {hasComposerParamSummary && (
+                        <div className="flex items-center gap-1">
+                          {maxTokensShortLabel && (
+                            <div className="relative" ref={quickOutputMenuRef}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickOutputMenuOpen((prev) => !prev);
+                                  setQuickTemperatureMenuOpen(false);
+                                  setAddMenuOpen(false);
+                                  setAddMenuAgentOpen(false);
+                                  setAddMenuOutputLengthOpen(false);
+                                  setAddMenuTemperatureOpen(false);
+                                  setAgentPickerOpen(false);
+                                }}
+                                className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
+                                title={maxTokensDisplayText ?? undefined}
+                                aria-label={maxTokensDisplayText ?? undefined}
+                              >
+                                {maxTokensShortLabel}
+                              </button>
+
+                              {quickOutputMenuOpen && (
+                                <div className="absolute bottom-11 left-0 z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                                  {MAX_TOKENS_PRESETS.map((preset) => (
+                                    <button
+                                      key={`quick-output-${preset.key}`}
+                                      onClick={() => {
+                                        setMaxTokensPreset(preset.key);
+                                        if (preset.key !== 'custom') {
+                                          setQuickOutputMenuOpen(false);
+                                          setQuickTemperatureMenuOpen(false);
+                                        }
+                                      }}
+                                      className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                        maxTokensPreset === preset.key
+                                          ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                          : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                      }`}
+                                      type="button"
+                                    >
+                                      <span className="inline-flex items-center gap-2">
+                                        <OutputLengthIcon />
+                                        {preset.label}
+                                        {preset.value != null && (
+                                          <span className="text-xs text-slate-400 dark:text-slate-500">
+                                            {preset.value}
+                                          </span>
+                                        )}
+                                      </span>
+                                      {maxTokensPreset === preset.key && <CheckIcon />}
+                                    </button>
+                                  ))}
+
+                                  {maxTokensPreset === 'custom' && (
+                                    <div className="px-2 pb-2 pt-1">
+                                      <input
+                                        value={maxTokensCustomInput}
+                                        onChange={(event) => setMaxTokensCustomInput(event.target.value)}
+                                        placeholder="输入 max_tokens（整数）"
+                                        className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white px-2.5 text-xs text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
+                                      />
+                                      {selectedModelMaxCompletionTokens != null && (
+                                        <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                                          当前模型上限：{selectedModelMaxCompletionTokens}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {temperatureShortLabel && (
+                            <div className="relative" ref={quickTemperatureMenuRef}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickTemperatureMenuOpen((prev) => !prev);
+                                  setQuickOutputMenuOpen(false);
+                                  setAddMenuOpen(false);
+                                  setAddMenuAgentOpen(false);
+                                  setAddMenuOutputLengthOpen(false);
+                                  setAddMenuTemperatureOpen(false);
+                                  setAgentPickerOpen(false);
+                                }}
+                                className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
+                                title={temperatureDisplayText ?? undefined}
+                                aria-label={temperatureDisplayText ?? undefined}
+                              >
+                                {temperatureShortLabel}
+                              </button>
+
+                              {quickTemperatureMenuOpen && (
+                                <div className="absolute bottom-11 left-0 z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                                  {TEMPERATURE_PRESETS.map((preset) => (
+                                    <button
+                                      key={`quick-temperature-${preset.key}`}
+                                      onClick={() => {
+                                        setTemperaturePreset(preset.key);
+                                        if (preset.key !== 'custom') {
+                                          setQuickOutputMenuOpen(false);
+                                          setQuickTemperatureMenuOpen(false);
+                                        }
+                                      }}
+                                      className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                        temperaturePreset === preset.key
+                                          ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                          : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                      }`}
+                                      type="button"
+                                    >
+                                      <span className="inline-flex items-center gap-2">
+                                        <TemperatureIcon />
+                                        {preset.label}
+                                        {preset.value != null && (
+                                          <span className="text-xs text-slate-400 dark:text-slate-500">
+                                            {formatShortNumber(preset.value)}
+                                          </span>
+                                        )}
+                                      </span>
+                                      {temperaturePreset === preset.key && <CheckIcon />}
+                                    </button>
+                                  ))}
+
+                                  {temperaturePreset === 'custom' && (
+                                    <div className="px-2 pb-2 pt-1">
+                                      <input
+                                        value={temperatureCustomInput}
+                                        onChange={(event) => setTemperatureCustomInput(event.target.value)}
+                                        placeholder="输入温度（0 - 2）"
+                                        className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white px-2.5 text-xs text-slate-700 outline-none transition focus:border-slate-400 dark:border-slate-600 dark:bg-[#212121] dark:text-slate-100"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
+
+                    {renderComposerSendControls()}
                   </div>
+                  )}
                 </div>
 
                 <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500">

@@ -25,7 +25,11 @@ interface ChatState {
   renameSession: (id: number, title: string) => Promise<void>;
   selectSession: (id: number) => Promise<void>;
   fetchMessages: (sessionId: number) => Promise<void>;
-  sendMessage: (content: string, images?: string[]) => Promise<void>;
+  sendMessage: (
+    content: string,
+    images?: string[],
+    options?: { maxTokens?: number | null; temperature?: number | null },
+  ) => Promise<void>;
   stopStreaming: () => Promise<void>;
   deleteMessage: (messageId: number) => Promise<void>;
   branchFromMessage: (messageId: number, title?: string) => Promise<ChatSession>;
@@ -185,7 +189,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content, images = []) => {
+  sendMessage: async (content, images = [], options) => {
     const { currentSessionId, selectedModelId, messages, currentSession } = get();
     if (!currentSessionId || !selectedModelId) {
       set({ error: '请先选择会话和模型' });
@@ -393,6 +397,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           modelId: selectedModelId,
           content: normalizedContent || undefined,
           images: normalizedImages.length > 0 ? normalizedImages : undefined,
+          maxTokens: options?.maxTokens != null ? options.maxTokens : undefined,
+          temperature: options?.temperature != null ? options.temperature : undefined,
         },
         {
           onDelta: ({ content: delta }) => {

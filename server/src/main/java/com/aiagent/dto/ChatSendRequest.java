@@ -1,6 +1,10 @@
 package com.aiagent.dto;
 
 import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -17,6 +21,14 @@ public class ChatSendRequest {
     private String content;
 
     private List<String> images;
+
+    @Min(value = 1, message = "maxTokens 必须大于 0")
+    @Max(value = 2_000_000, message = "maxTokens 超出允许范围")
+    private Integer maxTokens;
+
+    @DecimalMin(value = "0.0", message = "temperature 不能小于 0")
+    @DecimalMax(value = "2.0", message = "temperature 不能大于 2")
+    private Double temperature;
 
     @AssertTrue(message = "消息内容和图片不能同时为空")
     public boolean isPayloadValid() {
