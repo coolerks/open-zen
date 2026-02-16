@@ -1167,15 +1167,31 @@ public class ChatService {
     private int resolveReservedOutputTokens(AiModel model,
                                             Map<String, Object> defaultParams,
                                             long contextWindowTokens) {
-        if (model != null && model.getMaxCompletionTokens() != null && model.getMaxCompletionTokens() > 0) {
-            return (int) Math.min(model.getMaxCompletionTokens(), Integer.MAX_VALUE);
-        }
         Object maxTokens = defaultParams.get("max_tokens");
         if (maxTokens instanceof Number number) {
-            return Math.max(number.intValue(), MIN_PROMPT_BUDGET_TOKENS);
+            return clampReservedOutputTokens(number.intValue(), contextWindowTokens);
+        }
+        if (model != null && model.getMaxCompletionTokens() != null && model.getMaxCompletionTokens() > 0) {
+            // max_completion_tokens 是“能力上限”，不是“本次必定输出”，此处按启发式保守预留。
+            long heuristicReserved = Math.min(
+                    model.getMaxCompletionTokens(),
+                    Math.max(DEFAULT_RESERVED_OUTPUT_TOKENS, contextWindowTokens / 8)
+            );
+            return clampReservedOutputTokens((int) Math.min(heuristicReserved, Integer.MAX_VALUE), contextWindowTokens);
         }
         int byWindow = (int) Math.max(contextWindowTokens / 8, MIN_PROMPT_BUDGET_TOKENS);
-        return Math.max(DEFAULT_RESERVED_OUTPUT_TOKENS, byWindow);
+        return clampReservedOutputTokens(Math.max(DEFAULT_RESERVED_OUTPUT_TOKENS, byWindow), contextWindowTokens);
+    }
+
+    /**
+     * 预留输出 token 的硬性约束：
+     * 1) 最小预留 256，避免输出过短；
+     * 2) 至少保留 MIN_PROMPT_BUDGET_TOKENS 给历史上下文，避免“只剩最后一条消息”。
+     */
+    private int clampReservedOutputTokens(int desiredReservedTokens, long contextWindowTokens) {
+        long normalized = Math.max(256L, desiredReservedTokens);
+        long maxByWindow = Math.max(256L, contextWindowTokens - MIN_PROMPT_BUDGET_TOKENS);
+        return (int) Math.min(Math.min(normalized, maxByWindow), Integer.MAX_VALUE);
     }
 
     private int estimateContextTokens(List<ChatMessage> messages) {
