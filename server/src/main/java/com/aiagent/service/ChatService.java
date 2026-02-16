@@ -458,111 +458,7 @@ public class ChatService {
      */
     public ChatMessage sendMessage(ChatSendRequest request) {
         SendContext context = prepareSendContext(request, true);
-        List<ChatMessage> history = context.history();
-
-        ChatCompletionResponse lastResponse = null;
-        for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            ChatCompletionRequest completionRequest = buildRequest(
-                    context.model().getModelKey(),
-                    history,
-                    context.defaultParams(),
-                    context.tools(),
-                    context.systemPrompt()
-            );
-            completionRequest.setStream(false);
-
-            long requestStartAt = System.currentTimeMillis();
-            lastResponse = openRouterClient.chatCompletion(
-                    context.provider().getBaseUrl(),
-                    context.apiKey(),
-                    completionRequest
-            );
-            long requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
-
-            if (lastResponse.getChoices() == null || lastResponse.getChoices().isEmpty()) {
-                throw new RuntimeException("OpenRouter 返回空响应");
-            }
-
-            ChatCompletionResponse.Choice choice = lastResponse.getChoices().get(0);
-            ChatCompletionResponse.Message responseMessage = choice.getMessage();
-            String reasoningText = extractReasoning(responseMessage);
-            boolean hasToolCalls = responseMessage != null
-                    && responseMessage.getToolCalls() != null
-                    && !responseMessage.getToolCalls().isEmpty();
-
-            if (hasToolCalls && Boolean.TRUE.equals(context.model().getSupportsTools())) {
-                ChatMessage assistantToolMessage = new ChatMessage();
-                assistantToolMessage.setSessionId(request.getSessionId());
-                assistantToolMessage.setRole("assistant");
-                assistantToolMessage.setContent(normalizeContent(responseMessage.getContent()));
-                assistantToolMessage.setReasoningContent(reasoningText);
-                assistantToolMessage.setReasoningDurationMs(resolveReasoningDurationMs(reasoningText, requestDurationMs));
-                assistantToolMessage.setModelId(context.model().getId());
-                assistantToolMessage.setModelName(context.model().getDisplayName());
-                applyAgentSnapshot(assistantToolMessage, context.agent());
-                applyUsageSnapshot(assistantToolMessage, lastResponse.getUsage(), context.model());
-                assistantToolMessage.setCreatedAt(LocalDateTime.now());
-                try {
-                    assistantToolMessage.setToolCalls(
-                            objectMapper.writeValueAsString(responseMessage.getToolCalls()));
-                } catch (JsonProcessingException e) {
-                    log.warn("工具调用序列化失败", e);
-                }
-                messageMapper.insert(assistantToolMessage);
-
-                for (ChatCompletionResponse.ToolCall toolCall : responseMessage.getToolCalls()) {
-                    String toolResult = executeToolCall(toolCall);
-
-                    ChatMessage toolMessage = new ChatMessage();
-                    toolMessage.setSessionId(request.getSessionId());
-                    toolMessage.setRole("tool");
-                    toolMessage.setContent(toolResult);
-                    toolMessage.setToolCallId(toolCall.getId());
-                    toolMessage.setModelId(context.model().getId());
-                    toolMessage.setModelName(context.model().getDisplayName());
-                    applyAgentSnapshot(toolMessage, context.agent());
-                    toolMessage.setCreatedAt(LocalDateTime.now());
-                    messageMapper.insert(toolMessage);
-                }
-
-                CompressionResult compressionResult = compressHistoryIfNeeded(
-                        getMessages(request.getSessionId()),
-                        context.model(),
-                        context.defaultParams()
-                );
-                history = compressionResult.history();
-                continue;
-            }
-
-            ChatMessage assistantMessage = new ChatMessage();
-            assistantMessage.setSessionId(request.getSessionId());
-            assistantMessage.setRole("assistant");
-            assistantMessage.setContent(normalizeContent(responseMessage != null ? responseMessage.getContent() : null));
-            assistantMessage.setReasoningContent(reasoningText);
-            assistantMessage.setReasoningDurationMs(resolveReasoningDurationMs(reasoningText, requestDurationMs));
-            assistantMessage.setModelId(context.model().getId());
-            assistantMessage.setModelName(context.model().getDisplayName());
-            applyAgentSnapshot(assistantMessage, context.agent());
-            applyUsageSnapshot(assistantMessage, lastResponse.getUsage(), context.model());
-            assistantMessage.setCreatedAt(LocalDateTime.now());
-            messageMapper.insert(assistantMessage);
-
-            touchSession(context.session(), context.model().getId());
-            return assistantMessage;
-        }
-
-        ChatMessage fallbackMessage = new ChatMessage();
-        fallbackMessage.setSessionId(request.getSessionId());
-        fallbackMessage.setRole("assistant");
-        fallbackMessage.setContent("工具调用轮次超限，已停止处理。");
-        fallbackMessage.setModelId(context.model().getId());
-        fallbackMessage.setModelName(context.model().getDisplayName());
-        applyAgentSnapshot(fallbackMessage, context.agent());
-        fallbackMessage.setCreatedAt(LocalDateTime.now());
-        messageMapper.insert(fallbackMessage);
-
-        touchSession(context.session(), context.model().getId());
-        return fallbackMessage;
+        return runCompletionWithTools(request.getSessionId(), context);
     }
 
     /**
@@ -573,13 +469,54 @@ public class ChatService {
 
         Thread.startVirtualThread(() -> {
             try {
-                SendContext context = prepareSendContext(request, false);
+                SendContext context = prepareSendContext(request, true);
+                boolean hasAvailableTools = context.tools() != null && !context.tools().isEmpty();
+
+                sendEvent(emitter, "start", Map.of(
+                        "sessionId", request.getSessionId(),
+                        "modelId", context.model().getId(),
+                        "modelName", context.model().getDisplayName(),
+                        "contextUsedTokens", context.compressionResult().usedTokens(),
+                        "contextWindowTokens", context.compressionResult().contextWindowTokens(),
+                        "compressedMessageCount", context.compressionResult().droppedMessages()
+                ));
+
+                // 工具模式下走非流式工具闭环，确保工具可真正执行；再通过 SSE 回传最终内容。
+                if (hasAvailableTools) {
+                    ChatMessage assistantMessage = runCompletionWithTools(request.getSessionId(), context);
+                    String reasoningText = normalizeContent(assistantMessage.getReasoningContent());
+                    if (reasoningText != null) {
+                        sendEvent(emitter, "reasoning", Map.of("reasoning", reasoningText));
+                    }
+                    String contentText = normalizeContent(assistantMessage.getContent());
+                    if (contentText != null) {
+                        sendEvent(emitter, "delta", Map.of("content", contentText));
+                    }
+
+                    ChatSessionContextStatsResponse contextStats = getSessionContextStats(request.getSessionId(), context.model().getId());
+                    Map<String, Object> donePayload = new HashMap<>();
+                    donePayload.put("messageId", assistantMessage.getId());
+                    donePayload.put("sessionId", request.getSessionId());
+                    donePayload.put("modelId", context.model().getId());
+                    donePayload.put("modelName", context.model().getDisplayName());
+                    donePayload.put("tokenUsage", assistantMessage.getTokenUsage());
+                    donePayload.put("promptTokens", assistantMessage.getPromptTokens());
+                    donePayload.put("completionTokens", assistantMessage.getCompletionTokens());
+                    donePayload.put("cacheReadTokens", assistantMessage.getCacheReadTokens());
+                    donePayload.put("cacheWriteTokens", assistantMessage.getCacheWriteTokens());
+                    donePayload.put("costUsd", assistantMessage.getCostUsd());
+                    donePayload.put("sessionCostUsd", contextStats.getSessionCostUsd());
+                    donePayload.put("title", getSession(request.getSessionId()).getTitle());
+                    sendEvent(emitter, "done", donePayload);
+                    emitter.complete();
+                    return;
+                }
 
                 ChatCompletionRequest completionRequest = buildRequest(
                         context.model().getModelKey(),
                         context.history(),
                         context.defaultParams(),
-                        null,
+                        context.tools(),
                         context.systemPrompt()
                 );
                 completionRequest.setStream(true);
@@ -591,15 +528,6 @@ public class ChatService {
                 long[] reasoningStartAt = new long[] {0L};
                 long[] reasoningLastAt = new long[] {0L};
                 long[] firstContentAt = new long[] {0L};
-
-                sendEvent(emitter, "start", Map.of(
-                        "sessionId", request.getSessionId(),
-                        "modelId", context.model().getId(),
-                        "modelName", context.model().getDisplayName(),
-                        "contextUsedTokens", context.compressionResult().usedTokens(),
-                        "contextWindowTokens", context.compressionResult().contextWindowTokens(),
-                        "compressedMessageCount", context.compressionResult().droppedMessages()
-                ));
 
                 openRouterClient.streamChatCompletion(
                         context.provider().getBaseUrl(),
@@ -692,6 +620,120 @@ public class ChatService {
         });
 
         return emitter;
+    }
+
+    /**
+     * 工具调用闭环：
+     * 1) 请求大模型；
+     * 2) 若返回 tool_calls 则执行工具并写入 tool 消息；
+     * 3) 继续下一轮直到返回最终 assistant 文本或轮次超限。
+     */
+    private ChatMessage runCompletionWithTools(Long sessionId, SendContext context) {
+        List<ChatMessage> history = context.history();
+
+        ChatCompletionResponse lastResponse = null;
+        for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            ChatCompletionRequest completionRequest = buildRequest(
+                    context.model().getModelKey(),
+                    history,
+                    context.defaultParams(),
+                    context.tools(),
+                    context.systemPrompt()
+            );
+            completionRequest.setStream(false);
+
+            long requestStartAt = System.currentTimeMillis();
+            lastResponse = openRouterClient.chatCompletion(
+                    context.provider().getBaseUrl(),
+                    context.apiKey(),
+                    completionRequest
+            );
+            long requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
+
+            if (lastResponse.getChoices() == null || lastResponse.getChoices().isEmpty()) {
+                throw new RuntimeException("OpenRouter 返回空响应");
+            }
+
+            ChatCompletionResponse.Choice choice = lastResponse.getChoices().get(0);
+            ChatCompletionResponse.Message responseMessage = choice.getMessage();
+            String reasoningText = extractReasoning(responseMessage);
+            boolean hasToolCalls = responseMessage != null
+                    && responseMessage.getToolCalls() != null
+                    && !responseMessage.getToolCalls().isEmpty();
+
+            if (hasToolCalls && Boolean.TRUE.equals(context.model().getSupportsTools())) {
+                ChatMessage assistantToolMessage = new ChatMessage();
+                assistantToolMessage.setSessionId(sessionId);
+                assistantToolMessage.setRole("assistant");
+                assistantToolMessage.setContent(normalizeContent(responseMessage.getContent()));
+                assistantToolMessage.setReasoningContent(reasoningText);
+                assistantToolMessage.setReasoningDurationMs(resolveReasoningDurationMs(reasoningText, requestDurationMs));
+                assistantToolMessage.setModelId(context.model().getId());
+                assistantToolMessage.setModelName(context.model().getDisplayName());
+                applyAgentSnapshot(assistantToolMessage, context.agent());
+                applyUsageSnapshot(assistantToolMessage, lastResponse.getUsage(), context.model());
+                assistantToolMessage.setCreatedAt(LocalDateTime.now());
+                try {
+                    assistantToolMessage.setToolCalls(
+                            objectMapper.writeValueAsString(responseMessage.getToolCalls()));
+                } catch (JsonProcessingException e) {
+                    log.warn("工具调用序列化失败", e);
+                }
+                messageMapper.insert(assistantToolMessage);
+
+                for (ChatCompletionResponse.ToolCall toolCall : responseMessage.getToolCalls()) {
+                    String toolResult = executeToolCall(toolCall);
+
+                    ChatMessage toolMessage = new ChatMessage();
+                    toolMessage.setSessionId(sessionId);
+                    toolMessage.setRole("tool");
+                    toolMessage.setContent(toolResult);
+                    toolMessage.setToolCallId(toolCall.getId());
+                    toolMessage.setModelId(context.model().getId());
+                    toolMessage.setModelName(context.model().getDisplayName());
+                    applyAgentSnapshot(toolMessage, context.agent());
+                    toolMessage.setCreatedAt(LocalDateTime.now());
+                    messageMapper.insert(toolMessage);
+                }
+
+                CompressionResult compressionResult = compressHistoryIfNeeded(
+                        getMessages(sessionId),
+                        context.model(),
+                        context.defaultParams()
+                );
+                history = compressionResult.history();
+                continue;
+            }
+
+            ChatMessage assistantMessage = new ChatMessage();
+            assistantMessage.setSessionId(sessionId);
+            assistantMessage.setRole("assistant");
+            assistantMessage.setContent(normalizeContent(responseMessage != null ? responseMessage.getContent() : null));
+            assistantMessage.setReasoningContent(reasoningText);
+            assistantMessage.setReasoningDurationMs(resolveReasoningDurationMs(reasoningText, requestDurationMs));
+            assistantMessage.setModelId(context.model().getId());
+            assistantMessage.setModelName(context.model().getDisplayName());
+            applyAgentSnapshot(assistantMessage, context.agent());
+            applyUsageSnapshot(assistantMessage, lastResponse.getUsage(), context.model());
+            assistantMessage.setCreatedAt(LocalDateTime.now());
+            messageMapper.insert(assistantMessage);
+
+            touchSession(context.session(), context.model().getId());
+            return assistantMessage;
+        }
+
+        ChatMessage fallbackMessage = new ChatMessage();
+        fallbackMessage.setSessionId(sessionId);
+        fallbackMessage.setRole("assistant");
+        fallbackMessage.setContent("工具调用轮次超限，已停止处理。");
+        fallbackMessage.setModelId(context.model().getId());
+        fallbackMessage.setModelName(context.model().getDisplayName());
+        applyAgentSnapshot(fallbackMessage, context.agent());
+        fallbackMessage.setCreatedAt(LocalDateTime.now());
+        messageMapper.insert(fallbackMessage);
+
+        touchSession(context.session(), context.model().getId());
+        return fallbackMessage;
     }
 
     private SendContext prepareSendContext(ChatSendRequest request, boolean includeTools) {
