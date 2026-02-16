@@ -1019,6 +1019,8 @@ public class ChatService {
                 message.setToolCallId(historyMessage.getToolCallId());
             }
 
+            fillMessageContentFallback(message);
+
             messages.add(message);
         }
 
@@ -1030,6 +1032,24 @@ public class ChatService {
         }
 
         return request;
+    }
+
+    /**
+     * 兼容部分供应商的严格校验：
+     * assistant/tool 消息若 content 为空时，回填为空字符串，避免报 "Unrecognized chat message"。
+     */
+    private void fillMessageContentFallback(ChatCompletionRequest.Message message) {
+        if (message == null || message.getRole() == null) {
+            return;
+        }
+        Object content = message.getContent();
+        if (content != null) {
+            return;
+        }
+        String role = message.getRole();
+        if ("assistant".equals(role) || "tool".equals(role)) {
+            message.setContent("");
+        }
     }
 
     private List<Map<String, Object>> buildVisionContent(String text, List<String> images) {

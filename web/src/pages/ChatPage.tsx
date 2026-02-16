@@ -362,6 +362,262 @@ function buildOutgoingUserContent(inputValue: string, quotedText: string | null)
   return `${quoteBlock}\n\n${normalizedInput}`;
 }
 
+type EmbeddedToolInvocation = {
+  id: string;
+  name: string;
+  argumentsText: string | null;
+  resultText: string | null;
+};
+
+type DisplayChatMessage = {
+  message: ChatMessage;
+  embeddedTools: EmbeddedToolInvocation[];
+  mergedMessageIds: number[];
+};
+
+type ParsedToolCall = {
+  id: string | null;
+  name: string;
+  argumentsText: string | null;
+};
+
+function tryFormatToolJson(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(normalized);
+    if (typeof parsed === 'string') {
+      return parsed;
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return normalized;
+  }
+}
+
+function parseToolCalls(rawToolCalls: string | null): ParsedToolCall[] {
+  if (!rawToolCalls?.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(rawToolCalls);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((item, index) => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+        const objectItem = item as {
+          id?: unknown;
+          function?: { name?: unknown; arguments?: unknown };
+        };
+        const nameCandidate = objectItem.function?.name;
+        const name =
+          typeof nameCandidate === 'string' && nameCandidate.trim()
+            ? nameCandidate.trim()
+            : `工具${index + 1}`;
+
+        const argumentsRaw = objectItem.function?.arguments;
+        const argumentsText =
+          typeof argumentsRaw === 'string'
+            ? tryFormatToolJson(argumentsRaw)
+            : argumentsRaw != null
+              ? tryFormatToolJson(JSON.stringify(argumentsRaw))
+              : null;
+
+        const idCandidate = objectItem.id;
+        const id =
+          typeof idCandidate === 'string' && idCandidate.trim()
+            ? idCandidate.trim()
+            : null;
+
+        return { id, name, argumentsText };
+      })
+      .filter((item): item is ParsedToolCall => item != null);
+  } catch {
+    return [];
+  }
+}
+
+function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
+  const result: DisplayChatMessage[] = [];
+  const syntheticSessionId = messages[0]?.sessionId ?? 0;
+  const syntheticCreatedAt = messages[0]?.createdAt ?? new Date().toISOString();
+  let syntheticCounter = 0;
+
+  let pending:
+    | {
+        anchorMessage: ChatMessage | null;
+        invocations: EmbeddedToolInvocation[];
+        mergedMessageIds: number[];
+      }
+    | null = null;
+
+  const flushPendingAsStandalone = () => {
+    if (!pending || pending.invocations.length === 0) {
+      pending = null;
+      return;
+    }
+
+    syntheticCounter += 1;
+    const syntheticId = -9_000_000_000 - syntheticCounter;
+    const syntheticMessage: ChatMessage = pending.anchorMessage
+      ? {
+          ...pending.anchorMessage,
+          role: 'assistant',
+          toolCalls: null,
+          toolCallId: null,
+        }
+      : {
+          id: syntheticId,
+          sessionId: syntheticSessionId,
+          role: 'assistant',
+          content: null,
+          toolCalls: null,
+          toolCallId: null,
+          tokenUsage: null,
+          promptTokens: null,
+          completionTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          costUsd: null,
+          modelId: null,
+          modelName: null,
+          agentId: null,
+          agentName: null,
+          agentAvatarType: null,
+          agentAvatarValue: null,
+          reasoningContent: null,
+          reasoningDurationMs: null,
+          imageUrls: null,
+          createdAt: syntheticCreatedAt,
+        };
+
+    result.push({
+      message: syntheticMessage,
+      embeddedTools: pending.invocations,
+      mergedMessageIds: pending.mergedMessageIds,
+    });
+    pending = null;
+  };
+
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      const parsedToolCalls = parseToolCalls(message.toolCalls);
+      if (parsedToolCalls.length > 0) {
+        if (!pending) {
+          pending = {
+            anchorMessage: message,
+            invocations: [],
+            mergedMessageIds: [],
+          };
+        }
+        if (!pending.anchorMessage) {
+          pending.anchorMessage = message;
+        }
+        pending.mergedMessageIds.push(message.id);
+        parsedToolCalls.forEach((toolCall, index) => {
+          pending?.invocations.push({
+            id: toolCall.id ?? `tool-${message.id}-${index}`,
+            name: toolCall.name,
+            argumentsText: toolCall.argumentsText,
+            resultText: null,
+          });
+        });
+
+        const assistantContent = message.content?.trim();
+        if (assistantContent) {
+          pending.invocations.push({
+            id: `assistant-${message.id}`,
+            name: '工具调用说明',
+            argumentsText: null,
+            resultText: assistantContent,
+          });
+        }
+        continue;
+      }
+
+      if (pending && pending.invocations.length > 0) {
+        const mergedIds = pending.mergedMessageIds.includes(message.id)
+          ? pending.mergedMessageIds
+          : [...pending.mergedMessageIds, message.id];
+        result.push({
+          message,
+          embeddedTools: pending.invocations,
+          mergedMessageIds: mergedIds,
+        });
+        pending = null;
+        continue;
+      }
+    }
+
+    if (message.role === 'tool') {
+      if (!pending) {
+        pending = {
+          anchorMessage: null,
+          invocations: [],
+          mergedMessageIds: [],
+        };
+      }
+      pending.mergedMessageIds.push(message.id);
+      const resultText = message.content?.trim() || '(空返回)';
+      const callId = message.toolCallId?.trim() || '';
+
+      if (callId) {
+        const matched = [...pending.invocations].reverse().find((item) => item.id === callId);
+        if (matched) {
+          matched.resultText = matched.resultText ? `${matched.resultText}\n${resultText}` : resultText;
+        } else {
+          pending.invocations.push({
+            id: callId,
+            name: '工具',
+            argumentsText: null,
+            resultText,
+          });
+        }
+      } else {
+        const unresolved = pending.invocations.find((item) => !item.resultText);
+        if (unresolved) {
+          unresolved.resultText = resultText;
+        } else {
+          pending.invocations.push({
+            id: `tool-${message.id}`,
+            name: '工具',
+            argumentsText: null,
+            resultText,
+          });
+        }
+      }
+      continue;
+    }
+
+    if (pending && pending.invocations.length > 0) {
+      flushPendingAsStandalone();
+    }
+
+    result.push({
+      message,
+      embeddedTools: [],
+      mergedMessageIds: [message.id],
+    });
+  }
+
+  if (pending && pending.invocations.length > 0) {
+    flushPendingAsStandalone();
+  }
+
+  return result;
+}
+
 function resolveSelectionActionPosition(rect: DOMRect): { top: number; left: number } {
   const horizontalMargin = 88;
   const left = Math.min(
@@ -2704,6 +2960,7 @@ const AssistantAvatar: React.FC<{ profile: AssistantProfile }> = ({ profile }) =
 
 const MessageCardBase: React.FC<{
   message: ChatMessage;
+  embeddedTools: EmbeddedToolInvocation[];
   isStreaming: boolean;
   copied: boolean;
   sessionTitle: string | null;
@@ -2716,6 +2973,7 @@ const MessageCardBase: React.FC<{
   savedSourceKeySet: Set<string>;
 }> = ({
   message,
+  embeddedTools,
   isStreaming,
   copied,
   sessionTitle,
@@ -2731,6 +2989,7 @@ const MessageCardBase: React.FC<{
   const isTool = message.role === 'tool';
   const images = parseImageUrls(message.imageUrls);
   const reasoning = message.reasoningContent?.trim() || '';
+  const hasEmbeddedTools = embeddedTools.length > 0;
   const content = message.content ?? '';
   const hasContent = content.length > 0;
   const isReasoningInProgress = Boolean(reasoning) && isStreaming && !hasContent;
@@ -2741,6 +3000,7 @@ const MessageCardBase: React.FC<{
         return durationText ? `已思考（用时${durationText}）` : '已思考';
       })();
   const [reasoningOpen, setReasoningOpen] = useState(isReasoningInProgress);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [actionsVisible, setActionsVisible] = useState(false);
   const hideActionsTimerRef = useRef<number | null>(null);
 
@@ -2772,6 +3032,20 @@ const MessageCardBase: React.FC<{
     // 思考过程中自动展开，思考结束后自动收起。
     setReasoningOpen(isReasoningInProgress);
   }, [isReasoningInProgress, message.id]);
+
+  const toolsSummaryText = useMemo(() => {
+    if (!hasEmbeddedTools) {
+      return '';
+    }
+    const distinctNames = Array.from(new Set(embeddedTools.map((item) => item.name).filter(Boolean)));
+    if (distinctNames.length === 1) {
+      return `${distinctNames[0]} 工具调用`;
+    }
+    if (distinctNames.length > 1) {
+      return `${distinctNames[0]} 等 ${distinctNames.length} 个工具调用`;
+    }
+    return `工具调用 ${embeddedTools.length} 次`;
+  }, [embeddedTools, hasEmbeddedTools]);
 
   const actionButtons = (
     <div className="flex items-center gap-0.5">
@@ -2830,6 +3104,36 @@ const MessageCardBase: React.FC<{
 
   const bodyContent = (
     <>
+      {hasEmbeddedTools && (
+        <details
+          open={toolsOpen}
+          onToggle={(event) => setToolsOpen(event.currentTarget.open)}
+          className="mb-3 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
+        >
+          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{toolsSummaryText}</summary>
+          <div className="mt-2 space-y-2">
+            {embeddedTools.map((tool, index) => (
+              <div
+                key={`${tool.id}-${index}`}
+                className="rounded-lg border border-[rgb(209,209,209)] bg-white/80 px-2.5 py-2 text-slate-600 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300"
+              >
+                <p className="text-[12px] font-medium text-slate-700 dark:text-slate-200">{tool.name}</p>
+                {tool.argumentsText && (
+                  <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[rgb(245,245,245)] px-2 py-1.5 text-[11px] leading-5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    参数：{tool.argumentsText}
+                  </pre>
+                )}
+                {tool.resultText && (
+                  <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[rgb(245,245,245)] px-2 py-1.5 text-[11px] leading-5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    结果：{tool.resultText}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
       {reasoning && (
         <details
           open={reasoningOpen}
@@ -2968,6 +3272,7 @@ const MessageCard = React.memo(
   MessageCardBase,
   (prev, next) =>
     prev.message === next.message &&
+    prev.embeddedTools === next.embeddedTools &&
     prev.isStreaming === next.isStreaming &&
     prev.copied === next.copied &&
     prev.sessionTitle === next.sessionTitle &&
@@ -3347,6 +3652,8 @@ const ChatPage: React.FC = () => {
 
     return null;
   }, [messages, streaming]);
+
+  const displayMessages = useMemo(() => buildDisplayMessages(messages), [messages]);
   const hasCurrentSession = isChatRoute && currentSessionId != null && currentSession != null;
   const shouldCenterComposer = isChatRoute && !currentSessionId;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
@@ -3443,7 +3750,12 @@ const ChatPage: React.FC = () => {
       return;
     }
 
-    const targetElement = document.querySelector(`[data-message-id="${routeMessageId}"]`) as HTMLElement | null;
+    let targetElement = document.querySelector(`[data-message-id="${routeMessageId}"]`) as HTMLElement | null;
+    if (!targetElement) {
+      targetElement = document.querySelector(
+        `[data-message-ids~="${routeMessageId}"]`,
+      ) as HTMLElement | null;
+    }
     if (!targetElement) {
       return;
     }
@@ -3458,7 +3770,7 @@ const ChatPage: React.FC = () => {
     routeMessageJumpTimerRef.current = window.setTimeout(() => {
       setHighlightedMessageId((current) => (current === routeMessageId ? null : current));
     }, 2200);
-  }, [isChatRoute, currentSessionId, routeMessageId, messages]);
+  }, [isChatRoute, currentSessionId, routeMessageId, displayMessages]);
 
   useEffect(() => {
     if (!isChatRoute) {
@@ -4942,18 +5254,20 @@ const ChatPage: React.FC = () => {
                 </div>
               ) : (
                 <div ref={messagesContentRef} className="space-y-7 pb-3">
-                  {messages.map((message) => (
+                  {displayMessages.map(({ message, embeddedTools, mergedMessageIds }) => (
                     <div
-                      key={message.id}
+                      key={mergedMessageIds.join('-')}
                       data-message-id={message.id}
+                      data-message-ids={mergedMessageIds.join(' ')}
                       className={`rounded-2xl transition-[background-color,box-shadow] duration-500 ${
-                        highlightedMessageId === message.id
+                        highlightedMessageId != null && mergedMessageIds.includes(highlightedMessageId)
                           ? 'bg-amber-50/70 shadow-[0_0_0_1px_rgba(245,158,11,0.35)] dark:bg-amber-500/10 dark:shadow-[0_0_0_1px_rgba(251,191,36,0.45)]'
                           : ''
                       }`}
                     >
                       <MessageCard
                         message={message}
+                        embeddedTools={embeddedTools}
                         isStreaming={activeStreamingMessageId === message.id}
                         copied={copiedMessageId === message.id}
                         sessionTitle={currentSession?.title ?? null}
