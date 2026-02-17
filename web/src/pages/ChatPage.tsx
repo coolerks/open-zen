@@ -18,7 +18,13 @@ import { Input } from '../components/ui/Input';
 import ModelsPage from './ModelsPage';
 import AgentsPage from './AgentsPage';
 import AppsPage from './AppsPage';
-import type { ChatMessage, ChatSearchResult, ChatSession, ChatSessionContextStats } from '../types';
+import type {
+  ChatMessage,
+  ChatSearchResult,
+  ChatSession,
+  ChatSessionContextStats,
+  ChatToolDefinition,
+} from '../types';
 
 const TOKENS_PER_MILLION = 1_000_000;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'chat.sidebar.collapsed';
@@ -346,6 +352,28 @@ function parseTemperature(value: string): number | null {
     return null;
   }
   return parsed;
+}
+
+function parseEnabledToolNames(value: string | null | undefined): string[] | null {
+  if (!value || !value.trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    return Array.from(
+      new Set(
+        parsed
+          .filter((item) => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    );
+  } catch {
+    return null;
+  }
 }
 
 function formatShortNumber(value: number): string {
@@ -3465,6 +3493,7 @@ const ChatPage: React.FC = () => {
     branchFromMessage,
     setSelectedModelId,
     setSelectedAgentId,
+    setEnabledToolNames,
     clearError,
   } = useChatStore();
 
@@ -3491,10 +3520,13 @@ const ChatPage: React.FC = () => {
   const [addMenuTemperatureOpen, setAddMenuTemperatureOpen] = useState(false);
   const [addMenuToolPermissionOpen, setAddMenuToolPermissionOpen] = useState(false);
   const [addMenuMemoryOpen, setAddMenuMemoryOpen] = useState(false);
+  const [addMenuToolsOpen, setAddMenuToolsOpen] = useState(false);
+  const [addMenuSubmenuTop, setAddMenuSubmenuTop] = useState(0);
   const [quickOutputMenuOpen, setQuickOutputMenuOpen] = useState(false);
   const [quickTemperatureMenuOpen, setQuickTemperatureMenuOpen] = useState(false);
   const [quickToolPermissionMenuOpen, setQuickToolPermissionMenuOpen] = useState(false);
   const [quickMemoryMenuOpen, setQuickMemoryMenuOpen] = useState(false);
+  const [quickToolsMenuOpen, setQuickToolsMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
   const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
@@ -3524,6 +3556,8 @@ const ChatPage: React.FC = () => {
   const [temperatureCustomInput, setTemperatureCustomInput] = useState('0.7');
   const [toolPermissionPreset, setToolPermissionPreset] = useState<ToolPermissionPresetKey>('require_approval');
   const [memoryPreset, setMemoryPreset] = useState<MemoryPresetKey>('off');
+  const [availableTools, setAvailableTools] = useState<ChatToolDefinition[]>([]);
+  const [selectedToolNames, setSelectedToolNames] = useState<string[]>([]);
   const [composerParamError, setComposerParamError] = useState<string | null>(null);
   const [inputVisualLineCount, setInputVisualLineCount] = useState(1);
   const [hasWrappedInCompactComposer, setHasWrappedInCompactComposer] = useState(false);
@@ -3543,11 +3577,13 @@ const ChatPage: React.FC = () => {
   const saveAppIconInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  const addMenuPanelRef = useRef<HTMLDivElement>(null);
   const agentPickerRef = useRef<HTMLDivElement>(null);
   const quickOutputMenuRef = useRef<HTMLDivElement>(null);
   const quickTemperatureMenuRef = useRef<HTMLDivElement>(null);
   const quickToolPermissionMenuRef = useRef<HTMLDivElement>(null);
   const quickMemoryMenuRef = useRef<HTMLDivElement>(null);
+  const quickToolsMenuRef = useRef<HTMLDivElement>(null);
   const sidebarSettingsRef = useRef<HTMLDivElement>(null);
   const headerMoreRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3758,8 +3794,45 @@ const ChatPage: React.FC = () => {
     return '记忆';
   }, [memoryDisplayText]);
 
+  const allAvailableToolNames = useMemo(
+    () => availableTools.map((tool) => tool.name),
+    [availableTools],
+  );
+
+  const selectedToolNameSet = useMemo(
+    () => new Set(selectedToolNames),
+    [selectedToolNames],
+  );
+
+  const isToolSelectionDefault = useMemo(() => {
+    if (allAvailableToolNames.length === 0) {
+      return true;
+    }
+    return selectedToolNames.length === allAvailableToolNames.length;
+  }, [allAvailableToolNames.length, selectedToolNames.length]);
+
+  const toolSelectionDisplayText = useMemo(() => {
+    if (allAvailableToolNames.length === 0 || isToolSelectionDefault) {
+      return null;
+    }
+    if (selectedToolNames.length === 0) {
+      return '可用工具：未选择';
+    }
+    return `可用工具：${selectedToolNames.length}/${allAvailableToolNames.length}`;
+  }, [allAvailableToolNames.length, isToolSelectionDefault, selectedToolNames.length]);
+
+  const toolSelectionShortLabel = useMemo(() => {
+    if (!toolSelectionDisplayText) {
+      return null;
+    }
+    if (selectedToolNames.length === 0) {
+      return '无工具';
+    }
+    return `工具${selectedToolNames.length}/${allAvailableToolNames.length}`;
+  }, [allAvailableToolNames.length, selectedToolNames.length, toolSelectionDisplayText]);
+
   const hasComposerParamSummary = Boolean(
-    maxTokensShortLabel || temperatureShortLabel || toolPermissionShortLabel || memoryShortLabel,
+    maxTokensShortLabel || temperatureShortLabel || toolPermissionShortLabel || memoryShortLabel || toolSelectionShortLabel,
   );
   const maxTokensCustomInvalid = maxTokensPreset === 'custom' && parsedCustomMaxTokens == null;
   const temperatureCustomInvalid = temperaturePreset === 'custom' && parsedCustomTemperature == null;
@@ -3793,7 +3866,8 @@ const ChatPage: React.FC = () => {
     maxTokensPreset === 'default' &&
     temperaturePreset === 'default' &&
     toolPermissionPreset === 'require_approval' &&
-    memoryPreset === 'off';
+    memoryPreset === 'off' &&
+    isToolSelectionDefault;
   const isCompactComposer = allComposerSettingsDefault && !hasWrappedInCompactComposer && inputVisualLineCount <= 1;
 
   const assistantProfile = useMemo<AssistantProfile>(() => {
@@ -3868,6 +3942,56 @@ const ChatPage: React.FC = () => {
     fetchEnabledAgents();
     fetchAppCenterItems();
   }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems]);
+
+  useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
+
+    let cancelled = false;
+    chatApi
+      .listTools()
+      .then((tools) => {
+        if (!cancelled) {
+          setAvailableTools(tools);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAvailableTools([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isChatRoute]);
+
+  useEffect(() => {
+    if (!isChatRoute) {
+      return;
+    }
+
+    const allNames = allAvailableToolNames;
+    if (allNames.length === 0) {
+      setSelectedToolNames([]);
+      return;
+    }
+
+    if (!currentSessionId) {
+      // 草稿态默认全选，首次发送前也可继续手动调整。
+      setSelectedToolNames(allNames);
+      return;
+    }
+
+    const parsedNames = parseEnabledToolNames(currentSession?.enabledToolNames);
+    if (parsedNames == null) {
+      setSelectedToolNames(allNames);
+      return;
+    }
+    const parsedSet = new Set(parsedNames);
+    setSelectedToolNames(allNames.filter((name) => parsedSet.has(name)));
+  }, [isChatRoute, currentSessionId, currentSession?.enabledToolNames, allAvailableToolNames]);
 
   useEffect(() => {
     if (!isChatRoute) {
@@ -4209,7 +4333,9 @@ const ChatPage: React.FC = () => {
       !quickOutputMenuOpen &&
       !quickTemperatureMenuOpen &&
       !quickToolPermissionMenuOpen &&
-      !quickMemoryMenuOpen
+      !quickMemoryMenuOpen &&
+      !quickToolsMenuOpen &&
+      !addMenuToolsOpen
     ) {
       return;
     }
@@ -4233,16 +4359,21 @@ const ChatPage: React.FC = () => {
       if (quickMemoryMenuRef.current?.contains(event.target as Node)) {
         return;
       }
+      if (quickToolsMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
       setAddMenuOpen(false);
       setAddMenuAgentOpen(false);
       setAddMenuOutputLengthOpen(false);
       setAddMenuTemperatureOpen(false);
       setAddMenuToolPermissionOpen(false);
       setAddMenuMemoryOpen(false);
+      setAddMenuToolsOpen(false);
       setQuickOutputMenuOpen(false);
       setQuickTemperatureMenuOpen(false);
       setQuickToolPermissionMenuOpen(false);
       setQuickMemoryMenuOpen(false);
+      setQuickToolsMenuOpen(false);
       setAgentPickerOpen(false);
     };
 
@@ -4255,6 +4386,8 @@ const ChatPage: React.FC = () => {
     quickTemperatureMenuOpen,
     quickToolPermissionMenuOpen,
     quickMemoryMenuOpen,
+    quickToolsMenuOpen,
+    addMenuToolsOpen,
   ]);
 
   useEffect(() => {
@@ -4528,6 +4661,7 @@ const ChatPage: React.FC = () => {
       temperature: resolvedTemperature,
       toolPermissionMode: toolPermissionPreset,
       memoryEnabled: memoryPreset === 'on',
+      enabledToolNames: allAvailableToolNames.length > 0 ? selectedToolNames : undefined,
     });
   };
 
@@ -4688,6 +4822,34 @@ const ChatPage: React.FC = () => {
     textareaRef.current?.focus();
   }, [selectionAction]);
 
+  const applySelectedTools = useCallback((names: string[]) => {
+    if (allAvailableToolNames.length === 0) {
+      setSelectedToolNames([]);
+      return;
+    }
+    const selectedSet = new Set(names);
+    const normalized = allAvailableToolNames.filter((name) => selectedSet.has(name));
+    setSelectedToolNames(normalized);
+    if (currentSessionId) {
+      void setEnabledToolNames(normalized);
+    }
+  }, [allAvailableToolNames, currentSessionId, setEnabledToolNames]);
+
+  const handleSelectAllTools = useCallback(() => {
+    applySelectedTools(allAvailableToolNames);
+  }, [allAvailableToolNames, applySelectedTools]);
+
+  const handleToggleTool = useCallback((toolName: string) => {
+    if (!allAvailableToolNames.includes(toolName)) {
+      return;
+    }
+    if (selectedToolNameSet.has(toolName)) {
+      applySelectedTools(selectedToolNames.filter((name) => name !== toolName));
+      return;
+    }
+    applySelectedTools([...selectedToolNames, toolName]);
+  }, [allAvailableToolNames, selectedToolNameSet, selectedToolNames, applySelectedTools]);
+
   const handleSelectAgent = async (agentId: number) => {
     if (currentSessionId) {
       await setSelectedAgentId(agentId);
@@ -4700,10 +4862,12 @@ const ChatPage: React.FC = () => {
     setAddMenuTemperatureOpen(false);
     setAddMenuToolPermissionOpen(false);
     setAddMenuMemoryOpen(false);
+    setAddMenuToolsOpen(false);
     setQuickOutputMenuOpen(false);
     setQuickTemperatureMenuOpen(false);
     setQuickToolPermissionMenuOpen(false);
     setQuickMemoryMenuOpen(false);
+    setQuickToolsMenuOpen(false);
     setAgentPickerOpen(false);
   };
 
@@ -4920,6 +5084,18 @@ const ChatPage: React.FC = () => {
     navigate(`/chat/${sessionId}`);
   };
 
+  const anchorAddSubmenuToTrigger = (trigger: HTMLElement) => {
+    const panel = addMenuPanelRef.current;
+    if (!panel) {
+      return;
+    }
+    const triggerRect = trigger.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const rawTop = triggerRect.top - panelRect.top;
+    const boundedTop = Math.max(0, Math.min(rawTop, Math.max(0, panelRect.height - 40)));
+    setAddMenuSubmenuTop(boundedTop);
+  };
+
   const renderComposerSendControls = () => (
     <div className="flex items-center gap-2">
       {streaming ? (
@@ -4968,10 +5144,12 @@ const ChatPage: React.FC = () => {
           setAddMenuTemperatureOpen(false);
           setAddMenuToolPermissionOpen(false);
           setAddMenuMemoryOpen(false);
+          setAddMenuToolsOpen(false);
           setQuickOutputMenuOpen(false);
           setQuickTemperatureMenuOpen(false);
           setQuickToolPermissionMenuOpen(false);
           setQuickMemoryMenuOpen(false);
+          setQuickToolsMenuOpen(false);
           setAgentPickerOpen(false);
         }}
         className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -4982,7 +5160,10 @@ const ChatPage: React.FC = () => {
       </button>
 
       {addMenuOpen && (
-        <div className="absolute bottom-11 left-0 z-30 min-w-[180px] overflow-visible rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+        <div
+          ref={addMenuPanelRef}
+          className="absolute bottom-11 left-0 z-30 min-w-[180px] overflow-visible rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+        >
           <button
             className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
             onClick={() => {
@@ -4993,10 +5174,12 @@ const ChatPage: React.FC = () => {
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
             onMouseEnter={() => {
               // 鼠标回到一级菜单项时，收起所有二级菜单，避免“悬挂”在右侧。
@@ -5005,6 +5188,7 @@ const ChatPage: React.FC = () => {
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
             }}
             type="button"
           >
@@ -5014,27 +5198,33 @@ const ChatPage: React.FC = () => {
 
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-            onClick={() => {
+            onClick={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuOutputLengthOpen((prev) => !prev);
               setAddMenuAgentOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
-            onMouseEnter={() => {
+            onMouseEnter={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuOutputLengthOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
             type="button"
           >
@@ -5046,7 +5236,10 @@ const ChatPage: React.FC = () => {
           </button>
 
           {addMenuOutputLengthOpen && (
-            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+            <div
+              className="absolute left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+              style={{ top: addMenuSubmenuTop }}
+            >
               {MAX_TOKENS_PRESETS.map((preset) => (
                 <button
                   key={preset.key}
@@ -5058,6 +5251,7 @@ const ChatPage: React.FC = () => {
                       setAddMenuTemperatureOpen(false);
                       setAddMenuToolPermissionOpen(false);
                       setAddMenuMemoryOpen(false);
+                      setAddMenuToolsOpen(false);
                       setAddMenuAgentOpen(false);
                       setQuickOutputMenuOpen(false);
                       setQuickTemperatureMenuOpen(false);
@@ -5105,27 +5299,33 @@ const ChatPage: React.FC = () => {
 
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-            onClick={() => {
+            onClick={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuTemperatureOpen((prev) => !prev);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
-            onMouseEnter={() => {
+            onMouseEnter={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuTemperatureOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
             type="button"
           >
@@ -5137,7 +5337,10 @@ const ChatPage: React.FC = () => {
           </button>
 
           {addMenuTemperatureOpen && (
-            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+            <div
+              className="absolute left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[250px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+              style={{ top: addMenuSubmenuTop }}
+            >
               {TEMPERATURE_PRESETS.map((preset) => (
                 <button
                   key={preset.key}
@@ -5149,6 +5352,7 @@ const ChatPage: React.FC = () => {
                       setAddMenuTemperatureOpen(false);
                       setAddMenuToolPermissionOpen(false);
                       setAddMenuMemoryOpen(false);
+                      setAddMenuToolsOpen(false);
                       setAddMenuAgentOpen(false);
                       setQuickOutputMenuOpen(false);
                       setQuickTemperatureMenuOpen(false);
@@ -5191,27 +5395,33 @@ const ChatPage: React.FC = () => {
 
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-            onClick={() => {
+            onClick={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuToolPermissionOpen((prev) => !prev);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
-            onMouseEnter={() => {
+            onMouseEnter={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuToolPermissionOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
             type="button"
           >
@@ -5223,7 +5433,10 @@ const ChatPage: React.FC = () => {
           </button>
 
           {addMenuToolPermissionOpen && (
-            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+            <div
+              className="absolute left-[calc(100%+6px)] z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+              style={{ top: addMenuSubmenuTop }}
+            >
               {TOOL_PERMISSION_PRESETS.map((preset) => (
                 <button
                   key={preset.key}
@@ -5234,6 +5447,7 @@ const ChatPage: React.FC = () => {
                     setAddMenuTemperatureOpen(false);
                     setAddMenuToolPermissionOpen(false);
                     setAddMenuMemoryOpen(false);
+                    setAddMenuToolsOpen(false);
                     setAddMenuAgentOpen(false);
                     setQuickOutputMenuOpen(false);
                     setQuickTemperatureMenuOpen(false);
@@ -5259,27 +5473,33 @@ const ChatPage: React.FC = () => {
 
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-            onClick={() => {
+            onClick={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuMemoryOpen((prev) => !prev);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
-            onMouseEnter={() => {
+            onMouseEnter={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuMemoryOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
             type="button"
           >
@@ -5291,7 +5511,10 @@ const ChatPage: React.FC = () => {
           </button>
 
           {addMenuMemoryOpen && (
-            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+            <div
+              className="absolute left-[calc(100%+6px)] z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+              style={{ top: addMenuSubmenuTop }}
+            >
               {MEMORY_PRESETS.map((preset) => (
                 <button
                   key={preset.key}
@@ -5302,6 +5525,7 @@ const ChatPage: React.FC = () => {
                     setAddMenuTemperatureOpen(false);
                     setAddMenuToolPermissionOpen(false);
                     setAddMenuMemoryOpen(false);
+                    setAddMenuToolsOpen(false);
                     setAddMenuAgentOpen(false);
                     setQuickOutputMenuOpen(false);
                     setQuickTemperatureMenuOpen(false);
@@ -5327,27 +5551,123 @@ const ChatPage: React.FC = () => {
 
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
-            onClick={() => {
+            onClick={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
+              setAddMenuToolsOpen((prev) => !prev);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
+            }}
+            onMouseEnter={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
+              setAddMenuToolsOpen(true);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
+            }}
+            type="button"
+          >
+            <span className="inline-flex items-center gap-2">
+              <ToolsCapabilityIcon className="h-4 w-4" />
+              选择工具
+            </span>
+            <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+          </button>
+
+          {addMenuToolsOpen && (
+            <div
+              className="absolute left-[calc(100%+6px)] z-50 max-h-[62vh] min-w-[260px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+              style={{ top: addMenuSubmenuTop }}
+            >
+              <button
+                type="button"
+                onClick={handleSelectAllTools}
+                className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                  isToolSelectionDefault
+                    ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                    : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                }`}
+              >
+                <span className="inline-flex items-center gap-2">
+                  <ToolsCapabilityIcon className="h-4 w-4" />
+                  默认（全选）
+                </span>
+                {isToolSelectionDefault && <CheckIcon />}
+              </button>
+
+              {availableTools.length === 0 ? (
+                <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">暂无可用工具</p>
+              ) : (
+                availableTools.map((tool) => {
+                  const selected = selectedToolNameSet.has(tool.name);
+                  return (
+                    <button
+                      key={`tool-select-${tool.name}`}
+                      type="button"
+                      onClick={() => handleToggleTool(tool.name)}
+                      className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                        selected
+                          ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                          : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                      }`}
+                    >
+                      <span className="inline-flex min-w-0 flex-1 items-center gap-2">
+                        <ToolsCapabilityIcon className="h-4 w-4" />
+                        <span className="truncate" title={tool.name}>
+                          {tool.name}
+                        </span>
+                      </span>
+                      {selected && <CheckIcon />}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          <button
+            className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuAgentOpen((prev) => !prev);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
-            onMouseEnter={() => {
+            onMouseEnter={(event) => {
+              anchorAddSubmenuToTrigger(event.currentTarget);
               setAddMenuAgentOpen(true);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setAddMenuMemoryOpen(false);
+              setAddMenuToolsOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
               setQuickMemoryMenuOpen(false);
+              setQuickToolsMenuOpen(false);
             }}
             type="button"
           >
@@ -5359,7 +5679,10 @@ const ChatPage: React.FC = () => {
           </button>
 
           {addMenuAgentOpen && (
-            <div className="absolute left-[calc(100%+6px)] top-0 z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+            <div
+              className="absolute left-[calc(100%+6px)] z-40 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]"
+              style={{ top: addMenuSubmenuTop }}
+            >
               {visibleAgents.map((agent) => (
                 <button
                   key={agent.id}
@@ -5860,6 +6183,7 @@ const ChatPage: React.FC = () => {
                               setAddMenuTemperatureOpen(false);
                               setAddMenuToolPermissionOpen(false);
                               setAddMenuMemoryOpen(false);
+                              setAddMenuToolsOpen(false);
                               setQuickOutputMenuOpen(false);
                               setQuickTemperatureMenuOpen(false);
                               setQuickToolPermissionMenuOpen(false);
@@ -5908,12 +6232,14 @@ const ChatPage: React.FC = () => {
                                   setQuickTemperatureMenuOpen(false);
                                   setQuickToolPermissionMenuOpen(false);
                                   setQuickMemoryMenuOpen(false);
+                                  setQuickToolsMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
                                   setAddMenuMemoryOpen(false);
+                                  setAddMenuToolsOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -5935,6 +6261,7 @@ const ChatPage: React.FC = () => {
                                           setQuickTemperatureMenuOpen(false);
                                           setQuickToolPermissionMenuOpen(false);
                                           setQuickMemoryMenuOpen(false);
+                                          setQuickToolsMenuOpen(false);
                                         }
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5985,12 +6312,14 @@ const ChatPage: React.FC = () => {
                                   setQuickOutputMenuOpen(false);
                                   setQuickToolPermissionMenuOpen(false);
                                   setQuickMemoryMenuOpen(false);
+                                  setQuickToolsMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
                                   setAddMenuMemoryOpen(false);
+                                  setAddMenuToolsOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -6012,6 +6341,7 @@ const ChatPage: React.FC = () => {
                                           setQuickTemperatureMenuOpen(false);
                                           setQuickToolPermissionMenuOpen(false);
                                           setQuickMemoryMenuOpen(false);
+                                          setQuickToolsMenuOpen(false);
                                         }
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -6057,12 +6387,14 @@ const ChatPage: React.FC = () => {
                                   setQuickOutputMenuOpen(false);
                                   setQuickTemperatureMenuOpen(false);
                                   setQuickMemoryMenuOpen(false);
+                                  setQuickToolsMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
                                   setAddMenuMemoryOpen(false);
+                                  setAddMenuToolsOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -6083,6 +6415,7 @@ const ChatPage: React.FC = () => {
                                         setQuickTemperatureMenuOpen(false);
                                         setQuickToolPermissionMenuOpen(false);
                                         setQuickMemoryMenuOpen(false);
+                                        setQuickToolsMenuOpen(false);
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
                                         toolPermissionPreset === preset.key
@@ -6111,12 +6444,14 @@ const ChatPage: React.FC = () => {
                                   setQuickOutputMenuOpen(false);
                                   setQuickTemperatureMenuOpen(false);
                                   setQuickToolPermissionMenuOpen(false);
+                                  setQuickToolsMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
                                   setAddMenuMemoryOpen(false);
+                                  setAddMenuToolsOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -6137,6 +6472,7 @@ const ChatPage: React.FC = () => {
                                         setQuickTemperatureMenuOpen(false);
                                         setQuickToolPermissionMenuOpen(false);
                                         setQuickMemoryMenuOpen(false);
+                                        setQuickToolsMenuOpen(false);
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
                                         memoryPreset === preset.key
@@ -6152,6 +6488,81 @@ const ChatPage: React.FC = () => {
                                       {memoryPreset === preset.key && <CheckIcon />}
                                     </button>
                                   ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {toolSelectionShortLabel && (
+                            <div className="relative" ref={quickToolsMenuRef}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickToolsMenuOpen((prev) => !prev);
+                                  setQuickOutputMenuOpen(false);
+                                  setQuickTemperatureMenuOpen(false);
+                                  setQuickToolPermissionMenuOpen(false);
+                                  setQuickMemoryMenuOpen(false);
+                                  setAddMenuOpen(false);
+                                  setAddMenuAgentOpen(false);
+                                  setAddMenuOutputLengthOpen(false);
+                                  setAddMenuTemperatureOpen(false);
+                                  setAddMenuToolPermissionOpen(false);
+                                  setAddMenuMemoryOpen(false);
+                                  setAddMenuToolsOpen(false);
+                                  setAgentPickerOpen(false);
+                                }}
+                                className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
+                                title={toolSelectionDisplayText ?? undefined}
+                                aria-label={toolSelectionDisplayText ?? undefined}
+                              >
+                                {toolSelectionShortLabel}
+                              </button>
+
+                              {quickToolsMenuOpen && (
+                                <div className="absolute bottom-11 left-0 z-50 max-h-[62vh] min-w-[260px] overflow-y-auto rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                                  <button
+                                    type="button"
+                                    onClick={handleSelectAllTools}
+                                    className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                      isToolSelectionDefault
+                                        ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                        : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                    }`}
+                                  >
+                                    <span className="inline-flex items-center gap-2">
+                                      <ToolsCapabilityIcon className="h-4 w-4" />
+                                      默认（全选）
+                                    </span>
+                                    {isToolSelectionDefault && <CheckIcon />}
+                                  </button>
+
+                                  {availableTools.length === 0 ? (
+                                    <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">暂无可用工具</p>
+                                  ) : (
+                                    availableTools.map((tool) => {
+                                      const selected = selectedToolNameSet.has(tool.name);
+                                      return (
+                                        <button
+                                          key={`quick-tool-select-${tool.name}`}
+                                          type="button"
+                                          onClick={() => handleToggleTool(tool.name)}
+                                          className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                            selected
+                                              ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                              : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                          }`}
+                                        >
+                                          <span className="inline-flex min-w-0 flex-1 items-center gap-2">
+                                            <ToolsCapabilityIcon className="h-4 w-4" />
+                                            <span className="truncate" title={tool.name}>
+                                              {tool.name}
+                                            </span>
+                                          </span>
+                                          {selected && <CheckIcon />}
+                                        </button>
+                                      );
+                                    })
+                                  )}
                                 </div>
                               )}
                             </div>

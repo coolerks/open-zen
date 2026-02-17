@@ -6,6 +6,7 @@ import type {
   ChatSessionCreateRequest,
   ChatSessionUpdateRequest,
   ChatSearchResult,
+  ChatToolDefinition,
   ChatSessionContextStats,
   StreamDonePayload,
 } from '../types';
@@ -62,6 +63,7 @@ function parseEventBlock(block: string): { event: string; data: any } | null {
 
 export const chatApi = {
   listSessions: () => get<ChatSession[]>('/chat/sessions'),
+  listTools: () => get<ChatToolDefinition[]>('/chat/tools'),
   searchSessions: (keyword: string, limit = 80) =>
     get<ChatSearchResult[]>(`/chat/sessions/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}`),
   createSession: (body?: ChatSessionCreateRequest) =>

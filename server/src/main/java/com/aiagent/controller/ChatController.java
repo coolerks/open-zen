@@ -31,6 +31,11 @@ public class ChatController {
         return ApiResult.ok(chatService.listSessions());
     }
 
+    @GetMapping("/tools")
+    public ApiResult<List<ChatToolDefinitionResponse>> listTools() {
+        return ApiResult.ok(chatService.listToolDefinitions());
+    }
+
     @GetMapping("/sessions/search")
     public ApiResult<List<ChatSessionSearchResultResponse>> searchSessions(@RequestParam String keyword,
                                                                            @RequestParam(required = false) Integer limit) {

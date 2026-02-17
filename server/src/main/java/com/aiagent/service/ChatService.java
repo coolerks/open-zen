@@ -3,6 +3,7 @@ package com.aiagent.service;
 import com.aiagent.dto.ChatSendRequest;
 import com.aiagent.dto.ChatSessionSearchResultResponse;
 import com.aiagent.dto.ChatSessionContextStatsResponse;
+import com.aiagent.dto.ChatToolDefinitionResponse;
 import com.aiagent.dto.ChatSessionUpdateRequest;
 import com.aiagent.dto.openrouter.ChatCompletionRequest;
 import com.aiagent.dto.openrouter.ChatCompletionResponse;
@@ -64,12 +65,27 @@ public class ChatService {
     }
 
     public ChatSession createSession(String title, Long agentId) {
-        return createSessionInternal(title, agentId, null, null, null);
+        return createSessionInternal(title, agentId, null, null, null, null);
     }
 
     public List<ChatSession> listSessions() {
         return sessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSession>().orderByDesc(ChatSession::getUpdatedAt));
+    }
+
+    /**
+     * 返回系统内置可用工具定义，供前端做会话级工具选择。
+     */
+    public List<ChatToolDefinitionResponse> listToolDefinitions() {
+        return toolRegistry.getAllTools().stream()
+                .map(tool -> {
+                    ChatToolDefinitionResponse item = new ChatToolDefinitionResponse();
+                    item.setName(tool.getName());
+                    item.setDescription(tool.getDescription());
+                    item.setMemoryTool(tool.isMemoryTool());
+                    return item;
+                })
+                .toList();
     }
 
     /**
@@ -225,6 +241,7 @@ public class ChatService {
                 newTitle,
                 sourceSession.getAgentId(),
                 sourceSession.getModelId(),
+                sourceSession.getEnabledToolNames(),
                 sourceSession.getId(),
                 null
         );
@@ -253,6 +270,7 @@ public class ChatService {
                 newTitle,
                 sourceSession.getAgentId(),
                 branchModelId,
+                sourceSession.getEnabledToolNames(),
                 sourceSession.getId(),
                 messageId
         );
@@ -280,6 +298,10 @@ public class ChatService {
                 }
                 session.setAgentId(agent.getId());
             }
+        }
+        if (request.getEnabledToolNames() != null) {
+            List<String> normalizedToolNames = sanitizeToolNames(request.getEnabledToolNames());
+            session.setEnabledToolNames(serializeToolNames(normalizedToolNames));
         }
 
         session.setUpdatedAt(LocalDateTime.now());
@@ -898,6 +920,14 @@ public class ChatService {
         session.setModelId(model.getId());
         session.setUpdatedAt(LocalDateTime.now());
 
+        List<String> configuredToolNames = parseToolNames(session.getEnabledToolNames());
+        if (request.getEnabledToolNames() != null) {
+            configuredToolNames = sanitizeToolNames(request.getEnabledToolNames());
+            String serializedToolNames = serializeToolNames(configuredToolNames);
+            session.setEnabledToolNames(serializedToolNames);
+            updateSessionToolNamesOnly(session.getId(), serializedToolNames);
+        }
+
         CustomAgent agent = resolveSessionAgent(session.getAgentId());
 
         ChatMessage userMessage = new ChatMessage();
@@ -934,7 +964,7 @@ public class ChatService {
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
-        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled);
+        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled, configuredToolNames);
         List<ChatCompletionRequest.Tool> tools = availableTools.isEmpty()
                 ? null
                 : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
@@ -958,7 +988,8 @@ public class ChatService {
 
     private List<ToolDefinition> resolveAvailableTools(boolean includeTools,
                                                        AiModel model,
-                                                       boolean memoryEnabled) {
+                                                       boolean memoryEnabled,
+                                                       List<String> configuredToolNames) {
         if (!includeTools || !Boolean.TRUE.equals(model.getSupportsTools())) {
             return List.of();
         }
@@ -968,8 +999,20 @@ public class ChatService {
             return List.of();
         }
 
-        return allTools.stream()
+        List<ToolDefinition> memoryFilteredTools = allTools.stream()
                 .filter(tool -> memoryEnabled || !tool.isMemoryTool())
+                .toList();
+
+        // 会话未配置时默认全选；配置后按白名单限制可用工具。
+        if (configuredToolNames == null) {
+            return memoryFilteredTools;
+        }
+        if (configuredToolNames.isEmpty()) {
+            return List.of();
+        }
+        Set<String> allowSet = new HashSet<>(configuredToolNames);
+        return memoryFilteredTools.stream()
+                .filter(tool -> allowSet.contains(tool.getName()))
                 .toList();
     }
 
@@ -1012,7 +1055,8 @@ public class ChatService {
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
-        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled);
+        List<String> configuredToolNames = parseToolNames(session.getEnabledToolNames());
+        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled, configuredToolNames);
         List<ChatCompletionRequest.Tool> tools = availableTools.isEmpty()
                 ? null
                 : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
@@ -1111,6 +1155,7 @@ public class ChatService {
     private ChatSession createSessionInternal(String title,
                                               Long agentId,
                                               Long modelId,
+                                              String enabledToolNames,
                                               Long parentSessionId,
                                               Long parentMessageId) {
         Long finalAgentId;
@@ -1130,6 +1175,7 @@ public class ChatService {
         session.setTitle(normalizeTitle(title, "新会话"));
         session.setModelId(finalModelId);
         session.setAgentId(finalAgentId);
+        session.setEnabledToolNames(enabledToolNames);
         session.setParentSessionId(parentSessionId);
         session.setParentMessageId(parentMessageId);
         session.setCreatedAt(LocalDateTime.now());
@@ -1752,6 +1798,59 @@ public class ChatService {
                 .filter(Objects::nonNull)
                 .map(String::trim)
                 .anyMatch(content -> !content.startsWith("错误: 工具未启用"));
+    }
+
+    /**
+     * 解析会话工具白名单。
+     * 返回 null 表示“未配置，默认全选”；返回空列表表示“全部禁用”。
+     */
+    private List<String> parseToolNames(String rawToolNamesJson) {
+        if (rawToolNamesJson == null || rawToolNamesJson.isBlank()) {
+            return null;
+        }
+        try {
+            List<String> parsed = objectMapper.readValue(rawToolNamesJson, new TypeReference<List<String>>() {
+            });
+            return sanitizeToolNames(parsed);
+        } catch (JsonProcessingException e) {
+            log.warn("会话工具白名单解析失败: {}", rawToolNamesJson, e);
+            return null;
+        }
+    }
+
+    /**
+     * 规范化工具名称列表：去空、去重、仅保留系统内存在的工具。
+     */
+    private List<String> sanitizeToolNames(List<String> toolNames) {
+        if (toolNames == null) {
+            return List.of();
+        }
+        return toolNames.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(name -> !name.isBlank())
+                .filter(toolRegistry::hasTool)
+                .distinct()
+                .toList();
+    }
+
+    private String serializeToolNames(List<String> toolNames) {
+        try {
+            return objectMapper.writeValueAsString(toolNames == null ? List.of() : toolNames);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("工具白名单序列化失败", e);
+        }
+    }
+
+    /**
+     * 会话局部更新：只写入工具白名单与更新时间。
+     */
+    private void updateSessionToolNamesOnly(Long sessionId, String enabledToolNames) {
+        ChatSession patch = new ChatSession();
+        patch.setId(sessionId);
+        patch.setEnabledToolNames(enabledToolNames);
+        patch.setUpdatedAt(LocalDateTime.now());
+        sessionMapper.updateById(patch);
     }
 
     private String serializeImages(List<String> images) {

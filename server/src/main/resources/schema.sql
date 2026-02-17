@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS chat_session (
     title              VARCHAR(200)  NOT NULL DEFAULT '新会话',
     model_id           BIGINT,
     agent_id           BIGINT,
+    enabled_tool_names CLOB,
     parent_session_id  BIGINT,
     parent_message_id  BIGINT,
     created_at         TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -168,6 +169,7 @@ CREATE TABLE IF NOT EXISTS chat_session (
     CONSTRAINT fk_session_agent FOREIGN KEY (agent_id) REFERENCES custom_agent(id)
 );
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS agent_id BIGINT;
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS enabled_tool_names CLOB;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS parent_session_id BIGINT;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS parent_message_id BIGINT;
 COMMENT ON TABLE chat_session IS '聊天会话表';
@@ -175,6 +177,7 @@ COMMENT ON COLUMN chat_session.id IS '主键 ID';
 COMMENT ON COLUMN chat_session.title IS '会话标题';
 COMMENT ON COLUMN chat_session.model_id IS '会话最近一次使用模型 ID';
 COMMENT ON COLUMN chat_session.agent_id IS '关联智能体 ID';
+COMMENT ON COLUMN chat_session.enabled_tool_names IS '会话允许调用的工具名称列表 JSON，空表示不限制';
 COMMENT ON COLUMN chat_session.parent_session_id IS '父会话 ID（复制或分支来源）';
 COMMENT ON COLUMN chat_session.parent_message_id IS '分支起点消息 ID';
 COMMENT ON COLUMN chat_session.created_at IS '创建时间';

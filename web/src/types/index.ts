@@ -149,6 +149,7 @@ export interface ChatSession {
   title: string;
   modelId: number | null;
   agentId: number | null;
+  enabledToolNames: string | null;
   parentSessionId: number | null;
   parentMessageId: number | null;
   createdAt: string;
@@ -173,6 +174,13 @@ export interface ChatSessionUpdateRequest {
   title?: string;
   modelId?: number | null;
   agentId?: number | null;
+  enabledToolNames?: string[];
+}
+
+export interface ChatToolDefinition {
+  name: string;
+  description: string;
+  memoryTool: boolean;
 }
 
 // 消息
@@ -210,6 +218,7 @@ export interface ChatSendRequest {
   temperature?: number;
   toolPermissionMode?: 'require_approval' | 'auto';
   memoryEnabled?: boolean;
+  enabledToolNames?: string[] | null;
 }
 
 export interface StreamDonePayload {

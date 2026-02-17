@@ -33,6 +33,7 @@ interface ChatState {
       temperature?: number | null;
       toolPermissionMode?: 'require_approval' | 'auto';
       memoryEnabled?: boolean;
+      enabledToolNames?: string[] | null;
     },
   ) => Promise<void>;
   resolveToolApproval: (assistantMessageId: number, approved: boolean) => Promise<void>;
@@ -41,6 +42,7 @@ interface ChatState {
   branchFromMessage: (messageId: number, title?: string) => Promise<ChatSession>;
   setSelectedModelId: (id: number | null) => Promise<void>;
   setSelectedAgentId: (id: number | null) => Promise<void>;
+  setEnabledToolNames: (names: string[]) => Promise<void>;
   clearError: () => void;
 }
 
@@ -407,6 +409,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           temperature: options?.temperature != null ? options.temperature : undefined,
           toolPermissionMode: options?.toolPermissionMode ?? 'require_approval',
           memoryEnabled: options?.memoryEnabled === true,
+          enabledToolNames: options?.enabledToolNames,
         },
         {
           onDelta: ({ content: delta }) => {
@@ -593,6 +596,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       await chatApi.updateSession(currentSessionId, { agentId: id ?? 0 });
+      const updatedSession = await chatApi.getSession(currentSessionId);
+      const sessions = await chatApi.listSessions();
+      set({ currentSession: updatedSession, sessions });
+    } catch (e: any) {
+      set({ error: e.message });
+    }
+  },
+
+  setEnabledToolNames: async (names) => {
+    const { currentSessionId } = get();
+    if (!currentSessionId) {
+      return;
+    }
+
+    try {
+      await chatApi.updateSession(currentSessionId, { enabledToolNames: names });
       const updatedSession = await chatApi.getSession(currentSessionId);
       const sessions = await chatApi.listSessions();
       set({ currentSession: updatedSession, sessions });

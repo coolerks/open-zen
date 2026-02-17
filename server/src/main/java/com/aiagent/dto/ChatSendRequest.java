@@ -44,6 +44,12 @@ public class ChatSendRequest {
      */
     private Boolean memoryEnabled;
 
+    /**
+     * 本次会话允许调用的工具名称列表。
+     * 为空时表示不限制（模型支持的工具全部可用）。
+     */
+    private List<String> enabledToolNames;
+
     @AssertTrue(message = "消息内容和图片不能同时为空")
     public boolean isPayloadValid() {
         boolean hasContent = content != null && !content.trim().isEmpty();

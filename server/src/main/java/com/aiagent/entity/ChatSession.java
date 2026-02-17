@@ -18,6 +18,8 @@ public class ChatSession {
 
     private Long agentId;
 
+    private String enabledToolNames;
+
     private Long parentSessionId;
 
     private Long parentMessageId;
