@@ -11,13 +11,15 @@ import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
 import { useAgentStore } from '../store/agentStore';
 import { useAppCenterStore } from '../store/appCenterStore';
+import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
-import { Input } from '../components/ui/Input';
+import { Input, Textarea } from '../components/ui/Input';
 import ModelsPage from './ModelsPage';
 import AgentsPage from './AgentsPage';
 import AppsPage from './AppsPage';
+import ProjectsPage from './ProjectsPage';
 import type {
   ChatMessage,
   ChatSearchResult,
@@ -145,6 +147,20 @@ function resolveStreamMarkdownInterval(contentLength: number): number {
 }
 
 type ExportImageFormat = 'svg' | 'png' | 'jpeg';
+type DirectoryPickerWindow = Window & {
+  showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
+};
+
+type ProjectCreateDialogState = {
+  open: boolean;
+  name: string;
+  description: string;
+  directoryHandle: FileSystemDirectoryHandle | null;
+  directoryName: string;
+  error: string | null;
+  submitting: boolean;
+};
+
 type SaveCodeBlockPayload = {
   sourceKey: string;
   sourceSessionId: number | null;
@@ -2053,6 +2069,19 @@ const SidebarAppsIcon: React.FC = () => (
   </svg>
 );
 
+const NewProjectIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2.9 6.2C2.9 5.43 3.53 4.8 4.3 4.8H8.2L9.5 6.2H15.7C16.47 6.2 17.1 6.83 17.1 7.6V14.8C17.1 15.57 16.47 16.2 15.7 16.2H4.3C3.53 16.2 2.9 15.57 2.9 14.8V6.2Z" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M10 9V13.2M7.9 11.1H12.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+);
+
+const SidebarProjectIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2.9 6.2C2.9 5.43 3.53 4.8 4.3 4.8H8.2L9.5 6.2H15.7C16.47 6.2 17.1 6.83 17.1 7.6V14.8C17.1 15.57 16.47 16.2 15.7 16.2H4.3C3.53 16.2 2.9 15.57 2.9 14.8V6.2Z" stroke="currentColor" strokeWidth="1.6" />
+  </svg>
+);
+
 const CollapseIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <rect x="2.8" y="3.2" width="14.4" height="13.6" rx="3.8" stroke="currentColor" strokeWidth="1.8" />
@@ -2572,6 +2601,18 @@ function createInitialSaveAppDialogState(): SaveAppDialogState {
     iconEmoji: APP_ICON_EMOJIS[0],
     iconImage: '',
     error: null,
+  };
+}
+
+function createInitialProjectCreateDialogState(): ProjectCreateDialogState {
+  return {
+    open: false,
+    name: '',
+    description: '',
+    directoryHandle: null,
+    directoryName: '',
+    error: null,
+    submitting: false,
   };
 }
 
@@ -3501,7 +3542,10 @@ const MessageCard = React.memo(
 const ChatPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { sessionId: routeSessionIdParam } = useParams<{ sessionId?: string }>();
+  const { sessionId: routeSessionIdParam, projectId: routeProjectIdParam } = useParams<{
+    sessionId?: string;
+    projectId?: string;
+  }>();
   const { theme, toggleTheme } = useThemeStore();
   const {
     sessions,
@@ -3534,6 +3578,13 @@ const ChatPage: React.FC = () => {
   const { enabledModels, fetchEnabledModels } = useModelStore();
   const { enabledAgents, fetchEnabledAgents } = useAgentStore();
   const { items: appCenterItems, fetchItems: fetchAppCenterItems, createItem: createAppCenterItem } = useAppCenterStore();
+  const {
+    items: projectItems,
+    error: projectError,
+    fetchItems: fetchProjectItems,
+    createItem: createProjectItem,
+    clearError: clearProjectError,
+  } = useProjectStore();
 
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<string[]>([]);
@@ -3571,6 +3622,7 @@ const ChatPage: React.FC = () => {
   const [shareCopied, setShareCopied] = useState(false);
   const [saveAppDialog, setSaveAppDialog] = useState<SaveAppDialogState>(() => createInitialSaveAppDialogState());
   const [saveAppSubmitting, setSaveAppSubmitting] = useState(false);
+  const [projectCreateDialog, setProjectCreateDialog] = useState<ProjectCreateDialogState>(() => createInitialProjectCreateDialogState());
 
   const [renameDialog, setRenameDialog] = useState<{ open: boolean; session: ChatSession | null; title: string }>({
     open: false,
@@ -3645,6 +3697,14 @@ const ChatPage: React.FC = () => {
     return parsed;
   }, [routeSessionIdParam]);
 
+  const routeProjectId = useMemo(() => {
+    if (!routeProjectIdParam) {
+      return null;
+    }
+    const normalized = routeProjectIdParam.trim();
+    return normalized ? normalized : null;
+  }, [routeProjectIdParam]);
+
   const routeMessageId = useMemo(() => {
     const raw = new URLSearchParams(location.search).get('messageId');
     if (!raw) {
@@ -3657,7 +3717,7 @@ const ChatPage: React.FC = () => {
     return parsed;
   }, [location.search]);
 
-  const pageMode = useMemo<'chat' | 'models' | 'agents' | 'apps'>(() => {
+  const pageMode = useMemo<'chat' | 'models' | 'agents' | 'apps' | 'projects'>(() => {
     if (location.pathname === '/models') {
       return 'models';
     }
@@ -3667,16 +3727,22 @@ const ChatPage: React.FC = () => {
     if (location.pathname === '/apps') {
       return 'apps';
     }
+    if (location.pathname === '/projects' || location.pathname.startsWith('/projects/')) {
+      return 'projects';
+    }
     return 'chat';
   }, [location.pathname]);
 
   const isChatRoute = pageMode === 'chat';
+  const showGlobalSidebar = pageMode !== 'projects';
   const topBarTitle = pageMode === 'models'
     ? '模型管理'
     : pageMode === 'agents'
       ? '智能体管理'
       : pageMode === 'apps'
         ? '应用中心'
+        : pageMode === 'projects'
+          ? '项目中心'
         : '';
 
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
@@ -3970,6 +4036,7 @@ const ChatPage: React.FC = () => {
   const hasCurrentSession = isChatRoute && currentSessionId != null && currentSession != null;
   const shouldCenterComposer = isChatRoute && !currentSessionId;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
+  const activeSidebarProjectId = pageMode === 'projects' ? routeProjectId : null;
   const askActionLabel = activeAgent && !activeAgent.isDefault ? `问${activeAgent.name}` : '问AI';
   const appSourceKeySet = useMemo(() => new Set(appCenterItems.map((item) => item.sourceKey)), [appCenterItems]);
 
@@ -3978,7 +4045,8 @@ const ChatPage: React.FC = () => {
     fetchEnabledModels();
     fetchEnabledAgents();
     fetchAppCenterItems();
-  }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems]);
+    fetchProjectItems();
+  }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems, fetchProjectItems]);
 
   useEffect(() => {
     if (!isChatRoute) {
@@ -4249,8 +4317,17 @@ const ChatPage: React.FC = () => {
       document.title = '应用中心 · Open Zen';
       return;
     }
+    if (pageMode === 'projects') {
+      const currentProject = routeProjectId
+        ? projectItems.find((item) => item.id === routeProjectId) ?? null
+        : null;
+      document.title = currentProject?.name
+        ? `${currentProject.name} · 项目中心 · Open Zen`
+        : '项目中心 · Open Zen';
+      return;
+    }
     document.title = currentSession?.title ? `${currentSession.title} · Open Zen` : 'Open Zen';
-  }, [pageMode, currentSession?.title]);
+  }, [pageMode, currentSession?.title, routeProjectId, projectItems]);
 
   useEffect(() => {
     if (!isChatRoute) {
@@ -4621,6 +4698,109 @@ const ChatPage: React.FC = () => {
   const handleCreateSession = useCallback(async () => {
     await enterDraftSession(false);
   }, [enterDraftSession]);
+
+  const handleOpenCreateProjectDialog = useCallback(() => {
+    clearProjectError();
+    setProjectCreateDialog(createInitialProjectCreateDialogState());
+    setProjectCreateDialog((prev) => ({
+      ...prev,
+      open: true,
+    }));
+  }, [clearProjectError]);
+
+  const handleCloseCreateProjectDialog = useCallback(() => {
+    if (projectCreateDialog.submitting) {
+      return;
+    }
+    setProjectCreateDialog(createInitialProjectCreateDialogState());
+  }, [projectCreateDialog.submitting]);
+
+  const handlePickProjectDirectory = useCallback(async () => {
+    const pickerWindow = window as DirectoryPickerWindow;
+    if (!pickerWindow.showDirectoryPicker) {
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        error: '当前浏览器不支持文件夹选择器，请使用 Chromium 内核浏览器。',
+      }));
+      return;
+    }
+
+    try {
+      const handle = await pickerWindow.showDirectoryPicker({ mode: 'read' });
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        directoryHandle: handle,
+        directoryName: handle.name,
+        error: null,
+      }));
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return;
+      }
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        error: error?.message ?? '选择目录失败',
+      }));
+    }
+  }, []);
+
+  const handleSubmitCreateProject = useCallback(async () => {
+    if (!projectCreateDialog.open) {
+      return;
+    }
+
+    const trimmedName = projectCreateDialog.name.trim();
+    if (!trimmedName) {
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        error: '请输入项目名称',
+      }));
+      return;
+    }
+    if (!projectCreateDialog.directoryHandle) {
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        error: '请选择项目目录',
+      }));
+      return;
+    }
+
+    setProjectCreateDialog((prev) => ({
+      ...prev,
+      submitting: true,
+      error: null,
+    }));
+    try {
+      const created = await createProjectItem({
+        name: trimmedName,
+        description: projectCreateDialog.description.trim(),
+        directoryHandle: projectCreateDialog.directoryHandle,
+      });
+      setProjectCreateDialog(createInitialProjectCreateDialogState());
+      navigate(`/projects/${created.id}`);
+    } catch (error: any) {
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        submitting: false,
+        error: error?.message ?? '创建项目失败',
+      }));
+    }
+  }, [projectCreateDialog, createProjectItem, navigate]);
+
+  const handleSelectProjectFromSidebar = useCallback(
+    (projectId: string) => {
+      navigate(`/projects/${projectId}`);
+    },
+    [navigate],
+  );
+
+  const handleBackToChatFromProject = useCallback(() => {
+    if (currentSessionId) {
+      navigate(`/chat/${currentSessionId}`);
+      return;
+    }
+    navigate('/chat');
+  }, [currentSessionId, navigate]);
 
   const handleToggleTemporaryChat = useCallback(() => {
     if (currentSessionId) {
@@ -5783,6 +5963,7 @@ const ChatPage: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
+      {showGlobalSidebar && (
       <aside
         className={`${sidebarCollapsed ? 'w-[52px] bg-white dark:bg-[#171717]' : 'w-[260px] bg-[#f5f5f5] dark:bg-[#171717]'} flex shrink-0 flex-col border-r border-slate-200 py-3 pr-0 transition-[width] duration-200 dark:border-[#2f2f2f]`}
       >
@@ -5866,12 +6047,39 @@ const ChatPage: React.FC = () => {
         </div>
 
         {!sidebarCollapsed && (
-          <>
-            <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">
-              聊天
-            </p>
+          <div className="chat-sidebar-scroll min-h-0 flex-1 overflow-y-auto pr-0">
+            <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">项目</p>
+            <div className="mb-3 space-y-1">
+              <button
+                className="mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-sm font-normal text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]"
+                type="button"
+                onClick={handleOpenCreateProjectDialog}
+                title="新建项目"
+              >
+                <NewProjectIcon />
+                <span>新项目</span>
+              </button>
 
-            <div className="chat-sidebar-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0">
+              {projectItems.map((project) => (
+                <button
+                  key={project.id}
+                  className={`mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-left text-sm font-normal transition-colors ${
+                    activeSidebarProjectId === project.id
+                      ? 'bg-[rgb(234,234,234)] text-[#0d0d0d]'
+                      : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]'
+                  }`}
+                  type="button"
+                  onClick={() => handleSelectProjectFromSidebar(project.id)}
+                  title={project.name}
+                >
+                  <SidebarProjectIcon />
+                  <span className="truncate">{project.name}</span>
+                </button>
+              ))}
+            </div>
+
+            <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">聊天</p>
+            <div className="space-y-1">
               {sessions.map((session) => (
                 <SessionItem
                   key={session.id}
@@ -5898,7 +6106,7 @@ const ChatPage: React.FC = () => {
                 </div>
               )}
             </div>
-          </>
+          </div>
         )}
 
         {sidebarCollapsed && <div className="flex-1" />}
@@ -5961,8 +6169,10 @@ const ChatPage: React.FC = () => {
           )}
         </div>
       </aside>
+      )}
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
+        {pageMode !== 'projects' && (
         <div className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-5 dark:border-[#2f2f2f] dark:bg-[#212121]">
           {isChatRoute ? (
             <ChatModelSelect
@@ -6086,8 +6296,9 @@ const ChatPage: React.FC = () => {
                 </div>
               )}
             </div>
+            </div>
           </div>
-        </div>
+        )}
 
         {isChatRoute ? (
           <>
@@ -6691,7 +6902,20 @@ const ChatPage: React.FC = () => {
           </>
         ) : (
           <div className="flex-1 min-h-0 overflow-hidden">
-            {pageMode === 'models' ? <ModelsPage /> : pageMode === 'agents' ? <AgentsPage /> : <AppsPage />}
+            {pageMode === 'models' ? (
+              <ModelsPage />
+            ) : pageMode === 'agents' ? (
+              <AgentsPage />
+            ) : pageMode === 'apps' ? (
+              <AppsPage />
+            ) : (
+              <ProjectsPage
+                routeProjectId={routeProjectId}
+                onSelectProject={handleSelectProjectFromSidebar}
+                onRequestCreateProject={handleOpenCreateProjectDialog}
+                onBackToChat={handleBackToChatFromProject}
+              />
+            )}
           </div>
         )}
       </main>
@@ -6889,6 +7113,91 @@ const ChatPage: React.FC = () => {
             </Button>
             <Button onClick={() => void handleSubmitSaveApp()} disabled={saveAppSubmitting}>
               {saveAppSubmitting ? '保存中...' : '保存到应用中心'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={projectCreateDialog.open}
+        onClose={handleCloseCreateProjectDialog}
+        title="新建项目"
+      >
+        <div className="space-y-4">
+          <Input
+            label="项目名称"
+            value={projectCreateDialog.name}
+            onChange={(event) => {
+              const nextName = event.target.value;
+              setProjectCreateDialog((prev) => ({
+                ...prev,
+                name: nextName,
+                error: null,
+              }));
+            }}
+            placeholder="例如：Open Zen Web"
+            disabled={projectCreateDialog.submitting}
+          />
+
+          <Textarea
+            label="项目描述（可选）"
+            value={projectCreateDialog.description}
+            onChange={(event) => {
+              const nextDescription = event.target.value;
+              setProjectCreateDialog((prev) => ({
+                ...prev,
+                description: nextDescription,
+                error: null,
+              }));
+            }}
+            placeholder="描述项目目标、技术栈或注意事项"
+            rows={4}
+            disabled={projectCreateDialog.submitting}
+          />
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">项目目录</p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                type="button"
+                disabled={projectCreateDialog.submitting}
+                onClick={() => {
+                  void handlePickProjectDirectory();
+                }}
+              >
+                选择文件夹
+              </Button>
+              <span className="min-w-0 text-sm text-slate-500 dark:text-slate-400">
+                {projectCreateDialog.directoryName || '未选择'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              仅保存目录关联信息，不会上传本地代码内容。
+            </p>
+          </div>
+
+          {(projectCreateDialog.error || projectError) && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
+              {projectCreateDialog.error || projectError}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={handleCloseCreateProjectDialog}
+              disabled={projectCreateDialog.submitting}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={() => {
+                void handleSubmitCreateProject();
+              }}
+              disabled={projectCreateDialog.submitting}
+            >
+              {projectCreateDialog.submitting ? '创建中...' : '创建项目'}
             </Button>
           </div>
         </div>

@@ -143,6 +143,16 @@ export interface AppCenterItemUpdateRequest {
   resetToOriginal?: boolean;
 }
 
+// 项目中心
+export interface ProjectItem {
+  id: string;
+  name: string;
+  description: string | null;
+  rootDirName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // 会话
 export interface ChatSession {
   id: number;

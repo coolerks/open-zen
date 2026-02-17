@@ -11,6 +11,8 @@ const AppShell: React.FC = () => {
         <Route path="/models" element={<ChatPage />} />
         <Route path="/agents" element={<ChatPage />} />
         <Route path="/apps" element={<ChatPage />} />
+        <Route path="/projects" element={<ChatPage />} />
+        <Route path="/projects/:projectId" element={<ChatPage />} />
         <Route path="*" element={<Navigate to="/chat" replace />} />
       </Routes>
     </div>
