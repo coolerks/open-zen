@@ -28,7 +28,12 @@ interface ChatState {
   sendMessage: (
     content: string,
     images?: string[],
-    options?: { maxTokens?: number | null; temperature?: number | null; toolPermissionMode?: 'require_approval' | 'auto' },
+    options?: {
+      maxTokens?: number | null;
+      temperature?: number | null;
+      toolPermissionMode?: 'require_approval' | 'auto';
+      memoryEnabled?: boolean;
+    },
   ) => Promise<void>;
   resolveToolApproval: (assistantMessageId: number, approved: boolean) => Promise<void>;
   stopStreaming: () => Promise<void>;
@@ -401,6 +406,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           maxTokens: options?.maxTokens != null ? options.maxTokens : undefined,
           temperature: options?.temperature != null ? options.temperature : undefined,
           toolPermissionMode: options?.toolPermissionMode ?? 'require_approval',
+          memoryEnabled: options?.memoryEnabled === true,
         },
         {
           onDelta: ({ content: delta }) => {

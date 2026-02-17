@@ -37,6 +37,13 @@ public class ChatSendRequest {
      */
     private String toolPermissionMode;
 
+    /**
+     * 记忆开关：
+     * - false：关闭（默认），不向模型暴露记忆检索工具
+     * - true：开启，允许模型直接调用记忆检索工具
+     */
+    private Boolean memoryEnabled;
+
     @AssertTrue(message = "消息内容和图片不能同时为空")
     public boolean isPayloadValid() {
         boolean hasContent = content != null && !content.trim().isEmpty();

@@ -28,6 +28,14 @@ class ToolRegistryTest {
     }
 
     @Test
+    void testMemoryToolRegisteredAndBypassApproval() {
+        ToolDefinition tool = toolRegistry.getTool("searchConversationMemory");
+        assertNotNull(tool);
+        assertTrue(tool.isMemoryTool());
+        assertTrue(tool.bypassUserApproval());
+    }
+
+    @Test
     void testGetToolByName() {
         ToolDefinition tool = toolRegistry.getTool("getCurrentDate");
         assertNotNull(tool);

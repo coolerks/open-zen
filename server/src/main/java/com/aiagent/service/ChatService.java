@@ -15,6 +15,7 @@ import com.aiagent.entity.Provider;
 import com.aiagent.mapper.ChatMessageMapper;
 import com.aiagent.mapper.ChatSessionMapper;
 import com.aiagent.service.tool.ToolDefinition;
+import com.aiagent.service.tool.ToolExecutionContext;
 import com.aiagent.service.tool.ToolRegistry;
 import com.aiagent.util.EncryptionUtil;
 import com.aiagent.util.TokenEstimator;
@@ -457,7 +458,8 @@ public class ChatService {
      * 非流式发送，保留工具调用闭环能力。
      */
     public ChatMessage sendMessage(ChatSendRequest request) {
-        SendContext context = prepareSendContext(request, true);
+        boolean memoryEnabled = resolveMemoryEnabled(request.getMemoryEnabled());
+        SendContext context = prepareSendContext(request, true, memoryEnabled);
         ToolPermissionMode permissionMode = resolveToolPermissionMode(request.getToolPermissionMode());
         return runCompletionWithTools(request.getSessionId(), context, permissionMode).message();
     }
@@ -470,7 +472,8 @@ public class ChatService {
 
         Thread.startVirtualThread(() -> {
             try {
-                SendContext context = prepareSendContext(request, true);
+                boolean memoryEnabled = resolveMemoryEnabled(request.getMemoryEnabled());
+                SendContext context = prepareSendContext(request, true, memoryEnabled);
                 boolean hasAvailableTools = context.tools() != null && !context.tools().isEmpty();
 
                 sendEvent(emitter, "start", Map.of(
@@ -668,6 +671,7 @@ public class ChatService {
                     && !responseMessage.getToolCalls().isEmpty();
 
             if (hasToolCalls && Boolean.TRUE.equals(context.model().getSupportsTools())) {
+                List<ChatCompletionResponse.ToolCall> toolCalls = responseMessage.getToolCalls();
                 ChatMessage assistantToolMessage = new ChatMessage();
                 assistantToolMessage.setSessionId(sessionId);
                 assistantToolMessage.setRole("assistant");
@@ -681,30 +685,45 @@ public class ChatService {
                 assistantToolMessage.setCreatedAt(LocalDateTime.now());
                 try {
                     assistantToolMessage.setToolCalls(
-                            objectMapper.writeValueAsString(responseMessage.getToolCalls()));
+                            objectMapper.writeValueAsString(toolCalls));
                 } catch (JsonProcessingException e) {
                     log.warn("工具调用序列化失败", e);
                 }
                 messageMapper.insert(assistantToolMessage);
 
-                if (permissionMode == ToolPermissionMode.REQUIRE_APPROVAL) {
-                    touchSession(context.session(), context.model().getId());
-                    return new ToolLoopResult(assistantToolMessage, true);
-                }
+                ToolExecutionContext toolExecutionContext = new ToolExecutionContext(sessionId);
+                List<ChatCompletionResponse.ToolCall> pendingApprovalCalls = new ArrayList<>();
 
-                for (ChatCompletionResponse.ToolCall toolCall : responseMessage.getToolCalls()) {
-                    String toolResult = executeToolCall(toolCall);
+                for (ChatCompletionResponse.ToolCall toolCall : toolCalls) {
+                    String toolName = toolCall != null && toolCall.getFunction() != null
+                            ? normalizeContent(toolCall.getFunction().getName())
+                            : null;
+                    ToolDefinition toolDefinition = resolveEnabledToolDefinition(context.availableTools(), toolName);
+                    boolean requiresApproval = toolDefinition != null
+                            && permissionMode == ToolPermissionMode.REQUIRE_APPROVAL
+                            && !toolDefinition.bypassUserApproval();
 
+                    if (requiresApproval) {
+                        pendingApprovalCalls.add(toolCall);
+                        continue;
+                    }
+
+                    String toolResult = executeToolCall(toolCall, context.availableTools(), toolExecutionContext);
                     ChatMessage toolMessage = new ChatMessage();
                     toolMessage.setSessionId(sessionId);
                     toolMessage.setRole("tool");
                     toolMessage.setContent(toolResult);
-                    toolMessage.setToolCallId(toolCall.getId());
+                    toolMessage.setToolCallId(toolCall != null ? toolCall.getId() : null);
                     toolMessage.setModelId(context.model().getId());
                     toolMessage.setModelName(context.model().getDisplayName());
                     applyAgentSnapshot(toolMessage, context.agent());
                     toolMessage.setCreatedAt(LocalDateTime.now());
                     messageMapper.insert(toolMessage);
+                }
+
+                if (permissionMode == ToolPermissionMode.REQUIRE_APPROVAL && !pendingApprovalCalls.isEmpty()) {
+                    touchSession(context.session(), context.model().getId());
+                    return new ToolLoopResult(assistantToolMessage, true);
                 }
 
                 CompressionResult compressionResult = compressHistoryIfNeeded(
@@ -766,14 +785,17 @@ public class ChatService {
         if (toolCalls.isEmpty()) {
             throw new RuntimeException("工具调用数据无效");
         }
-        if (hasHandledToolCalls(sessionId, toolCalls)) {
+
+        boolean memoryEnabled = resolveMemoryEnabledForApproval(sessionId, toolCalls);
+        List<ChatCompletionResponse.ToolCall> unresolvedToolCalls = resolveUnresolvedToolCalls(sessionId, toolCalls);
+        if (unresolvedToolCalls.isEmpty()) {
             throw new RuntimeException("该工具调用已处理");
         }
 
-        SendContext context = prepareContinuationContext(sessionId, assistantToolMessage.getModelId(), true);
-        appendToolDecisionMessages(sessionId, context, toolCalls, approved);
+        SendContext context = prepareContinuationContext(sessionId, assistantToolMessage.getModelId(), true, memoryEnabled);
+        appendToolDecisionMessages(sessionId, context, unresolvedToolCalls, approved);
 
-        SendContext resumedContext = prepareContinuationContext(sessionId, context.model().getId(), true);
+        SendContext resumedContext = prepareContinuationContext(sessionId, context.model().getId(), true, memoryEnabled);
         ToolLoopResult loopResult = runCompletionWithTools(sessionId, resumedContext, ToolPermissionMode.REQUIRE_APPROVAL);
         return loopResult.message();
     }
@@ -788,35 +810,58 @@ public class ChatService {
         }
     }
 
-    private boolean hasHandledToolCalls(Long sessionId, List<ChatCompletionResponse.ToolCall> toolCalls) {
+    private List<ChatCompletionResponse.ToolCall> resolveUnresolvedToolCalls(Long sessionId,
+                                                                             List<ChatCompletionResponse.ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return List.of();
+        }
         List<String> callIds = toolCalls.stream()
+                .filter(Objects::nonNull)
                 .map(ChatCompletionResponse.ToolCall::getId)
                 .filter(Objects::nonNull)
                 .map(String::trim)
                 .filter(id -> !id.isBlank())
                 .toList();
         if (callIds.isEmpty()) {
-            return false;
+            return toolCalls.stream().filter(Objects::nonNull).toList();
         }
-        Long count = messageMapper.selectCount(
+
+        List<ChatMessage> handledToolMessages = messageMapper.selectList(
                 new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getSessionId, sessionId)
                         .eq(ChatMessage::getRole, "tool")
                         .in(ChatMessage::getToolCallId, callIds)
         );
-        return count != null && count > 0;
+        Set<String> handledCallIdSet = handledToolMessages.stream()
+                .map(ChatMessage::getToolCallId)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(id -> !id.isBlank())
+                .collect(java.util.stream.Collectors.toSet());
+
+        return toolCalls.stream()
+                .filter(Objects::nonNull)
+                .filter(toolCall -> {
+                    String callId = toolCall.getId();
+                    if (callId == null || callId.isBlank()) {
+                        return true;
+                    }
+                    return !handledCallIdSet.contains(callId.trim());
+                })
+                .toList();
     }
 
     private void appendToolDecisionMessages(Long sessionId,
                                             SendContext context,
                                             List<ChatCompletionResponse.ToolCall> toolCalls,
                                             boolean approved) {
+        ToolExecutionContext toolExecutionContext = new ToolExecutionContext(sessionId);
         for (ChatCompletionResponse.ToolCall toolCall : toolCalls) {
             String toolName = toolCall != null && toolCall.getFunction() != null
                     ? normalizeContent(toolCall.getFunction().getName())
                     : null;
             String toolResult = approved
-                    ? executeToolCall(toolCall)
+                    ? executeToolCall(toolCall, context.availableTools(), toolExecutionContext)
                     : "用户拒绝执行工具" + (toolName != null ? "：" + toolName : "");
 
             ChatMessage toolMessage = new ChatMessage();
@@ -832,7 +877,7 @@ public class ChatService {
         }
     }
 
-    private SendContext prepareSendContext(ChatSendRequest request, boolean includeTools) {
+    private SendContext prepareSendContext(ChatSendRequest request, boolean includeTools, boolean memoryEnabled) {
         AiModel model = aiModelService.getEntityById(request.getModelId());
         if (!Boolean.TRUE.equals(model.getEnabled())) {
             throw new RuntimeException("模型未启用: " + model.getDisplayName());
@@ -889,12 +934,10 @@ public class ChatService {
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
-        List<ChatCompletionRequest.Tool> tools = null;
-        if (includeTools
-                && Boolean.TRUE.equals(model.getSupportsTools())
-                && !toolRegistry.getAllTools().isEmpty()) {
-            tools = toolRegistry.getAllTools().stream().map(ToolDefinition::toRequestTool).toList();
-        }
+        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled);
+        List<ChatCompletionRequest.Tool> tools = availableTools.isEmpty()
+                ? null
+                : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
 
         String apiKey = encryptionUtil.decrypt(provider.getApiKey());
         String systemPrompt = loadSystemPrompt(agent);
@@ -905,6 +948,7 @@ public class ChatService {
                 agent,
                 apiKey,
                 defaultParams,
+                availableTools,
                 tools,
                 systemPrompt,
                 history,
@@ -912,7 +956,27 @@ public class ChatService {
         );
     }
 
-    private SendContext prepareContinuationContext(Long sessionId, Long preferredModelId, boolean includeTools) {
+    private List<ToolDefinition> resolveAvailableTools(boolean includeTools,
+                                                       AiModel model,
+                                                       boolean memoryEnabled) {
+        if (!includeTools || !Boolean.TRUE.equals(model.getSupportsTools())) {
+            return List.of();
+        }
+
+        List<ToolDefinition> allTools = toolRegistry.getAllTools();
+        if (allTools.isEmpty()) {
+            return List.of();
+        }
+
+        return allTools.stream()
+                .filter(tool -> memoryEnabled || !tool.isMemoryTool())
+                .toList();
+    }
+
+    private SendContext prepareContinuationContext(Long sessionId,
+                                                   Long preferredModelId,
+                                                   boolean includeTools,
+                                                   boolean memoryEnabled) {
         ChatSession session = getSession(sessionId);
 
         Long resolvedModelId = preferredModelId != null ? preferredModelId : session.getModelId();
@@ -948,12 +1012,10 @@ public class ChatService {
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
-        List<ChatCompletionRequest.Tool> tools = null;
-        if (includeTools
-                && Boolean.TRUE.equals(model.getSupportsTools())
-                && !toolRegistry.getAllTools().isEmpty()) {
-            tools = toolRegistry.getAllTools().stream().map(ToolDefinition::toRequestTool).toList();
-        }
+        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled);
+        List<ChatCompletionRequest.Tool> tools = availableTools.isEmpty()
+                ? null
+                : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
 
         String apiKey = encryptionUtil.decrypt(provider.getApiKey());
         String systemPrompt = loadSystemPrompt(agent);
@@ -964,6 +1026,7 @@ public class ChatService {
                 agent,
                 apiKey,
                 defaultParams,
+                availableTools,
                 tools,
                 systemPrompt,
                 history,
@@ -1498,16 +1561,24 @@ public class ChatService {
         emitter.send(SseEmitter.event().name(event).data(data));
     }
 
-    private String executeToolCall(ChatCompletionResponse.ToolCall toolCall) {
+    private String executeToolCall(ChatCompletionResponse.ToolCall toolCall,
+                                   List<ToolDefinition> availableTools,
+                                   ToolExecutionContext executionContext) {
         if (toolCall == null || toolCall.getFunction() == null) {
             return "工具调用结构不完整";
         }
 
-        String name = toolCall.getFunction().getName();
+        String name = normalizeContent(toolCall.getFunction().getName());
+        if (name == null) {
+            return "错误: 工具名称为空";
+        }
         String argsJson = toolCall.getFunction().getArguments();
 
-        ToolDefinition tool = toolRegistry.getTool(name);
+        ToolDefinition tool = resolveEnabledToolDefinition(availableTools, name);
         if (tool == null) {
+            if (toolRegistry.hasTool(name)) {
+                return "错误: 工具未启用 " + name;
+            }
             return "错误: 未知工具 " + name;
         }
 
@@ -1516,11 +1587,22 @@ public class ChatService {
                     ? objectMapper.readValue(argsJson, new TypeReference<Map<String, Object>>() {
                     })
                     : Map.of();
-            return tool.execute(args);
+            return tool.execute(args, executionContext);
         } catch (Exception e) {
             log.error("工具执行失败: {}", name, e);
             return "工具执行失败: " + e.getMessage();
         }
+    }
+
+    private ToolDefinition resolveEnabledToolDefinition(List<ToolDefinition> availableTools, String toolName) {
+        if (toolName == null || toolName.isBlank() || availableTools == null || availableTools.isEmpty()) {
+            return null;
+        }
+        return availableTools.stream()
+                .filter(Objects::nonNull)
+                .filter(tool -> toolName.equals(tool.getName()))
+                .findFirst()
+                .orElse(null);
     }
 
     private String extractReasoning(ChatCompletionResponse.Message message) {
@@ -1618,6 +1700,60 @@ public class ChatService {
                 : ToolPermissionMode.REQUIRE_APPROVAL;
     }
 
+    private boolean resolveMemoryEnabled(Boolean rawEnabled) {
+        return Boolean.TRUE.equals(rawEnabled);
+    }
+
+    private boolean resolveMemoryEnabledForApproval(Long sessionId,
+                                                    List<ChatCompletionResponse.ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return false;
+        }
+
+        List<ChatCompletionResponse.ToolCall> memoryCalls = toolCalls.stream()
+                .filter(Objects::nonNull)
+                .filter(toolCall -> {
+                    String toolName = toolCall.getFunction() != null
+                            ? normalizeContent(toolCall.getFunction().getName())
+                            : null;
+                    if (toolName == null) {
+                        return false;
+                    }
+                    ToolDefinition tool = toolRegistry.getTool(toolName);
+                    return tool != null && tool.isMemoryTool();
+                })
+                .toList();
+        if (memoryCalls.isEmpty()) {
+            return false;
+        }
+
+        List<String> memoryCallIds = memoryCalls.stream()
+                .map(ChatCompletionResponse.ToolCall::getId)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(id -> !id.isBlank())
+                .toList();
+        if (memoryCallIds.isEmpty()) {
+            return false;
+        }
+
+        List<ChatMessage> memoryToolMessages = messageMapper.selectList(
+                new LambdaQueryWrapper<ChatMessage>()
+                        .eq(ChatMessage::getSessionId, sessionId)
+                        .eq(ChatMessage::getRole, "tool")
+                        .in(ChatMessage::getToolCallId, memoryCallIds)
+        );
+        if (memoryToolMessages.isEmpty()) {
+            return false;
+        }
+
+        return memoryToolMessages.stream()
+                .map(ChatMessage::getContent)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .anyMatch(content -> !content.startsWith("错误: 工具未启用"));
+    }
+
     private String serializeImages(List<String> images) {
         if (images == null || images.isEmpty()) {
             return null;
@@ -1681,6 +1817,7 @@ public class ChatService {
                                CustomAgent agent,
                                String apiKey,
                                Map<String, Object> defaultParams,
+                               List<ToolDefinition> availableTools,
                                List<ChatCompletionRequest.Tool> tools,
                                String systemPrompt,
                                List<ChatMessage> history,

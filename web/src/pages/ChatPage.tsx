@@ -94,6 +94,7 @@ const APP_ICON_EMOJIS = ['🚀', '📊', '🧩', '🛠️', '💡', '🧠', '�
 type MaxTokensPresetKey = 'default' | 'low' | 'medium' | 'high' | 'ultra' | 'custom';
 type TemperaturePresetKey = 'default' | 'precise' | 'balanced' | 'creative' | 'divergent' | 'custom';
 type ToolPermissionPresetKey = 'require_approval' | 'auto';
+type MemoryPresetKey = 'off' | 'on';
 
 const MAX_TOKENS_PRESETS: Array<{ key: MaxTokensPresetKey; label: string; value: number | null }> = [
   { key: 'default', label: '默认（模型配置）', value: null },
@@ -116,6 +117,11 @@ const TEMPERATURE_PRESETS: Array<{ key: TemperaturePresetKey; label: string; val
 const TOOL_PERMISSION_PRESETS: Array<{ key: ToolPermissionPresetKey; label: string }> = [
   { key: 'require_approval', label: '需要用户授权（默认）' },
   { key: 'auto', label: '自动调用工具' },
+];
+
+const MEMORY_PRESETS: Array<{ key: MemoryPresetKey; label: string }> = [
+  { key: 'off', label: '关闭（默认）' },
+  { key: 'on', label: '开启记忆检索' },
 ];
 
 function resolveStreamMarkdownInterval(contentLength: number): number {
@@ -2157,6 +2163,14 @@ const ToolPermissionIcon: React.FC = () => (
   </svg>
 );
 
+const MemoryIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3.6" y="5.2" width="12.8" height="9.6" rx="2.2" stroke="currentColor" strokeWidth="1.7" />
+    <path d="M7.3 5V3.7M12.7 5V3.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <path d="M7.5 9.4H12.5M7.5 12H11.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+  </svg>
+);
+
 const MoreIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="5" cy="10" r="1.4" fill="currentColor" />
@@ -3476,9 +3490,11 @@ const ChatPage: React.FC = () => {
   const [addMenuOutputLengthOpen, setAddMenuOutputLengthOpen] = useState(false);
   const [addMenuTemperatureOpen, setAddMenuTemperatureOpen] = useState(false);
   const [addMenuToolPermissionOpen, setAddMenuToolPermissionOpen] = useState(false);
+  const [addMenuMemoryOpen, setAddMenuMemoryOpen] = useState(false);
   const [quickOutputMenuOpen, setQuickOutputMenuOpen] = useState(false);
   const [quickTemperatureMenuOpen, setQuickTemperatureMenuOpen] = useState(false);
   const [quickToolPermissionMenuOpen, setQuickToolPermissionMenuOpen] = useState(false);
+  const [quickMemoryMenuOpen, setQuickMemoryMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
   const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
@@ -3507,6 +3523,7 @@ const ChatPage: React.FC = () => {
   const [temperaturePreset, setTemperaturePreset] = useState<TemperaturePresetKey>('default');
   const [temperatureCustomInput, setTemperatureCustomInput] = useState('0.7');
   const [toolPermissionPreset, setToolPermissionPreset] = useState<ToolPermissionPresetKey>('require_approval');
+  const [memoryPreset, setMemoryPreset] = useState<MemoryPresetKey>('off');
   const [composerParamError, setComposerParamError] = useState<string | null>(null);
   const [inputVisualLineCount, setInputVisualLineCount] = useState(1);
   const [hasWrappedInCompactComposer, setHasWrappedInCompactComposer] = useState(false);
@@ -3530,6 +3547,7 @@ const ChatPage: React.FC = () => {
   const quickOutputMenuRef = useRef<HTMLDivElement>(null);
   const quickTemperatureMenuRef = useRef<HTMLDivElement>(null);
   const quickToolPermissionMenuRef = useRef<HTMLDivElement>(null);
+  const quickMemoryMenuRef = useRef<HTMLDivElement>(null);
   const sidebarSettingsRef = useRef<HTMLDivElement>(null);
   const headerMoreRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3690,6 +3708,14 @@ const ChatPage: React.FC = () => {
     return `工具权限：${label}`;
   }, [toolPermissionPreset]);
 
+  const memoryDisplayText = useMemo(() => {
+    if (memoryPreset === 'off') {
+      return null;
+    }
+    const label = MEMORY_PRESETS.find((item) => item.key === memoryPreset)?.label ?? '开启记忆检索';
+    return `记忆设置：${label}`;
+  }, [memoryPreset]);
+
   const maxTokensShortLabel = useMemo(() => {
     if (!maxTokensDisplayText) {
       return null;
@@ -3722,10 +3748,19 @@ const ChatPage: React.FC = () => {
     if (!toolPermissionDisplayText) {
       return null;
     }
-    return '自动工具';
+    return '自动授权';
   }, [toolPermissionDisplayText]);
 
-  const hasComposerParamSummary = Boolean(maxTokensShortLabel || temperatureShortLabel || toolPermissionShortLabel);
+  const memoryShortLabel = useMemo(() => {
+    if (!memoryDisplayText) {
+      return null;
+    }
+    return '记忆';
+  }, [memoryDisplayText]);
+
+  const hasComposerParamSummary = Boolean(
+    maxTokensShortLabel || temperatureShortLabel || toolPermissionShortLabel || memoryShortLabel,
+  );
   const maxTokensCustomInvalid = maxTokensPreset === 'custom' && parsedCustomMaxTokens == null;
   const temperatureCustomInvalid = temperaturePreset === 'custom' && parsedCustomTemperature == null;
 
@@ -3757,7 +3792,8 @@ const ChatPage: React.FC = () => {
     !showAgentChip &&
     maxTokensPreset === 'default' &&
     temperaturePreset === 'default' &&
-    toolPermissionPreset === 'require_approval';
+    toolPermissionPreset === 'require_approval' &&
+    memoryPreset === 'off';
   const isCompactComposer = allComposerSettingsDefault && !hasWrappedInCompactComposer && inputVisualLineCount <= 1;
 
   const assistantProfile = useMemo<AssistantProfile>(() => {
@@ -4172,7 +4208,8 @@ const ChatPage: React.FC = () => {
       !agentPickerOpen &&
       !quickOutputMenuOpen &&
       !quickTemperatureMenuOpen &&
-      !quickToolPermissionMenuOpen
+      !quickToolPermissionMenuOpen &&
+      !quickMemoryMenuOpen
     ) {
       return;
     }
@@ -4193,20 +4230,32 @@ const ChatPage: React.FC = () => {
       if (quickToolPermissionMenuRef.current?.contains(event.target as Node)) {
         return;
       }
+      if (quickMemoryMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
       setAddMenuOpen(false);
       setAddMenuAgentOpen(false);
       setAddMenuOutputLengthOpen(false);
       setAddMenuTemperatureOpen(false);
       setAddMenuToolPermissionOpen(false);
+      setAddMenuMemoryOpen(false);
       setQuickOutputMenuOpen(false);
       setQuickTemperatureMenuOpen(false);
       setQuickToolPermissionMenuOpen(false);
+      setQuickMemoryMenuOpen(false);
       setAgentPickerOpen(false);
     };
 
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
-  }, [addMenuOpen, agentPickerOpen, quickOutputMenuOpen, quickTemperatureMenuOpen, quickToolPermissionMenuOpen]);
+  }, [
+    addMenuOpen,
+    agentPickerOpen,
+    quickOutputMenuOpen,
+    quickTemperatureMenuOpen,
+    quickToolPermissionMenuOpen,
+    quickMemoryMenuOpen,
+  ]);
 
   useEffect(() => {
     if (!sidebarSettingsOpen && !headerMoreOpen) {
@@ -4478,6 +4527,7 @@ const ChatPage: React.FC = () => {
       maxTokens: resolvedMaxTokens,
       temperature: resolvedTemperature,
       toolPermissionMode: toolPermissionPreset,
+      memoryEnabled: memoryPreset === 'on',
     });
   };
 
@@ -4649,9 +4699,11 @@ const ChatPage: React.FC = () => {
     setAddMenuOutputLengthOpen(false);
     setAddMenuTemperatureOpen(false);
     setAddMenuToolPermissionOpen(false);
+    setAddMenuMemoryOpen(false);
     setQuickOutputMenuOpen(false);
     setQuickTemperatureMenuOpen(false);
     setQuickToolPermissionMenuOpen(false);
+    setQuickMemoryMenuOpen(false);
     setAgentPickerOpen(false);
   };
 
@@ -4915,9 +4967,11 @@ const ChatPage: React.FC = () => {
           setAddMenuOutputLengthOpen(false);
           setAddMenuTemperatureOpen(false);
           setAddMenuToolPermissionOpen(false);
+          setAddMenuMemoryOpen(false);
           setQuickOutputMenuOpen(false);
           setQuickTemperatureMenuOpen(false);
           setQuickToolPermissionMenuOpen(false);
+          setQuickMemoryMenuOpen(false);
           setAgentPickerOpen(false);
         }}
         className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -4938,9 +4992,11 @@ const ChatPage: React.FC = () => {
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             onMouseEnter={() => {
               // 鼠标回到一级菜单项时，收起所有二级菜单，避免“悬挂”在右侧。
@@ -4948,6 +5004,7 @@ const ChatPage: React.FC = () => {
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
             }}
             type="button"
           >
@@ -4962,18 +5019,22 @@ const ChatPage: React.FC = () => {
               setAddMenuAgentOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuOutputLengthOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             type="button"
           >
@@ -4996,10 +5057,12 @@ const ChatPage: React.FC = () => {
                       setAddMenuOutputLengthOpen(false);
                       setAddMenuTemperatureOpen(false);
                       setAddMenuToolPermissionOpen(false);
+                      setAddMenuMemoryOpen(false);
                       setAddMenuAgentOpen(false);
                       setQuickOutputMenuOpen(false);
                       setQuickTemperatureMenuOpen(false);
                       setQuickToolPermissionMenuOpen(false);
+                      setQuickMemoryMenuOpen(false);
                     }
                   }}
                   className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5047,18 +5110,22 @@ const ChatPage: React.FC = () => {
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuTemperatureOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             type="button"
           >
@@ -5081,10 +5148,12 @@ const ChatPage: React.FC = () => {
                       setAddMenuOutputLengthOpen(false);
                       setAddMenuTemperatureOpen(false);
                       setAddMenuToolPermissionOpen(false);
+                      setAddMenuMemoryOpen(false);
                       setAddMenuAgentOpen(false);
                       setQuickOutputMenuOpen(false);
                       setQuickTemperatureMenuOpen(false);
                       setQuickToolPermissionMenuOpen(false);
+                      setQuickMemoryMenuOpen(false);
                     }
                   }}
                   className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5127,18 +5196,22 @@ const ChatPage: React.FC = () => {
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuToolPermissionOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             type="button"
           >
@@ -5160,10 +5233,12 @@ const ChatPage: React.FC = () => {
                     setAddMenuOutputLengthOpen(false);
                     setAddMenuTemperatureOpen(false);
                     setAddMenuToolPermissionOpen(false);
+                    setAddMenuMemoryOpen(false);
                     setAddMenuAgentOpen(false);
                     setQuickOutputMenuOpen(false);
                     setQuickTemperatureMenuOpen(false);
                     setQuickToolPermissionMenuOpen(false);
+                    setQuickMemoryMenuOpen(false);
                   }}
                   className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
                     toolPermissionPreset === preset.key
@@ -5185,22 +5260,94 @@ const ChatPage: React.FC = () => {
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
             onClick={() => {
-              setAddMenuAgentOpen((prev) => !prev);
+              setAddMenuMemoryOpen((prev) => !prev);
+              setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
+            }}
+            onMouseEnter={() => {
+              setAddMenuMemoryOpen(true);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
+            }}
+            type="button"
+          >
+            <span className="inline-flex items-center gap-2">
+              <MemoryIcon />
+              记忆设置
+            </span>
+            <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+          </button>
+
+          {addMenuMemoryOpen && (
+            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+              {MEMORY_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  onClick={() => {
+                    setMemoryPreset(preset.key);
+                    setAddMenuOpen(false);
+                    setAddMenuOutputLengthOpen(false);
+                    setAddMenuTemperatureOpen(false);
+                    setAddMenuToolPermissionOpen(false);
+                    setAddMenuMemoryOpen(false);
+                    setAddMenuAgentOpen(false);
+                    setQuickOutputMenuOpen(false);
+                    setQuickTemperatureMenuOpen(false);
+                    setQuickToolPermissionMenuOpen(false);
+                    setQuickMemoryMenuOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                    memoryPreset === preset.key
+                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                  }`}
+                  type="button"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <MemoryIcon />
+                    {preset.label}
+                  </span>
+                  {memoryPreset === preset.key && <CheckIcon />}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <button
+            className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={() => {
+              setAddMenuAgentOpen((prev) => !prev);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuAgentOpen(true);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setAddMenuToolPermissionOpen(false);
+              setAddMenuMemoryOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
               setQuickToolPermissionMenuOpen(false);
+              setQuickMemoryMenuOpen(false);
             }}
             type="button"
           >
@@ -5712,9 +5859,11 @@ const ChatPage: React.FC = () => {
                               setAddMenuOutputLengthOpen(false);
                               setAddMenuTemperatureOpen(false);
                               setAddMenuToolPermissionOpen(false);
+                              setAddMenuMemoryOpen(false);
                               setQuickOutputMenuOpen(false);
                               setQuickTemperatureMenuOpen(false);
                               setQuickToolPermissionMenuOpen(false);
+                              setQuickMemoryMenuOpen(false);
                             }}
                             title="切换智能体"
                           >
@@ -5758,11 +5907,13 @@ const ChatPage: React.FC = () => {
                                   setQuickOutputMenuOpen((prev) => !prev);
                                   setQuickTemperatureMenuOpen(false);
                                   setQuickToolPermissionMenuOpen(false);
+                                  setQuickMemoryMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
+                                  setAddMenuMemoryOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -5783,6 +5934,7 @@ const ChatPage: React.FC = () => {
                                           setQuickOutputMenuOpen(false);
                                           setQuickTemperatureMenuOpen(false);
                                           setQuickToolPermissionMenuOpen(false);
+                                          setQuickMemoryMenuOpen(false);
                                         }
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5832,11 +5984,13 @@ const ChatPage: React.FC = () => {
                                   setQuickTemperatureMenuOpen((prev) => !prev);
                                   setQuickOutputMenuOpen(false);
                                   setQuickToolPermissionMenuOpen(false);
+                                  setQuickMemoryMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
+                                  setAddMenuMemoryOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -5857,6 +6011,7 @@ const ChatPage: React.FC = () => {
                                           setQuickOutputMenuOpen(false);
                                           setQuickTemperatureMenuOpen(false);
                                           setQuickToolPermissionMenuOpen(false);
+                                          setQuickMemoryMenuOpen(false);
                                         }
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5901,11 +6056,13 @@ const ChatPage: React.FC = () => {
                                   setQuickToolPermissionMenuOpen((prev) => !prev);
                                   setQuickOutputMenuOpen(false);
                                   setQuickTemperatureMenuOpen(false);
+                                  setQuickMemoryMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
                                   setAddMenuToolPermissionOpen(false);
+                                  setAddMenuMemoryOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -5925,6 +6082,7 @@ const ChatPage: React.FC = () => {
                                         setQuickOutputMenuOpen(false);
                                         setQuickTemperatureMenuOpen(false);
                                         setQuickToolPermissionMenuOpen(false);
+                                        setQuickMemoryMenuOpen(false);
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
                                         toolPermissionPreset === preset.key
@@ -5938,6 +6096,60 @@ const ChatPage: React.FC = () => {
                                         {preset.label}
                                       </span>
                                       {toolPermissionPreset === preset.key && <CheckIcon />}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {memoryShortLabel && (
+                            <div className="relative" ref={quickMemoryMenuRef}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickMemoryMenuOpen((prev) => !prev);
+                                  setQuickOutputMenuOpen(false);
+                                  setQuickTemperatureMenuOpen(false);
+                                  setQuickToolPermissionMenuOpen(false);
+                                  setAddMenuOpen(false);
+                                  setAddMenuAgentOpen(false);
+                                  setAddMenuOutputLengthOpen(false);
+                                  setAddMenuTemperatureOpen(false);
+                                  setAddMenuToolPermissionOpen(false);
+                                  setAddMenuMemoryOpen(false);
+                                  setAgentPickerOpen(false);
+                                }}
+                                className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
+                                title={memoryDisplayText ?? undefined}
+                                aria-label={memoryDisplayText ?? undefined}
+                              >
+                                {memoryShortLabel}
+                              </button>
+
+                              {quickMemoryMenuOpen && (
+                                <div className="absolute bottom-11 left-0 z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                                  {MEMORY_PRESETS.map((preset) => (
+                                    <button
+                                      key={`quick-memory-${preset.key}`}
+                                      onClick={() => {
+                                        setMemoryPreset(preset.key);
+                                        setQuickOutputMenuOpen(false);
+                                        setQuickTemperatureMenuOpen(false);
+                                        setQuickToolPermissionMenuOpen(false);
+                                        setQuickMemoryMenuOpen(false);
+                                      }}
+                                      className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                        memoryPreset === preset.key
+                                          ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                          : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                      }`}
+                                      type="button"
+                                    >
+                                      <span className="inline-flex items-center gap-2">
+                                        <MemoryIcon />
+                                        {preset.label}
+                                      </span>
+                                      {memoryPreset === preset.key && <CheckIcon />}
                                     </button>
                                   ))}
                                 </div>

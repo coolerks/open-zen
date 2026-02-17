@@ -209,6 +209,7 @@ export interface ChatSendRequest {
   maxTokens?: number;
   temperature?: number;
   toolPermissionMode?: 'require_approval' | 'auto';
+  memoryEnabled?: boolean;
 }
 
 export interface StreamDonePayload {

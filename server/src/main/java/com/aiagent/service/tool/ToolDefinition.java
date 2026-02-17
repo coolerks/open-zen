@@ -22,6 +22,29 @@ public interface ToolDefinition {
     /** 执行工具并返回结果文本 */
     String execute(Map<String, Object> arguments);
 
+    /**
+     * 带执行上下文的工具调用入口。
+     * 旧工具无需改造，默认回退到无上下文执行。
+     */
+    default String execute(Map<String, Object> arguments, ToolExecutionContext context) {
+        return execute(arguments);
+    }
+
+    /**
+     * 是否为“记忆类工具”。
+     * 关闭记忆开关时，此类工具不会下发给模型。
+     */
+    default boolean isMemoryTool() {
+        return false;
+    }
+
+    /**
+     * 在“需要用户授权”模式下，是否允许该工具免授权执行。
+     */
+    default boolean bypassUserApproval() {
+        return false;
+    }
+
     /** 转换为 OpenAI/OpenRouter 兼容工具结构 */
     default ChatCompletionRequest.Tool toRequestTool() {
         ChatCompletionRequest.Tool tool = new ChatCompletionRequest.Tool();
