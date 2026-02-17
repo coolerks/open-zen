@@ -8,8 +8,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
@@ -21,7 +19,7 @@ class ToolRegistryTest {
 
     @Test
     void testGetServerTimeToolRegistered() {
-        assertTrue(toolRegistry.hasTool("getServerTime"));
+        assertTrue(toolRegistry.hasTool("getCurrentDate"));
     }
 
     @Test
@@ -31,9 +29,9 @@ class ToolRegistryTest {
 
     @Test
     void testGetToolByName() {
-        ToolDefinition tool = toolRegistry.getTool("getServerTime");
+        ToolDefinition tool = toolRegistry.getTool("getCurrentDate");
         assertNotNull(tool);
-        assertEquals("getServerTime", tool.getName());
+        assertEquals("getCurrentDate", tool.getName());
         assertNotNull(tool.getDescription());
         assertNotNull(tool.getParametersSchema());
     }
@@ -47,34 +45,34 @@ class ToolRegistryTest {
     @Test
     void testGetServerTimeExecution() {
         GetServerTimeTool tool = new GetServerTimeTool();
-        String result = tool.execute(Map.of("timezone", "Asia/Shanghai"));
+        String result = tool.getCurrentDate("Asia/Shanghai", "yyyy-MM-dd HH:mm:ss");
         assertNotNull(result);
-        assertTrue(result.contains("当前服务器时间"));
+        assertTrue(result.contains("当前日期"));
         assertTrue(result.contains("Asia/Shanghai"));
     }
 
     @Test
     void testGetServerTimeExecutionDefaultTimezone() {
         GetServerTimeTool tool = new GetServerTimeTool();
-        String result = tool.execute(Map.of());
+        String result = tool.getCurrentDate(null, null);
         assertNotNull(result);
-        assertTrue(result.contains("当前服务器时间"));
+        assertTrue(result.contains("当前日期"));
     }
 
     @Test
     void testGetServerTimeExecutionNullArgs() {
         GetServerTimeTool tool = new GetServerTimeTool();
-        String result = tool.execute(null);
+        String result = tool.getCurrentDate("", "");
         assertNotNull(result);
-        assertTrue(result.contains("当前服务器时间"));
+        assertTrue(result.contains("当前日期"));
     }
 
     @Test
     void testToolToRequestFormat() {
-        ToolDefinition tool = toolRegistry.getTool("getServerTime");
+        ToolDefinition tool = toolRegistry.getTool("getCurrentDate");
         var requestTool = tool.toRequestTool();
         assertEquals("function", requestTool.getType());
-        assertEquals("getServerTime", requestTool.getFunction().getName());
+        assertEquals("getCurrentDate", requestTool.getFunction().getName());
         assertNotNull(requestTool.getFunction().getDescription());
         assertNotNull(requestTool.getFunction().getParameters());
     }
