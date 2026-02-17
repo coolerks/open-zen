@@ -85,6 +85,8 @@ export const chatApi = {
   },
   deleteMessage: (sessionId: number, messageId: number) =>
     del<void>(`/chat/sessions/${sessionId}/messages/${messageId}`),
+  approveToolCall: (sessionId: number, assistantMessageId: number, approved: boolean) =>
+    post<ChatMessage>(`/chat/sessions/${sessionId}/tool-approval`, { assistantMessageId, approved }),
   sendMessage: (data: ChatSendRequest) => post<ChatMessage>('/chat/send', data),
   streamMessage: async (
     data: ChatSendRequest,

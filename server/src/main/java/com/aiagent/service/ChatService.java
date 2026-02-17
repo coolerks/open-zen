@@ -458,7 +458,8 @@ public class ChatService {
      */
     public ChatMessage sendMessage(ChatSendRequest request) {
         SendContext context = prepareSendContext(request, true);
-        return runCompletionWithTools(request.getSessionId(), context);
+        ToolPermissionMode permissionMode = resolveToolPermissionMode(request.getToolPermissionMode());
+        return runCompletionWithTools(request.getSessionId(), context, permissionMode).message();
     }
 
     /**
@@ -483,7 +484,9 @@ public class ChatService {
 
                 // 工具模式下走非流式工具闭环，确保工具可真正执行；再通过 SSE 回传最终内容。
                 if (hasAvailableTools) {
-                    ChatMessage assistantMessage = runCompletionWithTools(request.getSessionId(), context);
+                    ToolPermissionMode permissionMode = resolveToolPermissionMode(request.getToolPermissionMode());
+                    ToolLoopResult loopResult = runCompletionWithTools(request.getSessionId(), context, permissionMode);
+                    ChatMessage assistantMessage = loopResult.message();
                     String reasoningText = normalizeContent(assistantMessage.getReasoningContent());
                     if (reasoningText != null) {
                         sendEvent(emitter, "reasoning", Map.of("reasoning", reasoningText));
@@ -506,6 +509,7 @@ public class ChatService {
                     donePayload.put("cacheWriteTokens", assistantMessage.getCacheWriteTokens());
                     donePayload.put("costUsd", assistantMessage.getCostUsd());
                     donePayload.put("sessionCostUsd", contextStats.getSessionCostUsd());
+                    donePayload.put("toolApprovalRequired", loopResult.toolApprovalRequired());
                     donePayload.put("title", getSession(request.getSessionId()).getTitle());
                     sendEvent(emitter, "done", donePayload);
                     emitter.complete();
@@ -628,7 +632,9 @@ public class ChatService {
      * 2) 若返回 tool_calls 则执行工具并写入 tool 消息；
      * 3) 继续下一轮直到返回最终 assistant 文本或轮次超限。
      */
-    private ChatMessage runCompletionWithTools(Long sessionId, SendContext context) {
+    private ToolLoopResult runCompletionWithTools(Long sessionId,
+                                                  SendContext context,
+                                                  ToolPermissionMode permissionMode) {
         List<ChatMessage> history = context.history();
 
         ChatCompletionResponse lastResponse = null;
@@ -681,6 +687,11 @@ public class ChatService {
                 }
                 messageMapper.insert(assistantToolMessage);
 
+                if (permissionMode == ToolPermissionMode.REQUIRE_APPROVAL) {
+                    touchSession(context.session(), context.model().getId());
+                    return new ToolLoopResult(assistantToolMessage, true);
+                }
+
                 for (ChatCompletionResponse.ToolCall toolCall : responseMessage.getToolCalls()) {
                     String toolResult = executeToolCall(toolCall);
 
@@ -719,7 +730,7 @@ public class ChatService {
             messageMapper.insert(assistantMessage);
 
             touchSession(context.session(), context.model().getId());
-            return assistantMessage;
+            return new ToolLoopResult(assistantMessage, false);
         }
 
         ChatMessage fallbackMessage = new ChatMessage();
@@ -733,7 +744,92 @@ public class ChatService {
         messageMapper.insert(fallbackMessage);
 
         touchSession(context.session(), context.model().getId());
-        return fallbackMessage;
+        return new ToolLoopResult(fallbackMessage, false);
+    }
+
+    /**
+     * 处理用户对工具调用的授权决策。
+     * 用户允许后执行工具并继续会话；拒绝后将拒绝结果回填为 tool 消息再继续会话。
+     */
+    public ChatMessage resolveToolApproval(Long sessionId, Long assistantMessageId, boolean approved) {
+        ChatMessage assistantToolMessage = messageMapper.selectById(assistantMessageId);
+        if (assistantToolMessage == null
+                || !Objects.equals(assistantToolMessage.getSessionId(), sessionId)
+                || !"assistant".equals(assistantToolMessage.getRole())) {
+            throw new RuntimeException("工具调用消息不存在");
+        }
+        if (assistantToolMessage.getToolCalls() == null || assistantToolMessage.getToolCalls().isBlank()) {
+            throw new RuntimeException("当前消息不包含待授权的工具调用");
+        }
+
+        List<ChatCompletionResponse.ToolCall> toolCalls = parseStoredToolCalls(assistantToolMessage.getToolCalls());
+        if (toolCalls.isEmpty()) {
+            throw new RuntimeException("工具调用数据无效");
+        }
+        if (hasHandledToolCalls(sessionId, toolCalls)) {
+            throw new RuntimeException("该工具调用已处理");
+        }
+
+        SendContext context = prepareContinuationContext(sessionId, assistantToolMessage.getModelId(), true);
+        appendToolDecisionMessages(sessionId, context, toolCalls, approved);
+
+        SendContext resumedContext = prepareContinuationContext(sessionId, context.model().getId(), true);
+        ToolLoopResult loopResult = runCompletionWithTools(sessionId, resumedContext, ToolPermissionMode.REQUIRE_APPROVAL);
+        return loopResult.message();
+    }
+
+    private List<ChatCompletionResponse.ToolCall> parseStoredToolCalls(String rawToolCalls) {
+        try {
+            return objectMapper.readValue(rawToolCalls, new TypeReference<List<ChatCompletionResponse.ToolCall>>() {
+            });
+        } catch (JsonProcessingException e) {
+            log.warn("待授权工具调用反序列化失败", e);
+            return List.of();
+        }
+    }
+
+    private boolean hasHandledToolCalls(Long sessionId, List<ChatCompletionResponse.ToolCall> toolCalls) {
+        List<String> callIds = toolCalls.stream()
+                .map(ChatCompletionResponse.ToolCall::getId)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(id -> !id.isBlank())
+                .toList();
+        if (callIds.isEmpty()) {
+            return false;
+        }
+        Long count = messageMapper.selectCount(
+                new LambdaQueryWrapper<ChatMessage>()
+                        .eq(ChatMessage::getSessionId, sessionId)
+                        .eq(ChatMessage::getRole, "tool")
+                        .in(ChatMessage::getToolCallId, callIds)
+        );
+        return count != null && count > 0;
+    }
+
+    private void appendToolDecisionMessages(Long sessionId,
+                                            SendContext context,
+                                            List<ChatCompletionResponse.ToolCall> toolCalls,
+                                            boolean approved) {
+        for (ChatCompletionResponse.ToolCall toolCall : toolCalls) {
+            String toolName = toolCall != null && toolCall.getFunction() != null
+                    ? normalizeContent(toolCall.getFunction().getName())
+                    : null;
+            String toolResult = approved
+                    ? executeToolCall(toolCall)
+                    : "用户拒绝执行工具" + (toolName != null ? "：" + toolName : "");
+
+            ChatMessage toolMessage = new ChatMessage();
+            toolMessage.setSessionId(sessionId);
+            toolMessage.setRole("tool");
+            toolMessage.setContent(toolResult);
+            toolMessage.setToolCallId(toolCall != null ? toolCall.getId() : null);
+            toolMessage.setModelId(context.model().getId());
+            toolMessage.setModelName(context.model().getDisplayName());
+            applyAgentSnapshot(toolMessage, context.agent());
+            toolMessage.setCreatedAt(LocalDateTime.now());
+            messageMapper.insert(toolMessage);
+        }
     }
 
     private SendContext prepareSendContext(ChatSendRequest request, boolean includeTools) {
@@ -790,6 +886,65 @@ public class ChatService {
             defaultParams.put("max_tokens", resolvedMaxTokens);
         }
         List<ChatMessage> history = getMessages(request.getSessionId());
+        CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
+        history = compressionResult.history();
+
+        List<ChatCompletionRequest.Tool> tools = null;
+        if (includeTools
+                && Boolean.TRUE.equals(model.getSupportsTools())
+                && !toolRegistry.getAllTools().isEmpty()) {
+            tools = toolRegistry.getAllTools().stream().map(ToolDefinition::toRequestTool).toList();
+        }
+
+        String apiKey = encryptionUtil.decrypt(provider.getApiKey());
+        String systemPrompt = loadSystemPrompt(agent);
+        return new SendContext(
+                session,
+                model,
+                provider,
+                agent,
+                apiKey,
+                defaultParams,
+                tools,
+                systemPrompt,
+                history,
+                compressionResult
+        );
+    }
+
+    private SendContext prepareContinuationContext(Long sessionId, Long preferredModelId, boolean includeTools) {
+        ChatSession session = getSession(sessionId);
+
+        Long resolvedModelId = preferredModelId != null ? preferredModelId : session.getModelId();
+        if (resolvedModelId == null) {
+            resolvedModelId = aiModelService.resolvePreferredEnabledModelId();
+        }
+        if (resolvedModelId == null) {
+            throw new RuntimeException("缺少可用模型");
+        }
+
+        AiModel model = aiModelService.getEntityById(resolvedModelId);
+        if (!Boolean.TRUE.equals(model.getEnabled())) {
+            throw new RuntimeException("模型未启用: " + model.getDisplayName());
+        }
+        updateSessionModelOnly(sessionId, model.getId());
+        session.setModelId(model.getId());
+        session.setUpdatedAt(LocalDateTime.now());
+
+        Provider provider = providerService.getEntityById(model.getProviderId());
+        if (!Boolean.TRUE.equals(provider.getEnabled())) {
+            throw new RuntimeException("供应商未启用: " + provider.getName());
+        }
+
+        CustomAgent agent = resolveSessionAgent(session.getAgentId());
+        Map<String, Object> defaultParams = parseDefaultParams(model.getDefaultParams());
+        if (!defaultParams.containsKey("max_tokens")
+                && model.getMaxCompletionTokens() != null
+                && model.getMaxCompletionTokens() > 0) {
+            defaultParams.put("max_tokens", model.getMaxCompletionTokens());
+        }
+
+        List<ChatMessage> history = getMessages(sessionId);
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
@@ -1454,6 +1609,15 @@ public class ChatService {
         return normalized.isEmpty() ? null : normalized;
     }
 
+    private ToolPermissionMode resolveToolPermissionMode(String rawMode) {
+        if (rawMode == null || rawMode.isBlank()) {
+            return ToolPermissionMode.REQUIRE_APPROVAL;
+        }
+        return "auto".equalsIgnoreCase(rawMode.trim())
+                ? ToolPermissionMode.AUTO
+                : ToolPermissionMode.REQUIRE_APPROVAL;
+    }
+
     private String serializeImages(List<String> images) {
         if (images == null || images.isEmpty()) {
             return null;
@@ -1501,6 +1665,14 @@ public class ChatService {
             log.warn("默认参数解析失败: {}", json, e);
             return new HashMap<>();
         }
+    }
+
+    private record ToolLoopResult(ChatMessage message, boolean toolApprovalRequired) {
+    }
+
+    private enum ToolPermissionMode {
+        REQUIRE_APPROVAL,
+        AUTO
     }
 
     private record SendContext(ChatSession session,

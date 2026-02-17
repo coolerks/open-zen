@@ -28,8 +28,9 @@ interface ChatState {
   sendMessage: (
     content: string,
     images?: string[],
-    options?: { maxTokens?: number | null; temperature?: number | null },
+    options?: { maxTokens?: number | null; temperature?: number | null; toolPermissionMode?: 'require_approval' | 'auto' },
   ) => Promise<void>;
+  resolveToolApproval: (assistantMessageId: number, approved: boolean) => Promise<void>;
   stopStreaming: () => Promise<void>;
   deleteMessage: (messageId: number) => Promise<void>;
   branchFromMessage: (messageId: number, title?: string) => Promise<ChatSession>;
@@ -399,6 +400,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           images: normalizedImages.length > 0 ? normalizedImages : undefined,
           maxTokens: options?.maxTokens != null ? options.maxTokens : undefined,
           temperature: options?.temperature != null ? options.temperature : undefined,
+          toolPermissionMode: options?.toolPermissionMode ?? 'require_approval',
         },
         {
           onDelta: ({ content: delta }) => {
@@ -463,6 +465,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       clearStreamFlushTimer();
       activeStreamAbortController = null;
       set({ streaming: false });
+    }
+  },
+
+  resolveToolApproval: async (assistantMessageId, approved) => {
+    const { currentSessionId } = get();
+    if (!currentSessionId) {
+      return;
+    }
+
+    set({ loading: true, error: null });
+    try {
+      await chatApi.approveToolCall(currentSessionId, assistantMessageId, approved);
+      const [session, latestMessages, sessions] = await Promise.all([
+        chatApi.getSession(currentSessionId),
+        chatApi.getMessages(currentSessionId),
+        chatApi.listSessions(),
+      ]);
+      set({
+        loading: false,
+        currentSession: session,
+        selectedModelId: session.modelId,
+        messages: latestMessages,
+        sessions,
+      });
+    } catch (e: any) {
+      set({ loading: false, error: e.message });
     }
   },
 

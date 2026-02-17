@@ -94,6 +94,16 @@ public class ChatController {
         return ApiResult.ok();
     }
 
+    @PostMapping("/sessions/{sessionId}/tool-approval")
+    public ApiResult<ChatMessage> approveToolCall(@PathVariable Long sessionId,
+                                                  @Valid @RequestBody ChatToolApprovalRequest request) {
+        return ApiResult.ok(chatService.resolveToolApproval(
+                sessionId,
+                request.getAssistantMessageId(),
+                Boolean.TRUE.equals(request.getApproved())
+        ));
+    }
+
     @PostMapping("/send")
     public ApiResult<ChatMessage> send(@Valid @RequestBody ChatSendRequest request) {
         return ApiResult.ok(chatService.sendMessage(request));

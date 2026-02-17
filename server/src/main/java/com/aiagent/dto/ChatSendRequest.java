@@ -30,6 +30,13 @@ public class ChatSendRequest {
     @DecimalMax(value = "2.0", message = "temperature 不能大于 2")
     private Double temperature;
 
+    /**
+     * 工具调用权限模式：
+     * - require_approval：调用前需要用户授权（默认）
+     * - auto：允许模型自动调用
+     */
+    private String toolPermissionMode;
+
     @AssertTrue(message = "消息内容和图片不能同时为空")
     public boolean isPayloadValid() {
         boolean hasContent = content != null && !content.trim().isEmpty();

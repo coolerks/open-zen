@@ -93,6 +93,7 @@ const CODE_EXTENSION_MAP: Record<string, string> = {
 const APP_ICON_EMOJIS = ['🚀', '📊', '🧩', '🛠️', '💡', '🧠', '🌐', '📚', '🎨', '📦'];
 type MaxTokensPresetKey = 'default' | 'low' | 'medium' | 'high' | 'ultra' | 'custom';
 type TemperaturePresetKey = 'default' | 'precise' | 'balanced' | 'creative' | 'divergent' | 'custom';
+type ToolPermissionPresetKey = 'require_approval' | 'auto';
 
 const MAX_TOKENS_PRESETS: Array<{ key: MaxTokensPresetKey; label: string; value: number | null }> = [
   { key: 'default', label: '默认（模型配置）', value: null },
@@ -110,6 +111,11 @@ const TEMPERATURE_PRESETS: Array<{ key: TemperaturePresetKey; label: string; val
   { key: 'creative', label: '创意', value: 1.0 },
   { key: 'divergent', label: '发散', value: 1.3 },
   { key: 'custom', label: '自定义', value: null },
+];
+
+const TOOL_PERMISSION_PRESETS: Array<{ key: ToolPermissionPresetKey; label: string }> = [
+  { key: 'require_approval', label: '需要用户授权（默认）' },
+  { key: 'auto', label: '自动调用工具' },
 ];
 
 function resolveStreamMarkdownInterval(contentLength: number): number {
@@ -373,6 +379,9 @@ type DisplayChatMessage = {
   message: ChatMessage;
   embeddedTools: EmbeddedToolInvocation[];
   mergedMessageIds: number[];
+  preToolContent: string | null;
+  requiresToolApproval: boolean;
+  approvalMessageId: number | null;
 };
 
 type ParsedToolCall = {
@@ -459,20 +468,43 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
         anchorMessage: ChatMessage | null;
         invocations: EmbeddedToolInvocation[];
         mergedMessageIds: number[];
+        preToolContents: string[];
       }
     | null = null;
+
+  const resolveToolApprovalState = (
+    baseMessage: ChatMessage,
+    embeddedTools: EmbeddedToolInvocation[],
+  ): { requiresToolApproval: boolean; approvalMessageId: number | null } => {
+    const hasPendingResult = embeddedTools.some((item) => !item.resultText);
+    if (!hasPendingResult) {
+      return { requiresToolApproval: false, approvalMessageId: null };
+    }
+    if (baseMessage.id <= 0) {
+      return { requiresToolApproval: false, approvalMessageId: null };
+    }
+    return {
+      requiresToolApproval: true,
+      approvalMessageId: baseMessage.id,
+    };
+  };
 
   const flushPendingAsStandalone = () => {
     if (!pending || pending.invocations.length === 0) {
       pending = null;
       return;
     }
+    const preToolContent = pending.preToolContents
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join('\n\n') || null;
 
     syntheticCounter += 1;
     const syntheticId = -9_000_000_000 - syntheticCounter;
     const syntheticMessage: ChatMessage = pending.anchorMessage
       ? {
           ...pending.anchorMessage,
+          content: null,
           role: 'assistant',
           toolCalls: null,
           toolCallId: null,
@@ -506,6 +538,8 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
       message: syntheticMessage,
       embeddedTools: pending.invocations,
       mergedMessageIds: pending.mergedMessageIds,
+      preToolContent,
+      ...resolveToolApprovalState(syntheticMessage, pending.invocations),
     });
     pending = null;
   };
@@ -519,12 +553,17 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
             anchorMessage: message,
             invocations: [],
             mergedMessageIds: [],
+            preToolContents: [],
           };
         }
         if (!pending.anchorMessage) {
           pending.anchorMessage = message;
         }
         pending.mergedMessageIds.push(message.id);
+        const assistantContent = message.content?.trim();
+        if (assistantContent) {
+          pending.preToolContents.push(assistantContent);
+        }
         parsedToolCalls.forEach((toolCall, index) => {
           pending?.invocations.push({
             id: toolCall.id ?? `tool-${message.id}-${index}`,
@@ -533,16 +572,6 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
             resultText: null,
           });
         });
-
-        const assistantContent = message.content?.trim();
-        if (assistantContent) {
-          pending.invocations.push({
-            id: `assistant-${message.id}`,
-            name: '工具调用说明',
-            argumentsText: null,
-            resultText: assistantContent,
-          });
-        }
         continue;
       }
 
@@ -550,10 +579,26 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
         const mergedIds = pending.mergedMessageIds.includes(message.id)
           ? pending.mergedMessageIds
           : [...pending.mergedMessageIds, message.id];
+        const preToolContent = pending.preToolContents
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .join('\n\n') || null;
+        const fallbackReasoning = pending.anchorMessage?.reasoningContent?.trim() || null;
+        const mergedMessage =
+          (message.reasoningContent?.trim() || null) == null && fallbackReasoning
+            ? {
+                ...message,
+                reasoningContent: fallbackReasoning,
+                reasoningDurationMs:
+                  message.reasoningDurationMs ?? pending.anchorMessage?.reasoningDurationMs ?? null,
+              }
+            : message;
         result.push({
-          message,
+          message: mergedMessage,
           embeddedTools: pending.invocations,
           mergedMessageIds: mergedIds,
+          preToolContent,
+          ...resolveToolApprovalState(mergedMessage, pending.invocations),
         });
         pending = null;
         continue;
@@ -566,6 +611,7 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
           anchorMessage: null,
           invocations: [],
           mergedMessageIds: [],
+          preToolContents: [],
         };
       }
       pending.mergedMessageIds.push(message.id);
@@ -608,6 +654,9 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
       message,
       embeddedTools: [],
       mergedMessageIds: [message.id],
+      preToolContent: null,
+      requiresToolApproval: false,
+      approvalMessageId: null,
     });
   }
 
@@ -2096,6 +2145,18 @@ const TemperatureIcon: React.FC = () => (
   </svg>
 );
 
+const ToolPermissionIcon: React.FC = () => (
+  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M10 2.8L15.4 5V9.7C15.4 13.1 13.3 16.2 10 17.4C6.7 16.2 4.6 13.1 4.6 9.7V5L10 2.8Z"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinejoin="round"
+    />
+    <path d="M7.7 10.2L9.2 11.7L12.5 8.4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 const MoreIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="5" cy="10" r="1.4" fill="currentColor" />
@@ -2961,6 +3022,11 @@ const AssistantAvatar: React.FC<{ profile: AssistantProfile }> = ({ profile }) =
 const MessageCardBase: React.FC<{
   message: ChatMessage;
   embeddedTools: EmbeddedToolInvocation[];
+  preToolContent: string | null;
+  toolApprovalStatus: 'approved' | 'rejected' | null;
+  requiresToolApproval: boolean;
+  approvalMessageId: number | null;
+  toolApprovalPending: boolean;
   isStreaming: boolean;
   copied: boolean;
   sessionTitle: string | null;
@@ -2970,10 +3036,16 @@ const MessageCardBase: React.FC<{
   onDelete: (message: ChatMessage) => void;
   onSelectForAction: (payload: SelectionActionPayload | null) => void;
   onAddToAppCenter: (payload: SaveCodeBlockPayload) => void;
+  onToolApproval: (assistantMessageId: number, approved: boolean) => void;
   savedSourceKeySet: Set<string>;
 }> = ({
   message,
   embeddedTools,
+  preToolContent,
+  toolApprovalStatus,
+  requiresToolApproval,
+  approvalMessageId,
+  toolApprovalPending,
   isStreaming,
   copied,
   sessionTitle,
@@ -2983,6 +3055,7 @@ const MessageCardBase: React.FC<{
   onDelete,
   onSelectForAction,
   onAddToAppCenter,
+  onToolApproval,
   savedSourceKeySet,
 }) => {
   const isUser = message.role === 'user';
@@ -2992,6 +3065,9 @@ const MessageCardBase: React.FC<{
   const hasEmbeddedTools = embeddedTools.length > 0;
   const content = message.content ?? '';
   const hasContent = content.length > 0;
+  const normalizedPreToolContent = preToolContent?.trim() ?? '';
+  const hasPreToolContent = hasEmbeddedTools && normalizedPreToolContent.length > 0;
+  const shouldHideEmptyContent = !isUser && !isTool && hasEmbeddedTools && !hasContent && !isStreaming;
   const isReasoningInProgress = Boolean(reasoning) && isStreaming && !hasContent;
   const reasoningSummary = isReasoningInProgress
     ? '思考中'
@@ -3000,7 +3076,7 @@ const MessageCardBase: React.FC<{
         return durationText ? `已思考（用时${durationText}）` : '已思考';
       })();
   const [reasoningOpen, setReasoningOpen] = useState(isReasoningInProgress);
-  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(() => hasEmbeddedTools && requiresToolApproval);
   const [actionsVisible, setActionsVisible] = useState(false);
   const hideActionsTimerRef = useRef<number | null>(null);
 
@@ -3046,6 +3122,14 @@ const MessageCardBase: React.FC<{
     }
     return `工具调用 ${embeddedTools.length} 次`;
   }, [embeddedTools, hasEmbeddedTools]);
+  const canApproveTools = requiresToolApproval && approvalMessageId != null && approvalMessageId > 0;
+
+  useEffect(() => {
+    // 出现待授权工具调用时自动展开，避免用户看不到“允许/拒绝”操作入口。
+    if (canApproveTools) {
+      setToolsOpen(true);
+    }
+  }, [canApproveTools, message.id]);
 
   const actionButtons = (
     <div className="flex items-center gap-0.5">
@@ -3102,15 +3186,64 @@ const MessageCardBase: React.FC<{
     });
   };
 
+  const renderMarkdownBlock = (
+    markdownContent: string,
+    streamingMode: boolean,
+    scopeToMessage: boolean,
+  ) => {
+    if (streamingMode) {
+      return <StreamingMessageMarkdown content={markdownContent} />;
+    }
+
+    return (
+      <MessageMarkdown
+        content={markdownContent}
+        isStreaming={streamingMode}
+        messageId={scopeToMessage && message.id > 0 ? message.id : null}
+        sourceSessionId={scopeToMessage && message.sessionId > 0 ? message.sessionId : null}
+        sourceSessionTitle={scopeToMessage ? sessionTitle : null}
+        sourceModelId={scopeToMessage ? message.modelId : null}
+        sourceModelName={scopeToMessage ? message.modelName : null}
+        onAddToAppCenter={scopeToMessage ? onAddToAppCenter : undefined}
+        savedSourceKeySet={scopeToMessage ? savedSourceKeySet : undefined}
+      />
+    );
+  };
+
   const bodyContent = (
     <>
+      {reasoning && (
+        <details
+          open={reasoningOpen}
+          onToggle={(event) => setReasoningOpen(event.currentTarget.open)}
+          className="mb-3 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
+        >
+          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{reasoningSummary}</summary>
+          <div className="mt-2 whitespace-pre-wrap text-slate-500 dark:text-slate-400">{reasoning}</div>
+        </details>
+      )}
+
+      {hasPreToolContent && (
+        <div className="chat-markdown mb-3 text-sm leading-7 text-slate-800 dark:text-slate-100">
+          {renderMarkdownBlock(normalizedPreToolContent, false, false)}
+        </div>
+      )}
+
       {hasEmbeddedTools && (
         <details
           open={toolsOpen}
           onToggle={(event) => setToolsOpen(event.currentTarget.open)}
           className="mb-3 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
         >
-          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{toolsSummaryText}</summary>
+          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">
+            {toolsSummaryText}
+            {toolApprovalStatus === 'approved' && (
+              <span className="ml-2 text-emerald-600 dark:text-emerald-400">已允许</span>
+            )}
+            {toolApprovalStatus === 'rejected' && (
+              <span className="ml-2 text-rose-600 dark:text-rose-400">已拒绝</span>
+            )}
+          </summary>
           <div className="mt-2 space-y-2">
             {embeddedTools.map((tool, index) => (
               <div
@@ -3131,17 +3264,26 @@ const MessageCardBase: React.FC<{
               </div>
             ))}
           </div>
-        </details>
-      )}
-
-      {reasoning && (
-        <details
-          open={reasoningOpen}
-          onToggle={(event) => setReasoningOpen(event.currentTarget.open)}
-          className="mb-3 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
-        >
-          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{reasoningSummary}</summary>
-          <div className="mt-2 whitespace-pre-wrap text-slate-500 dark:text-slate-400">{reasoning}</div>
+          {canApproveTools && (
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                disabled={toolApprovalPending}
+                onClick={() => onToolApproval(approvalMessageId, true)}
+                className="inline-flex h-7 items-center rounded-lg border border-emerald-300 bg-emerald-50 px-2 text-[12px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-700/70 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+              >
+                {toolApprovalPending ? '处理中...' : '允许'}
+              </button>
+              <button
+                type="button"
+                disabled={toolApprovalPending}
+                onClick={() => onToolApproval(approvalMessageId, false)}
+                className="inline-flex h-7 items-center rounded-lg border border-rose-300 bg-rose-50 px-2 text-[12px] font-medium text-rose-700 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-rose-700/70 dark:bg-rose-900/20 dark:text-rose-300 dark:hover:bg-rose-900/30"
+              >
+                {toolApprovalPending ? '处理中...' : '拒绝'}
+              </button>
+            </div>
+          )}
         </details>
       )}
 
@@ -3158,32 +3300,20 @@ const MessageCardBase: React.FC<{
         </div>
       )}
 
-      <div className="chat-markdown text-sm leading-7 text-slate-800 dark:text-slate-100">
-        {hasContent ? (
-          isStreaming ? (
-            <StreamingMessageMarkdown content={content} />
+      {!shouldHideEmptyContent && (
+        <div className="chat-markdown text-sm leading-7 text-slate-800 dark:text-slate-100">
+          {hasContent ? (
+            renderMarkdownBlock(content, isStreaming, true)
+          ) : isStreaming ? (
+            <div className="flex h-7 items-center">
+              <span className="chat-loading-dot" aria-label="加载中" />
+            </div>
           ) : (
-            <MessageMarkdown
-              content={content}
-              isStreaming={isStreaming}
-              messageId={message.id > 0 ? message.id : null}
-              sourceSessionId={message.sessionId > 0 ? message.sessionId : null}
-              sourceSessionTitle={sessionTitle}
-              sourceModelId={message.modelId}
-              sourceModelName={message.modelName}
-              onAddToAppCenter={onAddToAppCenter}
-              savedSourceKeySet={savedSourceKeySet}
-            />
-          )
-        ) : isStreaming ? (
-          <div className="flex h-7 items-center">
-            <span className="chat-loading-dot" aria-label="加载中" />
-          </div>
-        ) : (
-          <span className="opacity-60">(空消息)</span>
-        )}
-        {isStreaming && hasContent && <span className="chat-loading-inline" aria-label="加载中" />}
-      </div>
+            <span className="opacity-60">(空消息)</span>
+          )}
+          {isStreaming && hasContent && <span className="chat-loading-inline" aria-label="加载中" />}
+        </div>
+      )}
     </>
   );
 
@@ -3273,6 +3403,11 @@ const MessageCard = React.memo(
   (prev, next) =>
     prev.message === next.message &&
     prev.embeddedTools === next.embeddedTools &&
+    prev.preToolContent === next.preToolContent &&
+    prev.toolApprovalStatus === next.toolApprovalStatus &&
+    prev.requiresToolApproval === next.requiresToolApproval &&
+    prev.approvalMessageId === next.approvalMessageId &&
+    prev.toolApprovalPending === next.toolApprovalPending &&
     prev.isStreaming === next.isStreaming &&
     prev.copied === next.copied &&
     prev.sessionTitle === next.sessionTitle &&
@@ -3284,6 +3419,7 @@ const MessageCard = React.memo(
     prev.onDelete === next.onDelete &&
     prev.onSelectForAction === next.onSelectForAction &&
     prev.onAddToAppCenter === next.onAddToAppCenter &&
+    prev.onToolApproval === next.onToolApproval &&
     prev.savedSourceKeySet === next.savedSourceKeySet,
 );
 
@@ -3309,6 +3445,7 @@ const ChatPage: React.FC = () => {
     renameSession,
     selectSession,
     sendMessage,
+    resolveToolApproval,
     stopStreaming,
     deleteMessage,
     branchFromMessage,
@@ -3326,6 +3463,7 @@ const ChatPage: React.FC = () => {
   const [quotedSelection, setQuotedSelection] = useState<{ messageId: number; text: string } | null>(null);
   const [selectionAction, setSelectionAction] = useState<{ messageId: number; text: string; top: number; left: number } | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [toolApprovalStatusMap, setToolApprovalStatusMap] = useState<Record<number, 'approved' | 'rejected'>>({});
   const [draftAgentId, setDraftAgentId] = useState<number | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     if (typeof window === 'undefined') {
@@ -3337,8 +3475,10 @@ const ChatPage: React.FC = () => {
   const [addMenuAgentOpen, setAddMenuAgentOpen] = useState(false);
   const [addMenuOutputLengthOpen, setAddMenuOutputLengthOpen] = useState(false);
   const [addMenuTemperatureOpen, setAddMenuTemperatureOpen] = useState(false);
+  const [addMenuToolPermissionOpen, setAddMenuToolPermissionOpen] = useState(false);
   const [quickOutputMenuOpen, setQuickOutputMenuOpen] = useState(false);
   const [quickTemperatureMenuOpen, setQuickTemperatureMenuOpen] = useState(false);
+  const [quickToolPermissionMenuOpen, setQuickToolPermissionMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [sidebarSettingsOpen, setSidebarSettingsOpen] = useState(false);
   const [headerMoreOpen, setHeaderMoreOpen] = useState(false);
@@ -3366,9 +3506,11 @@ const ChatPage: React.FC = () => {
   const [maxTokensCustomInput, setMaxTokensCustomInput] = useState('4096');
   const [temperaturePreset, setTemperaturePreset] = useState<TemperaturePresetKey>('default');
   const [temperatureCustomInput, setTemperatureCustomInput] = useState('0.7');
+  const [toolPermissionPreset, setToolPermissionPreset] = useState<ToolPermissionPresetKey>('require_approval');
   const [composerParamError, setComposerParamError] = useState<string | null>(null);
   const [inputVisualLineCount, setInputVisualLineCount] = useState(1);
   const [hasWrappedInCompactComposer, setHasWrappedInCompactComposer] = useState(false);
+  const [toolApprovalPendingMessageId, setToolApprovalPendingMessageId] = useState<number | null>(null);
 
   const [branchDialog, setBranchDialog] = useState<{ open: boolean; message: ChatMessage | null; title: string }>({
     open: false,
@@ -3387,6 +3529,7 @@ const ChatPage: React.FC = () => {
   const agentPickerRef = useRef<HTMLDivElement>(null);
   const quickOutputMenuRef = useRef<HTMLDivElement>(null);
   const quickTemperatureMenuRef = useRef<HTMLDivElement>(null);
+  const quickToolPermissionMenuRef = useRef<HTMLDivElement>(null);
   const sidebarSettingsRef = useRef<HTMLDivElement>(null);
   const headerMoreRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3539,6 +3682,14 @@ const ChatPage: React.FC = () => {
     return `温度：${label}（${formatShortNumber(resolvedTemperature)}）`;
   }, [temperaturePreset, resolvedTemperature]);
 
+  const toolPermissionDisplayText = useMemo(() => {
+    if (toolPermissionPreset === 'require_approval') {
+      return null;
+    }
+    const label = TOOL_PERMISSION_PRESETS.find((item) => item.key === toolPermissionPreset)?.label ?? '自动调用工具';
+    return `工具权限：${label}`;
+  }, [toolPermissionPreset]);
+
   const maxTokensShortLabel = useMemo(() => {
     if (!maxTokensDisplayText) {
       return null;
@@ -3567,7 +3718,14 @@ const ChatPage: React.FC = () => {
     return map[temperaturePreset as Exclude<TemperaturePresetKey, 'default'>] ?? null;
   }, [temperatureDisplayText, temperaturePreset]);
 
-  const hasComposerParamSummary = Boolean(maxTokensShortLabel || temperatureShortLabel);
+  const toolPermissionShortLabel = useMemo(() => {
+    if (!toolPermissionDisplayText) {
+      return null;
+    }
+    return '自动工具';
+  }, [toolPermissionDisplayText]);
+
+  const hasComposerParamSummary = Boolean(maxTokensShortLabel || temperatureShortLabel || toolPermissionShortLabel);
   const maxTokensCustomInvalid = maxTokensPreset === 'custom' && parsedCustomMaxTokens == null;
   const temperatureCustomInvalid = temperaturePreset === 'custom' && parsedCustomTemperature == null;
 
@@ -3595,7 +3753,11 @@ const ChatPage: React.FC = () => {
     [enabledAgents, activeAgentId, defaultAgent],
   );
   const showAgentChip = Boolean(activeAgent && !activeAgent.isDefault);
-  const allComposerSettingsDefault = !showAgentChip && maxTokensPreset === 'default' && temperaturePreset === 'default';
+  const allComposerSettingsDefault =
+    !showAgentChip &&
+    maxTokensPreset === 'default' &&
+    temperaturePreset === 'default' &&
+    toolPermissionPreset === 'require_approval';
   const isCompactComposer = allComposerSettingsDefault && !hasWrappedInCompactComposer && inputVisualLineCount <= 1;
 
   const assistantProfile = useMemo<AssistantProfile>(() => {
@@ -3654,6 +3816,10 @@ const ChatPage: React.FC = () => {
   }, [messages, streaming]);
 
   const displayMessages = useMemo(() => buildDisplayMessages(messages), [messages]);
+  const hasPendingToolApproval = useMemo(
+    () => displayMessages.some((item) => item.requiresToolApproval && item.approvalMessageId != null),
+    [displayMessages],
+  );
   const hasCurrentSession = isChatRoute && currentSessionId != null && currentSession != null;
   const shouldCenterComposer = isChatRoute && !currentSessionId;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
@@ -3801,6 +3967,10 @@ const ChatPage: React.FC = () => {
       container.scrollTop = container.scrollHeight;
     }
   }, [isChatRoute, currentSessionId]);
+
+  useEffect(() => {
+    setToolApprovalPendingMessageId(null);
+  }, [currentSessionId]);
 
   useEffect(() => {
     if (!isChatRoute) {
@@ -3997,7 +4167,13 @@ const ChatPage: React.FC = () => {
   );
 
   useEffect(() => {
-    if (!addMenuOpen && !agentPickerOpen && !quickOutputMenuOpen && !quickTemperatureMenuOpen) {
+    if (
+      !addMenuOpen &&
+      !agentPickerOpen &&
+      !quickOutputMenuOpen &&
+      !quickTemperatureMenuOpen &&
+      !quickToolPermissionMenuOpen
+    ) {
       return;
     }
 
@@ -4014,18 +4190,23 @@ const ChatPage: React.FC = () => {
       if (quickTemperatureMenuRef.current?.contains(event.target as Node)) {
         return;
       }
+      if (quickToolPermissionMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
       setAddMenuOpen(false);
       setAddMenuAgentOpen(false);
       setAddMenuOutputLengthOpen(false);
       setAddMenuTemperatureOpen(false);
+      setAddMenuToolPermissionOpen(false);
       setQuickOutputMenuOpen(false);
       setQuickTemperatureMenuOpen(false);
+      setQuickToolPermissionMenuOpen(false);
       setAgentPickerOpen(false);
     };
 
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
-  }, [addMenuOpen, agentPickerOpen, quickOutputMenuOpen, quickTemperatureMenuOpen]);
+  }, [addMenuOpen, agentPickerOpen, quickOutputMenuOpen, quickTemperatureMenuOpen, quickToolPermissionMenuOpen]);
 
   useEffect(() => {
     if (!sidebarSettingsOpen && !headerMoreOpen) {
@@ -4159,6 +4340,14 @@ const ChatPage: React.FC = () => {
     }
   }, [composerParamError, maxTokensCustomInvalid, temperatureCustomInvalid]);
 
+  useEffect(() => {
+    if (!hasPendingToolApproval) {
+      return;
+    }
+    // 工具调用待授权期间禁止继续发送，避免模型在未确认权限前继续推进。
+    setComposerParamError('当前有待确认的工具调用，请先允许或拒绝后再发送下一条消息。');
+  }, [hasPendingToolApproval]);
+
   const resolvePreferredModelForNewSession = useCallback(() => {
     if (preferredModelId != null && enabledModelIdSet.has(preferredModelId)) {
       return preferredModelId;
@@ -4256,6 +4445,10 @@ const ChatPage: React.FC = () => {
     if (streaming) {
       return;
     }
+    if (hasPendingToolApproval) {
+      setComposerParamError('当前有待确认的工具调用，请先允许或拒绝后再发送下一条消息。');
+      return;
+    }
 
     if (maxTokensCustomInvalid) {
       setComposerParamError('自定义输出长度无效，请输入大于 0 的整数。');
@@ -4284,6 +4477,7 @@ const ChatPage: React.FC = () => {
     await sendMessage(text, images, {
       maxTokens: resolvedMaxTokens,
       temperature: resolvedTemperature,
+      toolPermissionMode: toolPermissionPreset,
     });
   };
 
@@ -4454,10 +4648,29 @@ const ChatPage: React.FC = () => {
     setAddMenuAgentOpen(false);
     setAddMenuOutputLengthOpen(false);
     setAddMenuTemperatureOpen(false);
+    setAddMenuToolPermissionOpen(false);
     setQuickOutputMenuOpen(false);
     setQuickTemperatureMenuOpen(false);
+    setQuickToolPermissionMenuOpen(false);
     setAgentPickerOpen(false);
   };
+
+  const handleToolApproval = useCallback(async (assistantMessageId: number, approved: boolean) => {
+    if (toolApprovalPendingMessageId != null) {
+      return;
+    }
+
+    setToolApprovalPendingMessageId(assistantMessageId);
+    try {
+      await resolveToolApproval(assistantMessageId, approved);
+      setToolApprovalStatusMap((prev) => ({
+        ...prev,
+        [assistantMessageId]: approved ? 'approved' : 'rejected',
+      }));
+    } finally {
+      setToolApprovalPendingMessageId((current) => (current === assistantMessageId ? null : current));
+    }
+  }, [toolApprovalPendingMessageId, resolveToolApproval]);
 
   const handleOpenSessionAbout = async (session: ChatSession) => {
     setSessionAboutDialog({
@@ -4671,9 +4884,9 @@ const ChatPage: React.FC = () => {
       ) : (
         <button
           onClick={() => void handleSend()}
-          disabled={!input.trim() && pendingImages.length === 0 && !quotedSelection}
+          disabled={hasPendingToolApproval || (!input.trim() && pendingImages.length === 0 && !quotedSelection)}
           className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
-          title="发送"
+          title={hasPendingToolApproval ? '请先允许或拒绝工具调用' : '发送'}
           type="button"
         >
           <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -4701,8 +4914,10 @@ const ChatPage: React.FC = () => {
           setAddMenuAgentOpen(false);
           setAddMenuOutputLengthOpen(false);
           setAddMenuTemperatureOpen(false);
+          setAddMenuToolPermissionOpen(false);
           setQuickOutputMenuOpen(false);
           setQuickTemperatureMenuOpen(false);
+          setQuickToolPermissionMenuOpen(false);
           setAgentPickerOpen(false);
         }}
         className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -4722,14 +4937,17 @@ const ChatPage: React.FC = () => {
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             onMouseEnter={() => {
               // 鼠标回到一级菜单项时，收起所有二级菜单，避免“悬挂”在右侧。
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
             }}
             type="button"
           >
@@ -4743,15 +4961,19 @@ const ChatPage: React.FC = () => {
               setAddMenuOutputLengthOpen((prev) => !prev);
               setAddMenuAgentOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuOutputLengthOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             type="button"
           >
@@ -4773,9 +4995,11 @@ const ChatPage: React.FC = () => {
                       setAddMenuOpen(false);
                       setAddMenuOutputLengthOpen(false);
                       setAddMenuTemperatureOpen(false);
+                      setAddMenuToolPermissionOpen(false);
                       setAddMenuAgentOpen(false);
                       setQuickOutputMenuOpen(false);
                       setQuickTemperatureMenuOpen(false);
+                      setQuickToolPermissionMenuOpen(false);
                     }
                   }}
                   className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -4822,15 +5046,19 @@ const ChatPage: React.FC = () => {
               setAddMenuTemperatureOpen((prev) => !prev);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
+              setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuTemperatureOpen(true);
               setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
+              setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             type="button"
           >
@@ -4852,9 +5080,11 @@ const ChatPage: React.FC = () => {
                       setAddMenuOpen(false);
                       setAddMenuOutputLengthOpen(false);
                       setAddMenuTemperatureOpen(false);
+                      setAddMenuToolPermissionOpen(false);
                       setAddMenuAgentOpen(false);
                       setQuickOutputMenuOpen(false);
                       setQuickTemperatureMenuOpen(false);
+                      setQuickToolPermissionMenuOpen(false);
                     }
                   }}
                   className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -4893,18 +5123,84 @@ const ChatPage: React.FC = () => {
           <button
             className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
             onClick={() => {
-              setAddMenuAgentOpen((prev) => !prev);
+              setAddMenuToolPermissionOpen((prev) => !prev);
+              setAddMenuAgentOpen(false);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
+            }}
+            onMouseEnter={() => {
+              setAddMenuToolPermissionOpen(true);
+              setAddMenuAgentOpen(false);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
+            }}
+            type="button"
+          >
+            <span className="inline-flex items-center gap-2">
+              <ToolPermissionIcon />
+              工具权限
+            </span>
+            <ChevronRightIcon className="h-4 w-4 text-slate-400" />
+          </button>
+
+          {addMenuToolPermissionOpen && (
+            <div className="absolute bottom-0 left-[calc(100%+6px)] z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+              {TOOL_PERMISSION_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  onClick={() => {
+                    setToolPermissionPreset(preset.key);
+                    setAddMenuOpen(false);
+                    setAddMenuOutputLengthOpen(false);
+                    setAddMenuTemperatureOpen(false);
+                    setAddMenuToolPermissionOpen(false);
+                    setAddMenuAgentOpen(false);
+                    setQuickOutputMenuOpen(false);
+                    setQuickTemperatureMenuOpen(false);
+                    setQuickToolPermissionMenuOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                    toolPermissionPreset === preset.key
+                      ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                      : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                  }`}
+                  type="button"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <ToolPermissionIcon />
+                    {preset.label}
+                  </span>
+                  {toolPermissionPreset === preset.key && <CheckIcon />}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <button
+            className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]"
+            onClick={() => {
+              setAddMenuAgentOpen((prev) => !prev);
+              setAddMenuOutputLengthOpen(false);
+              setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
+              setQuickOutputMenuOpen(false);
+              setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             onMouseEnter={() => {
               setAddMenuAgentOpen(true);
               setAddMenuOutputLengthOpen(false);
               setAddMenuTemperatureOpen(false);
+              setAddMenuToolPermissionOpen(false);
               setQuickOutputMenuOpen(false);
               setQuickTemperatureMenuOpen(false);
+              setQuickToolPermissionMenuOpen(false);
             }}
             type="button"
           >
@@ -5254,33 +5550,52 @@ const ChatPage: React.FC = () => {
                 </div>
               ) : (
                 <div ref={messagesContentRef} className="space-y-7 pb-3">
-                  {displayMessages.map(({ message, embeddedTools, mergedMessageIds }) => (
-                    <div
-                      key={mergedMessageIds.join('-')}
-                      data-message-id={message.id}
-                      data-message-ids={mergedMessageIds.join(' ')}
-                      className={`rounded-2xl transition-[background-color,box-shadow] duration-500 ${
-                        highlightedMessageId != null && mergedMessageIds.includes(highlightedMessageId)
-                          ? 'bg-amber-50/70 shadow-[0_0_0_1px_rgba(245,158,11,0.35)] dark:bg-amber-500/10 dark:shadow-[0_0_0_1px_rgba(251,191,36,0.45)]'
-                          : ''
-                      }`}
-                    >
-                      <MessageCard
-                        message={message}
-                        embeddedTools={embeddedTools}
-                        isStreaming={activeStreamingMessageId === message.id}
-                        copied={copiedMessageId === message.id}
-                        sessionTitle={currentSession?.title ?? null}
-                        assistantProfile={resolveMessageAssistantProfile(message)}
-                        onCopy={handleCopyMessage}
-                        onBranch={handleBranchMessage}
-                        onDelete={handleDeleteMessage}
-                        onSelectForAction={handleSelectForAction}
-                        onAddToAppCenter={handleOpenSaveCodeBlock}
-                        savedSourceKeySet={appSourceKeySet}
-                      />
-                    </div>
-                  ))}
+                  {displayMessages.map(({ message, embeddedTools, mergedMessageIds, preToolContent, requiresToolApproval, approvalMessageId }) => {
+                    const explicitToolApprovalStatus =
+                      mergedMessageIds
+                        .map((id) => toolApprovalStatusMap[id])
+                        .find((status): status is 'approved' | 'rejected' => status === 'approved' || status === 'rejected') ??
+                      null;
+                    const hasRejectedResult = embeddedTools.some((tool) =>
+                      (tool.resultText ?? '').includes('用户拒绝执行工具'),
+                    );
+                    const toolApprovalStatus =
+                      explicitToolApprovalStatus ?? (!requiresToolApproval && hasRejectedResult ? 'rejected' : null);
+
+                    return (
+                      <div
+                        key={mergedMessageIds.join('-')}
+                        data-message-id={message.id}
+                        data-message-ids={mergedMessageIds.join(' ')}
+                        className={`rounded-2xl transition-[background-color,box-shadow] duration-500 ${
+                          highlightedMessageId != null && mergedMessageIds.includes(highlightedMessageId)
+                            ? 'bg-amber-50/70 shadow-[0_0_0_1px_rgba(245,158,11,0.35)] dark:bg-amber-500/10 dark:shadow-[0_0_0_1px_rgba(251,191,36,0.45)]'
+                            : ''
+                        }`}
+                      >
+                        <MessageCard
+                          message={message}
+                          embeddedTools={embeddedTools}
+                          preToolContent={preToolContent}
+                          toolApprovalStatus={toolApprovalStatus}
+                          requiresToolApproval={requiresToolApproval}
+                          approvalMessageId={approvalMessageId}
+                          toolApprovalPending={toolApprovalPendingMessageId === approvalMessageId}
+                          isStreaming={activeStreamingMessageId === message.id}
+                          copied={copiedMessageId === message.id}
+                          sessionTitle={currentSession?.title ?? null}
+                          assistantProfile={resolveMessageAssistantProfile(message)}
+                          onCopy={handleCopyMessage}
+                          onBranch={handleBranchMessage}
+                          onDelete={handleDeleteMessage}
+                          onSelectForAction={handleSelectForAction}
+                          onAddToAppCenter={handleOpenSaveCodeBlock}
+                          onToolApproval={handleToolApproval}
+                          savedSourceKeySet={appSourceKeySet}
+                        />
+                      </div>
+                    );
+                  })}
                   <div ref={messagesEndRef} />
                 </div>
               )}
@@ -5374,6 +5689,11 @@ const ChatPage: React.FC = () => {
                   {composerParamError && (
                     <p className="mt-2 text-xs text-rose-500 dark:text-rose-300">{composerParamError}</p>
                   )}
+                  {hasPendingToolApproval && (
+                    <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                      当前有待确认的工具调用，请先允许或拒绝后再继续发送。
+                    </p>
+                  )}
 
                   {!isCompactComposer && (
                     <div className="mt-2 flex items-center justify-between">
@@ -5391,8 +5711,10 @@ const ChatPage: React.FC = () => {
                               setAddMenuAgentOpen(false);
                               setAddMenuOutputLengthOpen(false);
                               setAddMenuTemperatureOpen(false);
+                              setAddMenuToolPermissionOpen(false);
                               setQuickOutputMenuOpen(false);
                               setQuickTemperatureMenuOpen(false);
+                              setQuickToolPermissionMenuOpen(false);
                             }}
                             title="切换智能体"
                           >
@@ -5435,10 +5757,12 @@ const ChatPage: React.FC = () => {
                                 onClick={() => {
                                   setQuickOutputMenuOpen((prev) => !prev);
                                   setQuickTemperatureMenuOpen(false);
+                                  setQuickToolPermissionMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
+                                  setAddMenuToolPermissionOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -5458,6 +5782,7 @@ const ChatPage: React.FC = () => {
                                         if (preset.key !== 'custom') {
                                           setQuickOutputMenuOpen(false);
                                           setQuickTemperatureMenuOpen(false);
+                                          setQuickToolPermissionMenuOpen(false);
                                         }
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5506,10 +5831,12 @@ const ChatPage: React.FC = () => {
                                 onClick={() => {
                                   setQuickTemperatureMenuOpen((prev) => !prev);
                                   setQuickOutputMenuOpen(false);
+                                  setQuickToolPermissionMenuOpen(false);
                                   setAddMenuOpen(false);
                                   setAddMenuAgentOpen(false);
                                   setAddMenuOutputLengthOpen(false);
                                   setAddMenuTemperatureOpen(false);
+                                  setAddMenuToolPermissionOpen(false);
                                   setAgentPickerOpen(false);
                                 }}
                                 className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
@@ -5529,6 +5856,7 @@ const ChatPage: React.FC = () => {
                                         if (preset.key !== 'custom') {
                                           setQuickOutputMenuOpen(false);
                                           setQuickTemperatureMenuOpen(false);
+                                          setQuickToolPermissionMenuOpen(false);
                                         }
                                       }}
                                       className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
@@ -5561,6 +5889,57 @@ const ChatPage: React.FC = () => {
                                       />
                                     </div>
                                   )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {toolPermissionShortLabel && (
+                            <div className="relative" ref={quickToolPermissionMenuRef}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickToolPermissionMenuOpen((prev) => !prev);
+                                  setQuickOutputMenuOpen(false);
+                                  setQuickTemperatureMenuOpen(false);
+                                  setAddMenuOpen(false);
+                                  setAddMenuAgentOpen(false);
+                                  setAddMenuOutputLengthOpen(false);
+                                  setAddMenuTemperatureOpen(false);
+                                  setAddMenuToolPermissionOpen(false);
+                                  setAgentPickerOpen(false);
+                                }}
+                                className="inline-flex h-9 min-w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-[#242424] dark:text-slate-300 dark:hover:bg-[#2d2d2d]"
+                                title={toolPermissionDisplayText ?? undefined}
+                                aria-label={toolPermissionDisplayText ?? undefined}
+                              >
+                                {toolPermissionShortLabel}
+                              </button>
+
+                              {quickToolPermissionMenuOpen && (
+                                <div className="absolute bottom-11 left-0 z-50 min-w-[220px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-[#2f2f2f]">
+                                  {TOOL_PERMISSION_PRESETS.map((preset) => (
+                                    <button
+                                      key={`quick-tool-permission-${preset.key}`}
+                                      onClick={() => {
+                                        setToolPermissionPreset(preset.key);
+                                        setQuickOutputMenuOpen(false);
+                                        setQuickTemperatureMenuOpen(false);
+                                        setQuickToolPermissionMenuOpen(false);
+                                      }}
+                                      className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors ${
+                                        toolPermissionPreset === preset.key
+                                          ? 'bg-[rgb(245,245,245)] text-slate-900 dark:bg-[#242424] dark:text-slate-100'
+                                          : 'text-slate-700 hover:bg-[rgb(245,245,245)] dark:text-slate-200 dark:hover:bg-[#242424]'
+                                      }`}
+                                      type="button"
+                                    >
+                                      <span className="inline-flex items-center gap-2">
+                                        <ToolPermissionIcon />
+                                        {preset.label}
+                                      </span>
+                                      {toolPermissionPreset === preset.key && <CheckIcon />}
+                                    </button>
+                                  ))}
                                 </div>
                               )}
                             </div>

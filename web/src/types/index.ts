@@ -208,6 +208,7 @@ export interface ChatSendRequest {
   images?: string[];
   maxTokens?: number;
   temperature?: number;
+  toolPermissionMode?: 'require_approval' | 'auto';
 }
 
 export interface StreamDonePayload {
@@ -222,6 +223,7 @@ export interface StreamDonePayload {
   cacheWriteTokens: number | null;
   costUsd: string | number | null;
   sessionCostUsd: string | number | null;
+  toolApprovalRequired?: boolean;
   title: string;
 }
 
