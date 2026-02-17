@@ -23,7 +23,8 @@ public class ChatController {
     public ApiResult<ChatSession> createSession(@RequestBody(required = false) ChatSessionCreateRequest request) {
         String title = request != null ? request.getTitle() : null;
         Long agentId = request != null ? request.getAgentId() : null;
-        return ApiResult.ok(chatService.createSession(title, agentId));
+        Boolean temporary = request != null ? request.getTemporary() : null;
+        return ApiResult.ok(chatService.createSession(title, agentId, temporary));
     }
 
     @GetMapping("/sessions")

@@ -2270,6 +2270,39 @@ const MoonIcon: React.FC = () => (
   </svg>
 );
 
+const TemporaryModeIcon: React.FC<{ className?: string }> = ({ className = 'h-4 w-4' }) => (
+  <svg className={className} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M10 3.4C13.53 3.4 16.4 6.01 16.4 9.25C16.4 12.49 13.53 15.1 10 15.1C9.44 15.1 8.9 15.03 8.38 14.9L5.5 15.9L6.44 13.58C4.82 12.54 3.8 10.99 3.8 9.25C3.8 6.01 6.67 3.4 10 3.4Z"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeDasharray="2.2 2.2"
+    />
+  </svg>
+);
+
+const TemporaryModeActiveIcon: React.FC<{ className?: string }> = ({ className = 'h-4 w-4' }) => (
+  <svg className={className} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M10 3.4C13.53 3.4 16.4 6.01 16.4 9.25C16.4 12.49 13.53 15.1 10 15.1C9.44 15.1 8.9 15.03 8.38 14.9L5.5 15.9L6.44 13.58C4.82 12.54 3.8 10.99 3.8 9.25C3.8 6.01 6.67 3.4 10 3.4Z"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeDasharray="2.2 2.2"
+    />
+    <path
+      d="M8.1 9.7L9.55 11.05L12.3 8.45"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 const ExportPdfIcon: React.FC = () => (
   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M5 2.8H11.5L15 6.3V16.8C15 17.46 14.46 18 13.8 18H5C4.34 18 3.8 17.46 3.8 16.8V4C3.8 3.34 4.34 2.8 5 2.8Z" stroke="currentColor" strokeWidth="1.6" />
@@ -3474,6 +3507,7 @@ const ChatPage: React.FC = () => {
     sessions,
     currentSessionId,
     currentSession,
+    draftTemporary,
     messages,
     selectedModelId,
     streaming,
@@ -3930,6 +3964,9 @@ const ChatPage: React.FC = () => {
     () => displayMessages.some((item) => item.requiresToolApproval && item.approvalMessageId != null),
     [displayMessages],
   );
+  const temporaryChatActive = isChatRoute && (draftTemporary || currentSession?.isTemporary === true);
+  const isTemporaryDraft = isChatRoute && !currentSessionId && draftTemporary;
+  const showTemporaryToggle = isChatRoute && !currentSessionId;
   const hasCurrentSession = isChatRoute && currentSessionId != null && currentSession != null;
   const shouldCenterComposer = isChatRoute && !currentSessionId;
   const canExportCurrentSession = hasCurrentSession && messages.length > 0;
@@ -4557,11 +4594,11 @@ const ChatPage: React.FC = () => {
     await setSelectedModelId(modelId);
   };
 
-  const handleCreateSession = useCallback(async () => {
-    // “新建会话”仅进入草稿态，不立即落库，避免侧栏出现多个空会话。
+  const enterDraftSession = useCallback(async (temporary: boolean) => {
+    // 草稿态不立即落库，避免侧栏出现多个空会话。
     const desiredModelId = resolvePreferredModelForNewSession();
     navigate('/chat');
-    startDraftSession();
+    startDraftSession({ temporary });
     clearError();
     setInput('');
     setPendingImages([]);
@@ -4580,6 +4617,23 @@ const ChatPage: React.FC = () => {
     selectedModelId,
     setSelectedModelId,
   ]);
+
+  const handleCreateSession = useCallback(async () => {
+    await enterDraftSession(false);
+  }, [enterDraftSession]);
+
+  const handleToggleTemporaryChat = useCallback(() => {
+    if (currentSessionId) {
+      return;
+    }
+    const nextTemporary = !draftTemporary;
+    startDraftSession({ temporary: nextTemporary });
+    if (nextTemporary) {
+      // 临时聊天固定禁用记忆，避免误写入长期记忆。
+      setMemoryPreset('off');
+    }
+    clearError();
+  }, [currentSessionId, draftTemporary, startDraftSession, clearError]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -4603,7 +4657,14 @@ const ChatPage: React.FC = () => {
       if (!desiredModelId) {
         return false;
       }
-      const created = await createSession(activeAgentId != null ? { agentId: activeAgentId } : undefined);
+      const createPayload: { agentId?: number | null; temporary?: boolean } = {};
+      if (activeAgentId != null) {
+        createPayload.agentId = activeAgentId;
+      }
+      if (draftTemporary) {
+        createPayload.temporary = true;
+      }
+      const created = await createSession(Object.keys(createPayload).length > 0 ? createPayload : undefined);
       persistPreferredModel(desiredModelId);
       // 新建会话接口默认回填“系统默认模型”，此处强制覆盖为用户偏好模型。
       if (created.modelId !== desiredModelId || selectedModelId !== desiredModelId) {
@@ -4660,7 +4721,7 @@ const ChatPage: React.FC = () => {
       maxTokens: resolvedMaxTokens,
       temperature: resolvedTemperature,
       toolPermissionMode: toolPermissionPreset,
-      memoryEnabled: memoryPreset === 'on',
+      memoryEnabled: !temporaryChatActive && memoryPreset === 'on',
       enabledToolNames: allAvailableToolNames.length > 0 ? selectedToolNames : undefined,
     });
   };
@@ -5101,7 +5162,11 @@ const ChatPage: React.FC = () => {
       {streaming ? (
         <button
           onClick={() => void stopStreaming()}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+            temporaryChatActive
+              ? 'bg-white text-[#0d0d0d] hover:bg-[rgb(236,236,236)]'
+              : 'bg-slate-900 text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300'
+          }`}
           title="停止生成"
           type="button"
         >
@@ -5113,7 +5178,11 @@ const ChatPage: React.FC = () => {
         <button
           onClick={() => void handleSend()}
           disabled={hasPendingToolApproval || (!input.trim() && pendingImages.length === 0 && !quotedSelection)}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700"
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed ${
+            temporaryChatActive
+              ? 'bg-white text-[#0d0d0d] hover:bg-[rgb(236,236,236)] disabled:bg-white/25 disabled:text-white/70'
+              : 'bg-slate-900 text-white hover:bg-slate-700 disabled:bg-[rgb(217,217,217)] dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300 dark:disabled:bg-slate-700'
+          }`}
           title={hasPendingToolApproval ? '请先允许或拒绝工具调用' : '发送'}
           type="button"
         >
@@ -5152,7 +5221,11 @@ const ChatPage: React.FC = () => {
           setQuickToolsMenuOpen(false);
           setAgentPickerOpen(false);
         }}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors ${
+          temporaryChatActive
+            ? 'border-white/30 text-white hover:bg-white/10'
+            : 'border-slate-300 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+        }`}
         type="button"
         title="更多"
       >
@@ -5908,7 +5981,27 @@ const ChatPage: React.FC = () => {
           )}
 
           <div className="ml-auto flex items-center gap-1">
-            {isChatRoute && (
+            {showTemporaryToggle && (
+              <button
+                type="button"
+                onClick={handleToggleTemporaryChat}
+                className={`mr-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                  draftTemporary
+                    ? 'bg-[rgb(245,245,245)] text-[#0d0d0d] hover:bg-[rgb(239,239,239)] dark:bg-[#2a2a2a] dark:text-slate-100 dark:hover:bg-[#303030]'
+                    : 'text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-[#2a2a2a]'
+                }`}
+                title={draftTemporary ? '退出临时聊天' : '开启临时聊天'}
+                aria-label={draftTemporary ? '退出临时聊天' : '开启临时聊天'}
+              >
+                {draftTemporary ? (
+                  <TemporaryModeActiveIcon className="h-5 w-5" />
+                ) : (
+                  <TemporaryModeIcon className="h-5 w-5" />
+                )}
+              </button>
+            )}
+
+            {hasCurrentSession && (
               <ContextUsageIndicator
                 stats={contextStats}
                 loading={contextStatsLoading}
@@ -6009,9 +6102,15 @@ const ChatPage: React.FC = () => {
               }
             >
               {!currentSessionId ? (
-                <div className={`mx-auto max-w-2xl text-center text-[#0d0d0d] dark:text-slate-100 ${shouldCenterComposer ? 'mt-6' : 'mt-24'}`}>
-                  <h2 className="mb-3 text-[30px] font-semibold tracking-tight">今天想聊点什么？</h2>
-                  <p className="text-sm">选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。</p>
+                <div className={`mx-auto max-w-2xl text-center ${isTemporaryDraft ? 'text-[#0d0d0d]' : 'text-[#0d0d0d] dark:text-slate-100'} ${shouldCenterComposer ? 'mt-6' : 'mt-24'}`}>
+                  <h2 className="mb-3 text-[30px] font-semibold tracking-tight">
+                    {isTemporaryDraft ? '临时聊天' : '今天想聊点什么？'}
+                  </h2>
+                  <p className={`text-sm ${isTemporaryDraft ? 'text-[#686868]' : ''}`}>
+                    {isTemporaryDraft
+                      ? '已针对此聊天禁用记忆功能，因此聊天内容不会包含在历史记录中。'
+                      : '选择或创建会话后即可开始。支持 Markdown、公式、图片输入和流式输出。'}
+                  </p>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="mx-auto mt-24 max-w-2xl rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-[#212121] dark:text-slate-400">
@@ -6110,7 +6209,11 @@ const ChatPage: React.FC = () => {
                   <p className="mb-2 text-xs text-amber-600 dark:text-amber-300">当前模型不支持图片输入，发送时会报错，请切换视觉模型。</p>
                 )}
 
-                <div className="rounded-[30px] border border-[rgb(208,208,208)] bg-white px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] dark:border-[#4a4a4a] dark:bg-[#2f2f2f]">
+                <div className={`rounded-[30px] border px-4 pb-3 pt-3 shadow-[0_2px_10px_rgba(0,0,0,0.05)] ${
+                  temporaryChatActive
+                    ? 'border-[#3a3a3a] bg-[#2f2f2f] shadow-[0_2px_10px_rgba(0,0,0,0.2)]'
+                    : 'border-[rgb(208,208,208)] bg-white dark:border-[#4a4a4a] dark:bg-[#2f2f2f]'
+                }`}>
                   {quotedSelection && (
                     <div className="mb-2 flex items-start gap-2 rounded-2xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-[#3a3a3a] dark:text-slate-200">
                       <span className="mt-0.5 shrink-0 text-slate-500 dark:text-slate-400">
@@ -6145,10 +6248,14 @@ const ChatPage: React.FC = () => {
                         composingRef.current = false;
                       }}
                       onPaste={(event) => void handlePaste(event)}
-                      placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                      placeholder={'输入消息，Enter 发送，Shift + Enter 换行'}
                       rows={1}
                       disabled={streaming}
-                      className={`resize-none border-none bg-transparent text-sm leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100 ${
+                      className={`resize-none border-none bg-transparent text-sm leading-6 outline-none ${
+                        temporaryChatActive
+                          ? 'text-white placeholder:text-[#a3a3a3]'
+                          : 'placeholder:text-slate-400 dark:text-slate-100'
+                      } ${
                         isCompactComposer ? 'min-h-[24px] min-w-0 w-full' : 'w-full'
                       }`}
                     />
@@ -6576,7 +6683,7 @@ const ChatPage: React.FC = () => {
                   )}
                 </div>
 
-                <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500">
+                <p className={`mt-2 text-center text-[11px] ${temporaryChatActive ? 'text-[#8f8f8f]' : 'text-slate-400 dark:text-slate-500'}`}>
                   AI 可能会犯错，请注意核验关键信息
                 </p>
               </div>

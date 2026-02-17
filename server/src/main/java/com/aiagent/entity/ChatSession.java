@@ -24,6 +24,9 @@ public class ChatSession {
 
     private Long parentMessageId;
 
+    @TableField("is_temporary")
+    private Boolean isTemporary;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

@@ -11,6 +11,7 @@ interface ChatState {
   sessions: ChatSession[];
   currentSessionId: number | null;
   currentSession: ChatSession | null;
+  draftTemporary: boolean;
   messages: ChatMessage[];
   selectedModelId: number | null;
   streaming: boolean;
@@ -19,7 +20,7 @@ interface ChatState {
 
   fetchSessions: () => Promise<void>;
   createSession: (payload?: ChatSessionCreateRequest) => Promise<ChatSession>;
-  startDraftSession: () => void;
+  startDraftSession: (options?: { temporary?: boolean }) => void;
   deleteSession: (id: number) => Promise<void>;
   copySession: (id: number, title?: string) => Promise<ChatSession>;
   renameSession: (id: number, title: string) => Promise<void>;
@@ -77,6 +78,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   currentSessionId: null,
   currentSession: null,
+  draftTemporary: false,
   messages: [],
   selectedModelId: null,
   streaming: false,
@@ -89,11 +91,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const sessions = await chatApi.listSessions();
       set({ sessions, loading: false });
 
-      const { currentSessionId } = get();
+      const { currentSessionId, currentSession } = get();
       if (currentSessionId != null) {
         const current = sessions.find((session) => session.id === currentSessionId) ?? null;
         if (!current) {
-          set({ currentSessionId: null, currentSession: null, messages: [], selectedModelId: null });
+          if (currentSession?.id === currentSessionId && currentSession.isTemporary) {
+            return;
+          }
+          set({
+            currentSessionId: null,
+            currentSession: null,
+            draftTemporary: false,
+            messages: [],
+            selectedModelId: null,
+          });
         }
       }
     } catch (e: any) {
@@ -102,6 +113,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         error: e.message,
         currentSessionId: null,
         currentSession: null,
+        draftTemporary: false,
         messages: [],
         selectedModelId: null,
       });
@@ -114,16 +126,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       currentSessionId: created.id,
       currentSession: created,
+      draftTemporary: false,
       messages: [],
       selectedModelId: created.modelId,
     });
     return created;
   },
 
-  startDraftSession: () => {
+  startDraftSession: (options) => {
+    const temporary = options?.temporary === true;
     set((state) => ({
       currentSessionId: null,
       currentSession: null,
+      draftTemporary: temporary,
       messages: [],
       error: null,
       // 保留当前模型选择，避免新建草稿时丢失用户偏好。
@@ -135,7 +150,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await chatApi.deleteSession(id);
     const { currentSessionId } = get();
     if (currentSessionId === id) {
-      set({ currentSessionId: null, currentSession: null, messages: [], selectedModelId: null });
+      set({
+        currentSessionId: null,
+        currentSession: null,
+        draftTemporary: false,
+        messages: [],
+        selectedModelId: null,
+      });
     }
     await get().fetchSessions();
   },
@@ -158,7 +179,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   selectSession: async (id) => {
-    set({ currentSessionId: id, loading: true, error: null });
+    set({ currentSessionId: id, draftTemporary: false, loading: true, error: null });
     try {
       const [session, messages] = await Promise.all([
         chatApi.getSession(id),
@@ -182,6 +203,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         error: e.message,
         currentSessionId: null,
         currentSession: null,
+        draftTemporary: false,
         messages: [],
         selectedModelId: null,
       });

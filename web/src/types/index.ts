@@ -152,6 +152,7 @@ export interface ChatSession {
   enabledToolNames: string | null;
   parentSessionId: number | null;
   parentMessageId: number | null;
+  isTemporary: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -168,6 +169,7 @@ export interface ChatSearchResult {
 export interface ChatSessionCreateRequest {
   title?: string;
   agentId?: number | null;
+  temporary?: boolean;
 }
 
 export interface ChatSessionUpdateRequest {

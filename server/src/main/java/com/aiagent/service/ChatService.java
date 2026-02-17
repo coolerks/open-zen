@@ -61,16 +61,25 @@ public class ChatService {
     private final ObjectMapper objectMapper;
 
     public ChatSession createSession(String title) {
-        return createSession(title, null);
+        return createSession(title, null, false);
     }
 
     public ChatSession createSession(String title, Long agentId) {
-        return createSessionInternal(title, agentId, null, null, null, null);
+        return createSession(title, agentId, false);
+    }
+
+    public ChatSession createSession(String title, Long agentId, Boolean temporary) {
+        return createSessionInternal(title, agentId, null, null, null, null, Boolean.TRUE.equals(temporary));
     }
 
     public List<ChatSession> listSessions() {
         return sessionMapper.selectList(
-                new LambdaQueryWrapper<ChatSession>().orderByDesc(ChatSession::getUpdatedAt));
+                new LambdaQueryWrapper<ChatSession>()
+                        .and(wrapper -> wrapper
+                                .isNull(ChatSession::getIsTemporary)
+                                .or()
+                                .eq(ChatSession::getIsTemporary, false))
+                        .orderByDesc(ChatSession::getUpdatedAt));
     }
 
     /**
@@ -104,6 +113,10 @@ public class ChatService {
 
         List<ChatSession> titleMatchedSessions = sessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSession>()
+                        .and(wrapper -> wrapper
+                                .isNull(ChatSession::getIsTemporary)
+                                .or()
+                                .eq(ChatSession::getIsTemporary, false))
                         .like(ChatSession::getTitle, normalizedKeyword)
                         .orderByDesc(ChatSession::getUpdatedAt)
                         .orderByDesc(ChatSession::getId)
@@ -161,7 +174,7 @@ public class ChatService {
                 continue;
             }
             ChatSession session = sessionMap.get(sessionId);
-            if (session == null) {
+            if (session == null || Boolean.TRUE.equals(session.getIsTemporary())) {
                 continue;
             }
 
@@ -243,7 +256,8 @@ public class ChatService {
                 sourceSession.getModelId(),
                 sourceSession.getEnabledToolNames(),
                 sourceSession.getId(),
-                null
+                null,
+                false
         );
         copyMessages(sourceSession.getId(), copiedSession.getId(), null);
         return getSession(copiedSession.getId());
@@ -272,7 +286,8 @@ public class ChatService {
                 branchModelId,
                 sourceSession.getEnabledToolNames(),
                 sourceSession.getId(),
-                messageId
+                messageId,
+                false
         );
         copyMessages(sourceSession.getId(), branchSession.getId(), messageId);
         return getSession(branchSession.getId());
@@ -1157,7 +1172,8 @@ public class ChatService {
                                               Long modelId,
                                               String enabledToolNames,
                                               Long parentSessionId,
-                                              Long parentMessageId) {
+                                              Long parentMessageId,
+                                              boolean temporary) {
         Long finalAgentId;
         if (agentId == null) {
             finalAgentId = customAgentService.getDefaultAgentEntity().getId();
@@ -1178,6 +1194,7 @@ public class ChatService {
         session.setEnabledToolNames(enabledToolNames);
         session.setParentSessionId(parentSessionId);
         session.setParentMessageId(parentMessageId);
+        session.setIsTemporary(temporary);
         session.setCreatedAt(LocalDateTime.now());
         session.setUpdatedAt(LocalDateTime.now());
         sessionMapper.insert(session);

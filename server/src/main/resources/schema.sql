@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS chat_session (
     enabled_tool_names CLOB,
     parent_session_id  BIGINT,
     parent_message_id  BIGINT,
+    is_temporary       BOOLEAN       NOT NULL DEFAULT FALSE,
     created_at         TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_session_model FOREIGN KEY (model_id) REFERENCES ai_model(id),
@@ -172,6 +173,7 @@ ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS agent_id BIGINT;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS enabled_tool_names CLOB;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS parent_session_id BIGINT;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS parent_message_id BIGINT;
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS is_temporary BOOLEAN NOT NULL DEFAULT FALSE;
 COMMENT ON TABLE chat_session IS '聊天会话表';
 COMMENT ON COLUMN chat_session.id IS '主键 ID';
 COMMENT ON COLUMN chat_session.title IS '会话标题';
@@ -180,10 +182,12 @@ COMMENT ON COLUMN chat_session.agent_id IS '关联智能体 ID';
 COMMENT ON COLUMN chat_session.enabled_tool_names IS '会话允许调用的工具名称列表 JSON，空表示不限制';
 COMMENT ON COLUMN chat_session.parent_session_id IS '父会话 ID（复制或分支来源）';
 COMMENT ON COLUMN chat_session.parent_message_id IS '分支起点消息 ID';
+COMMENT ON COLUMN chat_session.is_temporary IS '是否临时会话：true 表示不进入会话列表';
 COMMENT ON COLUMN chat_session.created_at IS '创建时间';
 COMMENT ON COLUMN chat_session.updated_at IS '更新时间';
 CREATE INDEX IF NOT EXISTS idx_session_updated_at ON chat_session(updated_at);
 CREATE INDEX IF NOT EXISTS idx_session_parent ON chat_session(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_session_temporary ON chat_session(is_temporary);
 
 -- 消息表：记录消息内容、模型、推理内容、图片等信息
 CREATE TABLE IF NOT EXISTS chat_message (
