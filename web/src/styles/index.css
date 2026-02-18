@@ -729,3 +729,30 @@ pre,
   background: rgb(224, 224, 224);
   border-radius: 999px;
 }
+
+/* 项目页签滚动条默认隐藏，滚动时短暂显示。 */
+.project-tab-scroll {
+  scrollbar-width: none;
+}
+
+.project-tab-scroll::-webkit-scrollbar {
+  height: 0;
+}
+
+.project-tab-scroll.is-scrolling {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(224, 224, 224) transparent;
+}
+
+.project-tab-scroll.is-scrolling::-webkit-scrollbar {
+  height: 6px;
+}
+
+.project-tab-scroll.is-scrolling::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.project-tab-scroll.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgb(224, 224, 224);
+  border-radius: 999px;
+}
