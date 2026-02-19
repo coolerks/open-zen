@@ -2,11 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Editor, { DiffEditor } from '@monaco-editor/react';
 import ignore, { type Ignore } from 'ignore';
 import { Button } from '../components/ui/Button';
+import { Dialog } from '../components/ui/Dialog';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectItem } from '../types';
-import { ArrowLeft, Columns2, Files, FolderRoot, Link, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, Columns2, FilePlus2, Files, FolderPlus, FolderRoot, Info, Link, RefreshCw, Search } from 'lucide-react';
 
 type ExplorerEntry = {
   name: string;
@@ -33,6 +34,22 @@ type EditorGroupState = {
   tabs: string[];
   activeTabPath: string | null;
   diffView: GroupDiffView | null;
+};
+
+type ExplorerDragPayload = {
+  kind: 'file' | 'directory';
+  path: string;
+  name: string;
+};
+
+type PendingExplorerEdit = {
+  mode: 'create' | 'rename';
+  kind: 'file' | 'directory';
+  parentPath: string;
+  targetPath: string | null;
+  value: string;
+  error: string | null;
+  submitting: boolean;
 };
 
 type ContextMenuAction = {
@@ -94,7 +111,7 @@ const BINARY_EXTENSIONS = new Set([
 const PROJECT_EXPLORER_WIDTH_STORAGE_KEY = 'project.explorer.width';
 const PROJECT_EXPLORER_COLLAPSED_STORAGE_KEY = 'project.explorer.collapsed';
 const PROJECT_EDITOR_SPLIT_RATIO_STORAGE_KEY = 'project.editor.split.ratio';
-const PROJECT_EXPLORER_MIN_WIDTH = 220;
+const PROJECT_EXPLORER_MIN_WIDTH = 300;
 const PROJECT_EXPLORER_MAX_WIDTH = 640;
 const PROJECT_EDITOR_SPLIT_MIN_RATIO = 0.24;
 const PROJECT_EDITOR_SPLIT_MAX_RATIO = 0.76;
@@ -157,6 +174,58 @@ function joinPath(parentPath: string, name: string): string {
   return `${parentPath}/${name}`;
 }
 
+function splitParentPathAndName(path: string): { parentPath: string; name: string } {
+  const segments = path.split('/').filter(Boolean);
+  const name = segments.pop() ?? '';
+  return {
+    parentPath: segments.join('/'),
+    name,
+  };
+}
+
+function isPathEqualOrChild(path: string, basePath: string): boolean {
+  if (!basePath) {
+    return true;
+  }
+  return path === basePath || path.startsWith(`${basePath}/`);
+}
+
+function isValidExplorerEntryName(input: string): boolean {
+  if (!input.trim()) {
+    return false;
+  }
+  return !/[\\/]/.test(input);
+}
+
+function remapPathByPrefix(path: string, sourcePath: string, targetPath: string | null): string | null {
+  if (path === sourcePath) {
+    return targetPath;
+  }
+  if (!path.startsWith(`${sourcePath}/`)) {
+    return path;
+  }
+  if (targetPath == null) {
+    return null;
+  }
+  return `${targetPath}${path.slice(sourcePath.length)}`;
+}
+
+function remapRecordByPathPrefix<T>(
+  record: Record<string, T>,
+  sourcePath: string,
+  targetPath: string | null,
+): Record<string, T> {
+  const next: Record<string, T> = {};
+  Object.entries(record).forEach(([key, value]) => {
+    const mapped = remapPathByPrefix(key, sourcePath, targetPath);
+    if (mapped == null) {
+      return;
+    }
+    next[mapped] = value;
+  });
+  return next;
+}
+
 async function ensureDirectoryReadPermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
   try {
     if (typeof handle.queryPermission === 'function') {
@@ -175,6 +244,26 @@ async function ensureDirectoryReadPermission(handle: FileSystemDirectoryHandle):
   } catch {
     // 某些浏览器没有实现权限 API，默认尝试继续读取。
     return true;
+  }
+}
+
+async function ensureDirectoryReadWritePermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
+  try {
+    if (typeof handle.queryPermission === 'function') {
+      const status = await handle.queryPermission({ mode: 'readwrite' });
+      if (status === 'granted') {
+        return true;
+      }
+    }
+
+    if (typeof handle.requestPermission === 'function') {
+      const requested = await handle.requestPermission({ mode: 'readwrite' });
+      return requested === 'granted';
+    }
+
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -204,6 +293,95 @@ async function resolveFileHandleByPath(
     current = await current.getDirectoryHandle(segment);
   }
   return current.getFileHandle(fileName);
+}
+
+async function detectEntryKind(
+  directoryHandle: FileSystemDirectoryHandle,
+  name: string,
+): Promise<'file' | 'directory' | null> {
+  try {
+    await directoryHandle.getFileHandle(name);
+    return 'file';
+  } catch {
+    // 忽略，继续检查目录。
+  }
+  try {
+    await directoryHandle.getDirectoryHandle(name);
+    return 'directory';
+  } catch {
+    return null;
+  }
+}
+
+async function copyDirectoryRecursively(
+  sourceHandle: FileSystemDirectoryHandle,
+  targetHandle: FileSystemDirectoryHandle,
+): Promise<void> {
+  const iterator = sourceHandle.entries?.();
+  if (!iterator) {
+    throw new Error('当前浏览器不支持目录遍历，无法执行目录移动。');
+  }
+  for await (const [entryName, entryHandle] of iterator) {
+    if (entryHandle.kind === 'directory') {
+      const nextTarget = await targetHandle.getDirectoryHandle(entryName, { create: true });
+      await copyDirectoryRecursively(entryHandle as FileSystemDirectoryHandle, nextTarget);
+      continue;
+    }
+    const sourceFile = await (entryHandle as FileSystemFileHandle).getFile();
+    const targetFileHandle = await targetHandle.getFileHandle(entryName, { create: true });
+    const writable = await targetFileHandle.createWritable();
+    await writable.write(sourceFile);
+    await writable.close();
+  }
+}
+
+async function moveExplorerEntry(
+  rootHandle: FileSystemDirectoryHandle,
+  sourcePath: string,
+  kind: 'file' | 'directory',
+  targetDirectoryPath: string,
+  targetName?: string,
+): Promise<string> {
+  const { parentPath: sourceParentPath, name: sourceName } = splitParentPathAndName(sourcePath);
+  const name = (targetName ?? sourceName).trim();
+  if (!sourceName) {
+    throw new Error('不支持移动根目录。');
+  }
+  if (!name) {
+    throw new Error('目标名称不能为空。');
+  }
+  if (sourceParentPath === targetDirectoryPath) {
+    if (name === sourceName) {
+      return sourcePath;
+    }
+  }
+  if (kind === 'directory' && isPathEqualOrChild(targetDirectoryPath, sourcePath)) {
+    throw new Error('不能将目录移动到自身或其子目录中。');
+  }
+
+  const targetDirectoryHandle = await resolveDirectoryHandleByPath(rootHandle, targetDirectoryPath);
+  const existingKind = await detectEntryKind(targetDirectoryHandle, name);
+  const willKeepSameEntry = sourceParentPath === targetDirectoryPath && sourceName === name;
+  if (existingKind && !willKeepSameEntry) {
+    throw new Error(`目标目录已存在同名${existingKind === 'directory' ? '目录' : '文件'}：${name}`);
+  }
+
+  if (kind === 'file') {
+    const sourceFileHandle = await resolveFileHandleByPath(rootHandle, sourcePath);
+    const sourceFile = await sourceFileHandle.getFile();
+    const targetFileHandle = await targetDirectoryHandle.getFileHandle(name, { create: true });
+    const writable = await targetFileHandle.createWritable();
+    await writable.write(sourceFile);
+    await writable.close();
+  } else {
+    const sourceDirectoryHandle = await resolveDirectoryHandleByPath(rootHandle, sourcePath);
+    const targetDirectory = await targetDirectoryHandle.getDirectoryHandle(name, { create: true });
+    await copyDirectoryRecursively(sourceDirectoryHandle, targetDirectory);
+  }
+
+  const sourceParentHandle = await resolveDirectoryHandleByPath(rootHandle, sourceParentPath);
+  await sourceParentHandle.removeEntry(sourceName, { recursive: kind === 'directory' });
+  return joinPath(targetDirectoryPath, name);
 }
 
 async function readDirectoryEntries(
@@ -434,6 +612,10 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const rightGroupVisible = hasGroupContent(groups.right);
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [loadingFileMap, setLoadingFileMap] = useState<Record<string, boolean>>({});
+  const [savingFileMap, setSavingFileMap] = useState<Record<string, boolean>>({});
+  const [dirtyFileMap, setDirtyFileMap] = useState<Record<string, boolean>>({});
+  const [saveErrorMap, setSaveErrorMap] = useState<Record<string, string | null>>({});
+  const [dragOverDirectoryPath, setDragOverDirectoryPath] = useState<string | null>(null);
   const [draggingTab, setDraggingTab] = useState<{ path: string; fromGroup: EditorGroupId } | null>(null);
   const [editorSplitRatio, setEditorSplitRatio] = useState<number>(() => readStoredEditorSplitRatio());
   const [resizingEditorSplit, setResizingEditorSplit] = useState(false);
@@ -446,6 +628,25 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     y: number;
     actions: ContextMenuAction[];
   } | null>(null);
+  const [pendingExplorerEdit, setPendingExplorerEdit] = useState<PendingExplorerEdit | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<{
+    entry: ExplorerEntry | null;
+    submitting: boolean;
+    error: string | null;
+  }>({
+    entry: null,
+    submitting: false,
+    error: null,
+  });
+  const [pendingMoveDialog, setPendingMoveDialog] = useState<{
+    payload: ExplorerDragPayload;
+    targetDirectoryPath: string;
+    submitting: boolean;
+    error: string | null;
+  } | null>(null);
+  const [directoryInfoDialogOpen, setDirectoryInfoDialogOpen] = useState(false);
+  const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string | null>(null);
+  const draggingExplorerEntryRef = useRef<ExplorerDragPayload | null>(null);
   const [explorerWidth, setExplorerWidth] = useState<number>(() => readStoredExplorerWidth());
   const [explorerCollapsed, setExplorerCollapsed] = useState<boolean>(() => readStoredExplorerCollapsed());
   const [resizingExplorer, setResizingExplorer] = useState(false);
@@ -457,6 +658,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const editorSplitStartRatioRef = useRef(editorSplitRatio);
   const editorSplitContainerRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const pendingExplorerInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingExplorerComposingRef = useRef(false);
+  const pendingExplorerFocusKeyRef = useRef<string | null>(null);
   const globalSearchInputRef = useRef<HTMLInputElement | null>(null);
   const globalSearchKeywordRef = useRef('');
   const globalSearchTaskSeqRef = useRef(0);
@@ -464,6 +668,10 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     left: null,
     right: null,
   });
+  const openTabsRef = useRef<Record<string, OpenFileTab>>({});
+  const dirtyFileMapRef = useRef<Record<string, boolean>>({});
+  const saveTimerRef = useRef<Record<string, number | null>>({});
+  const saveVersionRef = useRef<Record<string, number>>({});
   const tabStripScrollTimerRef = useRef<Record<EditorGroupId, number | null>>({
     left: null,
     right: null,
@@ -495,6 +703,14 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   }, [globalSearchKeyword]);
 
   useEffect(() => {
+    openTabsRef.current = openTabs;
+  }, [openTabs]);
+
+  useEffect(() => {
+    dirtyFileMapRef.current = dirtyFileMap;
+  }, [dirtyFileMap]);
+
+  useEffect(() => {
     if (explorerCollapsed || activeSidebarView !== 'search') {
       return;
     }
@@ -505,6 +721,40 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       window.clearTimeout(timer);
     };
   }, [activeSidebarView, explorerCollapsed]);
+
+  useEffect(() => {
+    if (!pendingExplorerEdit) {
+      pendingExplorerFocusKeyRef.current = null;
+      pendingExplorerComposingRef.current = false;
+      return;
+    }
+    const focusKey = `${pendingExplorerEdit.mode}:${pendingExplorerEdit.parentPath}:${pendingExplorerEdit.targetPath ?? ''}:${pendingExplorerEdit.kind}`;
+    if (pendingExplorerFocusKeyRef.current === focusKey) {
+      return;
+    }
+    pendingExplorerFocusKeyRef.current = focusKey;
+    const timer = window.setTimeout(() => {
+      const input = pendingExplorerInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.focus();
+      if (pendingExplorerEdit.value) {
+        input.select();
+      } else {
+        input.setSelectionRange(0, 0);
+      }
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    pendingExplorerEdit?.kind,
+    pendingExplorerEdit?.mode,
+    pendingExplorerEdit?.parentPath,
+    pendingExplorerEdit?.targetPath,
+    pendingExplorerEdit?.value,
+  ]);
 
   useEffect(() => {
     if (!resizingExplorer) {
@@ -536,6 +786,17 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       window.removeEventListener('mouseup', onMouseUp);
     };
   }, [resizingExplorer]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(saveTimerRef.current).forEach((timerId) => {
+        if (timerId != null) {
+          window.clearTimeout(timerId);
+        }
+      });
+      saveTimerRef.current = {};
+    };
+  }, []);
 
   const syncEditorsWhenCentered = useCallback(() => {
     if (!rightGroupVisible) {
@@ -680,6 +941,274 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     [],
   );
 
+  const clearAutoSaveTimer = useCallback((filePath: string) => {
+    const timerId = saveTimerRef.current[filePath];
+    if (timerId != null) {
+      window.clearTimeout(timerId);
+    }
+    saveTimerRef.current[filePath] = null;
+  }, []);
+
+  const ensureProjectWritable = useCallback(async (): Promise<boolean> => {
+    if (!rootHandle) {
+      setTreeError('项目目录未关联，无法写入。');
+      return false;
+    }
+    const granted = await ensureDirectoryReadWritePermission(rootHandle);
+    if (!granted) {
+      setTreeError('需要写入权限才能修改文件，请重新关联目录并授权。');
+      return false;
+    }
+    return true;
+  }, [rootHandle]);
+
+  const persistFileContent = useCallback(
+    async (filePath: string, targetVersion: number): Promise<boolean> => {
+      if (!rootHandle) {
+        return false;
+      }
+      const tab = openTabsRef.current[filePath];
+      if (!tab || tab.loadError || isLikelyBinaryFile(tab.name)) {
+        return false;
+      }
+      const writable = await ensureProjectWritable();
+      if (!writable) {
+        return false;
+      }
+      setSavingFileMap((prev) => ({ ...prev, [filePath]: true }));
+      setSaveErrorMap((prev) => ({ ...prev, [filePath]: null }));
+      try {
+        const fileHandle = await resolveFileHandleByPath(rootHandle, filePath);
+        const writer = await fileHandle.createWritable();
+        await writer.write(tab.content);
+        await writer.close();
+        if ((saveVersionRef.current[filePath] ?? 0) === targetVersion) {
+          setDirtyFileMap((prev) => ({ ...prev, [filePath]: false }));
+        }
+        return true;
+      } catch (saveError: any) {
+        setSaveErrorMap((prev) => ({
+          ...prev,
+          [filePath]: saveError?.message ?? `保存文件失败: ${filePath}`,
+        }));
+        return false;
+      } finally {
+        setSavingFileMap((prev) => ({ ...prev, [filePath]: false }));
+      }
+    },
+    [ensureProjectWritable, rootHandle],
+  );
+
+  const scheduleAutoSave = useCallback(
+    (filePath: string) => {
+      clearAutoSaveTimer(filePath);
+      const nextVersion = (saveVersionRef.current[filePath] ?? 0) + 1;
+      saveVersionRef.current[filePath] = nextVersion;
+      setDirtyFileMap((prev) => ({ ...prev, [filePath]: true }));
+      saveTimerRef.current[filePath] = window.setTimeout(() => {
+        saveTimerRef.current[filePath] = null;
+        void persistFileContent(filePath, nextVersion);
+      }, 500);
+    },
+    [clearAutoSaveTimer, persistFileContent],
+  );
+
+  const handleEditorContentChange = useCallback(
+    (filePath: string | null, nextContent: string) => {
+      if (!filePath) {
+        return;
+      }
+      let changed = false;
+      setOpenTabs((prev) => {
+        const target = prev[filePath];
+        if (!target || target.loadError || target.content === nextContent) {
+          return prev;
+        }
+        changed = true;
+        return {
+          ...prev,
+          [filePath]: {
+            ...target,
+            content: nextContent,
+          },
+        };
+      });
+      if (!changed) {
+        return;
+      }
+      setSaveErrorMap((prev) => ({ ...prev, [filePath]: null }));
+      scheduleAutoSave(filePath);
+    },
+    [scheduleAutoSave],
+  );
+
+  const flushPendingSavesUnderPath = useCallback(
+    async (path: string) => {
+      const candidates = Object.keys(openTabsRef.current).filter((tabPath) => isPathEqualOrChild(tabPath, path));
+      for (const tabPath of candidates) {
+        clearAutoSaveTimer(tabPath);
+        if (!dirtyFileMapRef.current[tabPath]) {
+          continue;
+        }
+        const flushVersion = (saveVersionRef.current[tabPath] ?? 0) + 1;
+        saveVersionRef.current[tabPath] = flushVersion;
+        // 先落盘，避免后续重命名/移动路径后丢失编辑内容。
+        await persistFileContent(tabPath, flushVersion);
+      }
+    },
+    [clearAutoSaveTimer, persistFileContent],
+  );
+
+  const remapExplorerStateByPath = useCallback((sourcePath: string, targetPath: string | null) => {
+    setChildrenMap((prev) => {
+      const next: Record<string, ExplorerEntry[]> = {};
+      Object.entries(prev).forEach(([directoryPath, entries]) => {
+        const mappedDirectoryPath = remapPathByPrefix(directoryPath, sourcePath, targetPath);
+        if (mappedDirectoryPath == null) {
+          return;
+        }
+        next[mappedDirectoryPath] = entries
+          .map((entry) => {
+            const mappedEntryPath = remapPathByPrefix(entry.path, sourcePath, targetPath);
+            if (mappedEntryPath == null) {
+              return null;
+            }
+            if (mappedEntryPath === entry.path) {
+              return entry;
+            }
+            return {
+              ...entry,
+              path: mappedEntryPath,
+              name: getFileNameByPath(mappedEntryPath),
+            };
+          })
+          .filter((entry): entry is ExplorerEntry => entry != null);
+      });
+      return next;
+    });
+    setExpandedMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+    setLoadingMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+    setSelectedDirectoryPath((prev) => {
+      if (prev == null) {
+        return prev;
+      }
+      return remapPathByPrefix(prev, sourcePath, targetPath);
+    });
+  }, []);
+
+  const remapOpenEditorsByPath = useCallback(
+    (sourcePath: string, targetPath: string | null) => {
+      setOpenTabs((prev) => {
+        const next: Record<string, OpenFileTab> = {};
+        Object.entries(prev).forEach(([path, tab]) => {
+          const mapped = remapPathByPrefix(path, sourcePath, targetPath);
+          if (mapped == null) {
+            return;
+          }
+          next[mapped] =
+            mapped === path
+              ? tab
+              : {
+                ...tab,
+                path: mapped,
+                name: getFileNameByPath(mapped),
+              };
+        });
+        return next;
+      });
+      setLoadingFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+      setSavingFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+      setDirtyFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+      setSaveErrorMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+      setSelectedFilePaths((prev) =>
+        prev
+          .map((path) => remapPathByPrefix(path, sourcePath, targetPath))
+          .filter((path): path is string => path != null),
+      );
+      setGroups((prev) => {
+        const remapGroup = (group: EditorGroupState): EditorGroupState => {
+          const dedupTabs = new Set<string>();
+          const nextTabs = group.tabs
+            .map((tabPath) => remapPathByPrefix(tabPath, sourcePath, targetPath))
+            .filter((tabPath): tabPath is string => {
+              if (tabPath == null || dedupTabs.has(tabPath)) {
+                return false;
+              }
+              dedupTabs.add(tabPath);
+              return true;
+            });
+          const nextActive = group.activeTabPath
+            ? remapPathByPrefix(group.activeTabPath, sourcePath, targetPath)
+            : null;
+          const nextDiff = group.diffView
+            ? {
+              leftPath: remapPathByPrefix(group.diffView.leftPath, sourcePath, targetPath),
+              rightPath: remapPathByPrefix(group.diffView.rightPath, sourcePath, targetPath),
+            }
+            : null;
+          return {
+            tabs: nextTabs,
+            activeTabPath: nextDiff == null ? nextActive : null,
+            diffView:
+              nextDiff && nextDiff.leftPath && nextDiff.rightPath
+                ? { leftPath: nextDiff.leftPath, rightPath: nextDiff.rightPath }
+                : null,
+          };
+        };
+        return {
+          left: remapGroup(prev.left),
+          right: remapGroup(prev.right),
+        };
+      });
+
+      const nextSaveVersion: Record<string, number> = {};
+      Object.entries(saveVersionRef.current).forEach(([path, version]) => {
+        const mapped = remapPathByPrefix(path, sourcePath, targetPath);
+        if (mapped != null) {
+          nextSaveVersion[mapped] = version;
+        }
+      });
+      saveVersionRef.current = nextSaveVersion;
+
+      const nextTimers: Record<string, number | null> = {};
+      Object.entries(saveTimerRef.current).forEach(([path, timerId]) => {
+        const mapped = remapPathByPrefix(path, sourcePath, targetPath);
+        if (mapped == null) {
+          if (timerId != null) {
+            window.clearTimeout(timerId);
+          }
+          return;
+        }
+        if (timerId == null) {
+          nextTimers[mapped] = null;
+          return;
+        }
+        if (mapped === path) {
+          nextTimers[mapped] = timerId;
+          return;
+        }
+        window.clearTimeout(timerId);
+        nextTimers[mapped] = null;
+      });
+      saveTimerRef.current = nextTimers;
+    },
+    [],
+  );
+
+  const refreshDirectoryEntries = useCallback(
+    async (directoryPath: string) => {
+      if (!rootHandle) {
+        return;
+      }
+      try {
+        await loadDirectoryAtPath(directoryPath, rootHandle);
+      } catch (refreshError: any) {
+        setTreeError(refreshError?.message ?? `刷新目录失败: ${directoryPath || activeProject?.rootDirName || ''}`);
+      }
+    },
+    [activeProject?.rootDirName, loadDirectoryAtPath, rootHandle],
+  );
+
   const reloadActiveProjectTree = useCallback(async () => {
     if (!activeProject) {
       globalSearchTaskSeqRef.current += 1;
@@ -697,7 +1226,22 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setGroups(createEmptyGroups());
       setActiveGroup('left');
       setSelectedFilePaths([]);
+      setSelectedDirectoryPath(null);
       setLoadingFileMap({});
+      setSavingFileMap({});
+      setDirtyFileMap({});
+      setSaveErrorMap({});
+      setDragOverDirectoryPath(null);
+      setPendingExplorerEdit(null);
+      setDeleteDialog({ entry: null, submitting: false, error: null });
+      setPendingMoveDialog(null);
+      Object.values(saveTimerRef.current).forEach((timerId) => {
+        if (timerId != null) {
+          window.clearTimeout(timerId);
+        }
+      });
+      saveTimerRef.current = {};
+      saveVersionRef.current = {};
       return;
     }
 
@@ -712,7 +1256,22 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     setGroups(createEmptyGroups());
     setActiveGroup('left');
     setSelectedFilePaths([]);
+    setSelectedDirectoryPath(null);
     setLoadingFileMap({});
+    setSavingFileMap({});
+    setDirtyFileMap({});
+    setSaveErrorMap({});
+    setDragOverDirectoryPath(null);
+    setPendingExplorerEdit(null);
+    setDeleteDialog({ entry: null, submitting: false, error: null });
+    setPendingMoveDialog(null);
+    Object.values(saveTimerRef.current).forEach((timerId) => {
+      if (timerId != null) {
+        window.clearTimeout(timerId);
+      }
+    });
+    saveTimerRef.current = {};
+    saveVersionRef.current = {};
 
     try {
       const handle = await getDirectoryHandle(activeProject.id);
@@ -775,6 +1334,319 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setTreeError(loadError?.message ?? `加载目录失败: ${nodePath || activeProject?.rootDirName || ''}`);
     }
   };
+
+  const handleCreateExplorerEntry = useCallback(
+    async (parentPath: string, kind: 'file' | 'directory') => {
+      setPendingExplorerEdit({
+        mode: 'create',
+        kind,
+        parentPath,
+        targetPath: null,
+        value: '',
+        error: null,
+        submitting: false,
+      });
+      setTreeError(null);
+      setExpandedMap((prev) => ({ ...prev, [parentPath]: true }));
+      if (rootHandle && !childrenMap[parentPath]) {
+        try {
+          await loadDirectoryAtPath(parentPath, rootHandle);
+        } catch (loadError: any) {
+          setTreeError(loadError?.message ?? `加载目录失败: ${parentPath || activeProject?.rootDirName || ''}`);
+        }
+      }
+    },
+    [activeProject?.rootDirName, childrenMap, loadDirectoryAtPath, rootHandle],
+  );
+
+  const handleRenameExplorerEntry = useCallback((entry: ExplorerEntry) => {
+    const { parentPath } = splitParentPathAndName(entry.path);
+    setPendingExplorerEdit({
+      mode: 'rename',
+      kind: entry.kind,
+      parentPath,
+      targetPath: entry.path,
+      value: entry.name,
+      error: null,
+      submitting: false,
+    });
+    setTreeError(null);
+  }, []);
+
+  const handleDeleteExplorerEntry = useCallback((entry: ExplorerEntry) => {
+    setDeleteDialog({
+      entry,
+      submitting: false,
+      error: null,
+    });
+  }, []);
+
+  const handleCancelPendingExplorerEdit = useCallback(() => {
+    pendingExplorerComposingRef.current = false;
+    setPendingExplorerEdit(null);
+  }, []);
+
+  const handleSubmitPendingExplorerEdit = useCallback(async () => {
+    const draft = pendingExplorerEdit;
+    if (!draft || draft.submitting || !rootHandle) {
+      return;
+    }
+    const nextName = draft.value.trim();
+    if (!nextName) {
+      setPendingExplorerEdit(null);
+      return;
+    }
+    if (!isValidExplorerEntryName(nextName)) {
+      setPendingExplorerEdit((prev) => (prev ? { ...prev, error: '名称不能为空，且不能包含 / 或 \\。' } : prev));
+      return;
+    }
+    const writable = await ensureProjectWritable();
+    if (!writable) {
+      return;
+    }
+    setPendingExplorerEdit((prev) => (prev ? { ...prev, submitting: true, error: null } : prev));
+    try {
+      const parentHandle = await resolveDirectoryHandleByPath(rootHandle, draft.parentPath);
+      const existingKind = await detectEntryKind(parentHandle, nextName);
+      if (draft.mode === 'rename') {
+        const originalPath = draft.targetPath;
+        if (!originalPath) {
+          setPendingExplorerEdit(null);
+          return;
+        }
+        const { name: originalName } = splitParentPathAndName(originalPath);
+        if (nextName === originalName) {
+          setPendingExplorerEdit(null);
+          return;
+        }
+        if (existingKind) {
+          setPendingExplorerEdit((prev) =>
+            prev
+              ? {
+                ...prev,
+                submitting: false,
+                error: `此位置已存在文件或文件夹 ${nextName}，请使用其他名称。`,
+              }
+              : prev,
+          );
+          return;
+        }
+        await flushPendingSavesUnderPath(originalPath);
+        const movedPath = await moveExplorerEntry(rootHandle, originalPath, draft.kind, draft.parentPath, nextName);
+        remapExplorerStateByPath(originalPath, movedPath);
+        remapOpenEditorsByPath(originalPath, movedPath);
+        setPendingExplorerEdit(null);
+        setTreeError(null);
+        await refreshDirectoryEntries(draft.parentPath);
+        return;
+      }
+
+      if (existingKind) {
+        setPendingExplorerEdit((prev) =>
+          prev
+            ? {
+              ...prev,
+              submitting: false,
+              error: `此位置已存在文件或文件夹 ${nextName}，请使用其他名称。`,
+            }
+            : prev,
+        );
+        return;
+      }
+
+      if (draft.kind === 'directory') {
+        await parentHandle.getDirectoryHandle(nextName, { create: true });
+      } else {
+        await parentHandle.getFileHandle(nextName, { create: true });
+      }
+      setPendingExplorerEdit(null);
+      setTreeError(null);
+      await refreshDirectoryEntries(draft.parentPath);
+    } catch (editError: any) {
+      setPendingExplorerEdit((prev) =>
+        prev
+          ? {
+            ...prev,
+            submitting: false,
+            error: editError?.message ?? '保存失败，请重试',
+          }
+          : prev,
+      );
+    }
+  }, [
+    ensureProjectWritable,
+    flushPendingSavesUnderPath,
+    pendingExplorerEdit,
+    refreshDirectoryEntries,
+    remapExplorerStateByPath,
+    remapOpenEditorsByPath,
+    rootHandle,
+  ]);
+
+  const handlePendingExplorerInputBlur = useCallback(() => {
+    // 处理中文输入法候选词确认：合成阶段不提交，等待合成结束后再由用户显式回车/失焦。
+    window.setTimeout(() => {
+      if (pendingExplorerComposingRef.current) {
+        return;
+      }
+      void handleSubmitPendingExplorerEdit();
+    }, 0);
+  }, [handleSubmitPendingExplorerEdit]);
+
+  const handlePendingExplorerInputKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean; keyCode?: number };
+      if (nativeEvent.isComposing || nativeEvent.keyCode === 229 || pendingExplorerComposingRef.current) {
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.currentTarget.blur();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        handleCancelPendingExplorerEdit();
+      }
+    },
+    [handleCancelPendingExplorerEdit],
+  );
+
+  const handlePendingExplorerCompositionStart = useCallback(() => {
+    pendingExplorerComposingRef.current = true;
+  }, []);
+
+  const handlePendingExplorerCompositionEnd = useCallback(() => {
+    // 部分浏览器会在 compositionend 后紧接一个 Enter，延后一帧避免误提交。
+    window.setTimeout(() => {
+      pendingExplorerComposingRef.current = false;
+    }, 0);
+  }, []);
+
+  const handleConfirmDeleteExplorerEntry = useCallback(async () => {
+    const entry = deleteDialog.entry;
+    if (!entry || !rootHandle) {
+      return;
+    }
+    const writable = await ensureProjectWritable();
+    if (!writable) {
+      return;
+    }
+    setDeleteDialog((prev) => ({ ...prev, submitting: true, error: null }));
+    try {
+      await flushPendingSavesUnderPath(entry.path);
+      const { parentPath, name } = splitParentPathAndName(entry.path);
+      if (!name) {
+        setDeleteDialog((prev) => ({ ...prev, submitting: false, error: '不支持删除根目录。' }));
+        return;
+      }
+      const parentHandle = await resolveDirectoryHandleByPath(rootHandle, parentPath);
+      await parentHandle.removeEntry(name, { recursive: entry.kind === 'directory' });
+      remapExplorerStateByPath(entry.path, null);
+      remapOpenEditorsByPath(entry.path, null);
+      setDeleteDialog({ entry: null, submitting: false, error: null });
+      setTreeError(null);
+      await refreshDirectoryEntries(parentPath);
+    } catch (deleteError: any) {
+      setDeleteDialog((prev) => ({
+        ...prev,
+        submitting: false,
+        error: deleteError?.message ?? '删除失败',
+      }));
+    }
+  }, [
+    deleteDialog.entry,
+    ensureProjectWritable,
+    flushPendingSavesUnderPath,
+    refreshDirectoryEntries,
+    remapExplorerStateByPath,
+    remapOpenEditorsByPath,
+    rootHandle,
+  ]);
+
+  const performMoveExplorerEntryToDirectory = useCallback(
+    async (payload: ExplorerDragPayload, targetDirectoryPath: string) => {
+      if (!rootHandle) {
+        return;
+      }
+      const writable = await ensureProjectWritable();
+      if (!writable) {
+        return;
+      }
+      const { parentPath } = splitParentPathAndName(payload.path);
+      if (parentPath === targetDirectoryPath) {
+        return;
+      }
+      if (payload.kind === 'directory' && isPathEqualOrChild(targetDirectoryPath, payload.path)) {
+        return;
+      }
+      try {
+        await flushPendingSavesUnderPath(payload.path);
+        const nextPath = await moveExplorerEntry(rootHandle, payload.path, payload.kind, targetDirectoryPath);
+        remapExplorerStateByPath(payload.path, nextPath);
+        remapOpenEditorsByPath(payload.path, nextPath);
+        setPendingExplorerEdit((prev) => {
+          if (!prev) {
+            return prev;
+          }
+          if (isPathEqualOrChild(prev.parentPath, payload.path) || (prev.targetPath && isPathEqualOrChild(prev.targetPath, payload.path))) {
+            return null;
+          }
+          return prev;
+        });
+        setTreeError(null);
+        await Promise.all([refreshDirectoryEntries(parentPath), refreshDirectoryEntries(targetDirectoryPath)]);
+      } catch (moveError: any) {
+        setTreeError(moveError?.message ?? '移动失败');
+        throw moveError;
+      }
+    },
+    [
+      ensureProjectWritable,
+      flushPendingSavesUnderPath,
+      refreshDirectoryEntries,
+      remapExplorerStateByPath,
+      remapOpenEditorsByPath,
+      rootHandle,
+    ],
+  );
+
+  const handleRequestMoveExplorerEntryToDirectory = useCallback((payload: ExplorerDragPayload, targetDirectoryPath: string) => {
+    const { parentPath } = splitParentPathAndName(payload.path);
+    if (parentPath === targetDirectoryPath) {
+      return;
+    }
+    if (payload.kind === 'directory' && isPathEqualOrChild(targetDirectoryPath, payload.path)) {
+      return;
+    }
+    setPendingMoveDialog({
+      payload,
+      targetDirectoryPath,
+      submitting: false,
+      error: null,
+    });
+  }, []);
+
+  const handleConfirmMoveExplorerEntry = useCallback(async () => {
+    if (!pendingMoveDialog) {
+      return;
+    }
+    setPendingMoveDialog((prev) => (prev ? { ...prev, submitting: true, error: null } : prev));
+    try {
+      await performMoveExplorerEntryToDirectory(pendingMoveDialog.payload, pendingMoveDialog.targetDirectoryPath);
+      setPendingMoveDialog(null);
+    } catch (moveError: any) {
+      setPendingMoveDialog((prev) =>
+        prev
+          ? {
+            ...prev,
+            submitting: false,
+            error: moveError?.message ?? '移动失败',
+          }
+          : prev,
+      );
+    }
+  }, [pendingMoveDialog, performMoveExplorerEntryToDirectory]);
 
   const ensureTabReady = useCallback(
     async (filePath: string, fileName: string): Promise<OpenFileTab | null> => {
@@ -999,6 +1871,16 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     }
     void openDiffInGroup(selectedFilePaths[0], selectedFilePaths[1], activeGroup);
   }, [activeGroup, openDiffInGroup, selectedFilePaths]);
+
+  const createTargetDirectoryPath = useMemo(() => selectedDirectoryPath ?? '', [selectedDirectoryPath]);
+
+  const handleCreateFileFromToolbar = useCallback(() => {
+    void handleCreateExplorerEntry(createTargetDirectoryPath, 'file');
+  }, [createTargetDirectoryPath, handleCreateExplorerEntry]);
+
+  const handleCreateFolderFromToolbar = useCallback(() => {
+    void handleCreateExplorerEntry(createTargetDirectoryPath, 'directory');
+  }, [createTargetDirectoryPath, handleCreateExplorerEntry]);
 
   const revealLineInEditor = useCallback((groupId: EditorGroupId, lineNumber: number) => {
     if (lineNumber <= 0) {
@@ -1251,22 +2133,23 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     [draggingTab],
   );
 
-  const parseExplorerDragPayload = useCallback((event: React.DragEvent): { path: string; name: string } | null => {
+  const parseExplorerDragPayload = useCallback((event: React.DragEvent): ExplorerDragPayload | null => {
     const raw = event.dataTransfer.getData('application/x-aiagent-explorer-node');
     if (!raw) {
-      return null;
+      return draggingExplorerEntryRef.current;
     }
     try {
       const parsed = JSON.parse(raw) as { kind?: string; path?: string; name?: string };
-      if (parsed.kind !== 'file' || typeof parsed.path !== 'string') {
-        return null;
+      if ((parsed.kind !== 'file' && parsed.kind !== 'directory') || typeof parsed.path !== 'string') {
+        return draggingExplorerEntryRef.current;
       }
       return {
+        kind: parsed.kind,
         path: parsed.path,
         name: typeof parsed.name === 'string' ? parsed.name : getFileNameByPath(parsed.path),
       };
     } catch {
-      return null;
+      return draggingExplorerEntryRef.current;
     }
   }, []);
 
@@ -1387,6 +2270,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const openExplorerContextMenu = useCallback(
     (event: React.MouseEvent, node: ExplorerEntry) => {
       if (node.kind === 'directory') {
+        setSelectedDirectoryPath(node.path);
         openContextMenuAt(event, [
           {
             key: 'toggle-dir',
@@ -1395,10 +2279,40 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               void handleToggleDirectory(node.path);
             },
           },
+          {
+            key: 'new-file',
+            label: '新建文件',
+            onSelect: () => {
+              void handleCreateExplorerEntry(node.path, 'file');
+            },
+          },
+          {
+            key: 'new-folder',
+            label: '新建文件夹',
+            onSelect: () => {
+              void handleCreateExplorerEntry(node.path, 'directory');
+            },
+          },
+          {
+            key: 'rename-dir',
+            label: '重命名',
+            onSelect: () => {
+              void handleRenameExplorerEntry(node);
+            },
+          },
+          {
+            key: 'delete-dir',
+            label: '删除',
+            danger: true,
+            onSelect: () => {
+              void handleDeleteExplorerEntry(node);
+            },
+          },
         ]);
         return;
       }
 
+      setSelectedDirectoryPath(null);
       const effectiveSelection = selectedFilePaths.includes(node.path) ? selectedFilePaths : [node.path];
       if (!selectedFilePaths.includes(node.path)) {
         setSelectedFilePaths([node.path]);
@@ -1447,6 +2361,21 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             closeTabInGroup('right', node.path);
           },
         },
+        {
+          key: 'rename',
+          label: '重命名',
+          onSelect: () => {
+            void handleRenameExplorerEntry(node);
+          },
+        },
+        {
+          key: 'delete',
+          label: '删除',
+          danger: true,
+          onSelect: () => {
+            void handleDeleteExplorerEntry(node);
+          },
+        },
       ]);
     },
     [
@@ -1455,6 +2384,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       expandedMap,
       groups.left.tabs,
       groups.right.tabs,
+      handleCreateExplorerEntry,
+      handleDeleteExplorerEntry,
+      handleRenameExplorerEntry,
       handleToggleDirectory,
       openContextMenuAt,
       openDiffInGroup,
@@ -1463,17 +2395,50 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     ],
   );
 
+  const openExplorerRootContextMenu = useCallback(
+    (event: React.MouseEvent) => {
+      setSelectedDirectoryPath('');
+      openContextMenuAt(event, [
+        {
+          key: 'root-new-file',
+          label: '新建文件',
+          onSelect: () => {
+            void handleCreateExplorerEntry('', 'file');
+          },
+        },
+        {
+          key: 'root-new-folder',
+          label: '新建文件夹',
+          onSelect: () => {
+            void handleCreateExplorerEntry('', 'directory');
+          },
+        },
+        {
+          key: 'root-refresh',
+          label: '刷新目录',
+          onSelect: () => {
+            void refreshDirectoryEntries('');
+          },
+        },
+      ]);
+    },
+    [handleCreateExplorerEntry, openContextMenuAt, refreshDirectoryEntries],
+  );
+
   const renderExplorerNodes = (directoryPath: string, depth: number, ancestorIgnored = false): React.ReactNode => {
     const nodes = childrenMap[directoryPath] ?? [];
-    if (nodes.length === 0) {
-      return null;
-    }
+    const shouldRenderCreateInput =
+      pendingExplorerEdit?.mode === 'create' && pendingExplorerEdit.parentPath === directoryPath;
+    const rows: React.ReactNode[] = [];
 
-    return nodes.map((node) => {
+    nodes.forEach((node) => {
       const isDirectory = node.kind === 'directory';
       const ignoredByGitignore =
         ancestorIgnored || shouldIgnoreByGitignore(gitignoreMatcher, node.path, node.kind);
       const expanded = expandedMap[node.path] === true;
+      const isRenamingNode =
+        pendingExplorerEdit?.mode === 'rename' && pendingExplorerEdit.targetPath === node.path;
+      const isSelectedDirectory = isDirectory && selectedDirectoryPath === node.path;
       const isSelectedFile = !isDirectory && selectedFilePaths.includes(node.path);
       const isActiveFile =
         !isDirectory &&
@@ -1485,56 +2450,149 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         : resolveProjectFileIcon(node.name);
       const isLoadingFile = !isDirectory && loadingFileMap[node.path] === true;
 
-      return (
+      rows.push(
         <div key={`${node.kind}:${node.path}`}>
-          <button
-            type="button"
-            draggable={!isDirectory}
-            onClick={(event) => {
-              if (isDirectory) {
-                void handleToggleDirectory(node.path);
-                return;
-              }
-              if (event.metaKey || event.ctrlKey || event.shiftKey) {
-                toggleMultiSelectFilePath(node.path);
-                return;
-              }
-              setSelectedFilePaths([node.path]);
-              void handleOpenFile(node.path, node.name);
-            }}
-            onDragStart={(event) => {
-              if (isDirectory) {
+          {isRenamingNode ? (
+            <div className="px-2">
+              <div
+                className="flex h-[24px] w-full items-center gap-1 rounded-md px-2"
+                style={{ paddingLeft: `${depth * 16 + 8}px` }}
+              >
+                {isDirectory ? <TreeChevronIcon expanded={expanded} /> : <span className="inline-block h-3.5 w-3.5 shrink-0" />}
+                {iconUrl ? (
+                  <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
+                ) : (
+                  <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+                )}
+                <input
+                  ref={pendingExplorerInputRef}
+                  value={pendingExplorerEdit?.value ?? ''}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setPendingExplorerEdit((prev) =>
+                      prev
+                        ? {
+                          ...prev,
+                          value: nextValue,
+                          error: null,
+                        }
+                        : prev,
+                    );
+                  }}
+                  onBlur={handlePendingExplorerInputBlur}
+                  onKeyDown={handlePendingExplorerInputKeyDown}
+                  onCompositionStart={handlePendingExplorerCompositionStart}
+                  onCompositionEnd={handlePendingExplorerCompositionEnd}
+                  className="h-5 min-w-0 flex-1 rounded-sm border border-[rgb(148,163,184)] bg-white px-1 text-xs text-[rgb(13,13,13)] outline-none focus:border-[rgb(59,130,246)]"
+                />
+              </div>
+              {pendingExplorerEdit?.error && (
+                <div className="mt-1 px-2" style={{ paddingLeft: `${depth * 16 + 34}px` }}>
+                  <p className="rounded-sm bg-rose-800 px-2 py-1 text-[11px] leading-4 text-white">
+                    {pendingExplorerEdit.error}
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              draggable
+              onClick={(event) => {
+                if (isDirectory) {
+                  setSelectedDirectoryPath(node.path);
+                  void handleToggleDirectory(node.path);
+                  return;
+                }
+                setSelectedDirectoryPath(null);
+                if (event.metaKey || event.ctrlKey || event.shiftKey) {
+                  toggleMultiSelectFilePath(node.path);
+                  return;
+                }
+                setSelectedFilePaths([node.path]);
+                void handleOpenFile(node.path, node.name);
+              }}
+              onDragStart={(event) => {
+                const payload: ExplorerDragPayload = { kind: node.kind, path: node.path, name: node.name };
+                draggingExplorerEntryRef.current = payload;
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('application/x-aiagent-explorer-node', JSON.stringify(payload));
+                event.dataTransfer.setData('text/plain', node.path);
+              }}
+              onDragEnd={() => {
+                draggingExplorerEntryRef.current = null;
+                setDragOverDirectoryPath(null);
+              }}
+              onDragOver={(event) => {
+                if (!isDirectory) {
+                  return;
+                }
+                const payload = parseExplorerDragPayload(event);
+                if (!payload) {
+                  return;
+                }
+                if (payload.path === node.path) {
+                  return;
+                }
+                if (payload.kind === 'directory' && isPathEqualOrChild(node.path, payload.path)) {
+                  return;
+                }
                 event.preventDefault();
-                return;
-              }
-              const payload = { kind: 'file', path: node.path, name: node.name };
-              event.dataTransfer.effectAllowed = 'copy';
-              event.dataTransfer.setData('application/x-aiagent-explorer-node', JSON.stringify(payload));
-              event.dataTransfer.setData('text/plain', node.path);
-            }}
-            onContextMenu={(event) => {
-              openExplorerContextMenu(event, node);
-            }}
-            className={`flex h-[24px] w-full text-xs items-center gap-1 rounded-md px-2 text-left transition-colors ${
-              isSelectedFile || isActiveFile
-                ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)]'
-                : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
-            }`}
-            style={{ paddingLeft: `${depth * 16 + 8}px` }}
-            title={node.path}
-          >
-            {isDirectory ? <TreeChevronIcon expanded={expanded} /> : <span className="inline-block h-3.5 w-3.5 shrink-0" />}
-            {iconUrl ? (
-              <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
-            ) : (
-              <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
-            )}
-            <span className={`truncate ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : ''}`}>{node.name}</span>
-            {isLoadingFile && (
-              <span className={`ml-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400'}`}>读取中...</span>
-            )}
-          </button>
-
+                event.stopPropagation();
+                event.dataTransfer.dropEffect = 'move';
+                if (dragOverDirectoryPath !== node.path) {
+                  setDragOverDirectoryPath(node.path);
+                }
+              }}
+              onDragLeave={(event) => {
+                if (!isDirectory) {
+                  return;
+                }
+                const nextTarget = event.relatedTarget as Node | null;
+                if (nextTarget && event.currentTarget.contains(nextTarget)) {
+                  return;
+                }
+                if (dragOverDirectoryPath === node.path) {
+                  setDragOverDirectoryPath(null);
+                }
+              }}
+              onDrop={(event) => {
+                if (!isDirectory) {
+                  return;
+                }
+                const payload = parseExplorerDragPayload(event);
+                if (!payload) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                setDragOverDirectoryPath(null);
+                handleRequestMoveExplorerEntryToDirectory(payload, node.path);
+              }}
+              onContextMenu={(event) => {
+                openExplorerContextMenu(event, node);
+              }}
+              className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs transition-colors ${isDirectory && dragOverDirectoryPath === node.path
+                ? 'bg-[rgb(239,239,239)] text-[rgb(13,13,13)]'
+                : isSelectedDirectory || isSelectedFile || isActiveFile
+                  ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)]'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
+                }`}
+              style={{ paddingLeft: `${depth * 16 + 8}px` }}
+              title={node.path}
+            >
+              {isDirectory ? <TreeChevronIcon expanded={expanded} /> : <span className="inline-block h-3.5 w-3.5 shrink-0" />}
+              {iconUrl ? (
+                <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
+              ) : (
+                <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+              )}
+              <span className={`truncate ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : ''}`}>{node.name}</span>
+              {isLoadingFile && (
+                <span className={`ml-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400'}`}>读取中...</span>
+              )}
+            </button>
+          )}
           {isDirectory && expanded && (
             <>
               {loadingChildren && (
@@ -1545,9 +2603,68 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               {renderExplorerNodes(node.path, depth + 1, ignoredByGitignore)}
             </>
           )}
-        </div>
+        </div>,
       );
     });
+
+    if (shouldRenderCreateInput) {
+      const pendingIconUrl =
+        pendingExplorerEdit.kind === 'directory'
+          ? resolveProjectFolderIcon('new-folder', false)
+          : resolveProjectFileIcon('new-file.txt');
+      rows.push(
+        <div key={`pending-create:${directoryPath || '__root__'}`}>
+          <div className="px-2">
+            <div className="flex h-[24px] w-full items-center gap-1 rounded-md px-2" style={{ paddingLeft: `${depth * 16 + 8}px` }}>
+              {pendingExplorerEdit.kind === 'directory' ? (
+                <TreeChevronIcon expanded={false} />
+              ) : (
+                <span className="inline-block h-3.5 w-3.5 shrink-0" />
+              )}
+              {pendingIconUrl ? (
+                <img src={pendingIconUrl} alt="" className="h-4 w-4 shrink-0" />
+              ) : (
+                <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+              )}
+              <input
+                ref={pendingExplorerInputRef}
+                value={pendingExplorerEdit.value}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setPendingExplorerEdit((prev) =>
+                    prev
+                      ? {
+                        ...prev,
+                        value: nextValue,
+                        error: null,
+                      }
+                      : prev,
+                  );
+                }}
+                onBlur={handlePendingExplorerInputBlur}
+                onKeyDown={handlePendingExplorerInputKeyDown}
+                onCompositionStart={handlePendingExplorerCompositionStart}
+                onCompositionEnd={handlePendingExplorerCompositionEnd}
+                className="h-5 min-w-0 flex-1 rounded-sm border border-[rgb(148,163,184)] bg-white px-1 text-xs text-[rgb(13,13,13)] outline-none focus:border-[rgb(59,130,246)]"
+                placeholder={pendingExplorerEdit.kind === 'directory' ? '新建文件夹' : '新建文件'}
+              />
+            </div>
+          </div>
+          {pendingExplorerEdit.error && (
+            <div className="mt-1 px-2" style={{ paddingLeft: `${depth * 16 + 34}px` }}>
+              <p className="rounded-sm bg-rose-800 px-2 py-1 text-[11px] leading-4 text-white">
+                {pendingExplorerEdit.error}
+              </p>
+            </div>
+          )}
+        </div>,
+      );
+    }
+
+    if (rows.length === 0) {
+      return null;
+    }
+    return rows;
   };
 
   const renderRootNode = (): React.ReactNode => {
@@ -1559,15 +2676,53 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     const rootIconUrl = resolveProjectFolderIcon(activeProject.rootDirName, rootExpanded);
     const rootChildren = childrenMap[''] ?? [];
     const rootLoading = loadingRoot || loadingMap[''] === true;
+    const hasRootPendingCreate = pendingExplorerEdit?.mode === 'create' && pendingExplorerEdit.parentPath === '';
 
     return (
       <div>
         <button
           type="button"
           onClick={() => {
+            setSelectedDirectoryPath('');
             void handleToggleDirectory('');
           }}
-          className="flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+          onContextMenu={openExplorerRootContextMenu}
+          onDragOver={(event) => {
+            const payload = parseExplorerDragPayload(event);
+            if (!payload) {
+              return;
+            }
+            if (payload.path === '' || splitParentPathAndName(payload.path).parentPath === '') {
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = 'move';
+            if (dragOverDirectoryPath !== '') {
+              setDragOverDirectoryPath('');
+            }
+          }}
+          onDragLeave={(event) => {
+            const nextTarget = event.relatedTarget as Node | null;
+            if (nextTarget && event.currentTarget.contains(nextTarget)) {
+              return;
+            }
+            if (dragOverDirectoryPath === '') {
+              setDragOverDirectoryPath(null);
+            }
+          }}
+          onDrop={(event) => {
+            const payload = parseExplorerDragPayload(event);
+            if (!payload) {
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            setDragOverDirectoryPath(null);
+            handleRequestMoveExplorerEntryToDirectory(payload, '');
+          }}
+          className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] ${dragOverDirectoryPath === '' || selectedDirectoryPath === '' ? 'bg-[rgb(239,239,239)]' : ''
+            }`}
           title={activeProject.rootDirName}
         >
           <TreeChevronIcon expanded={rootExpanded} />
@@ -1583,7 +2738,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           <>
             {rootLoading ? (
               <p className="px-3 py-1 text-xs text-slate-400">正在加载目录...</p>
-            ) : rootChildren.length === 0 ? (
+            ) : rootChildren.length === 0 && !hasRootPendingCreate ? (
               <p className="px-3 py-1 text-xs text-slate-400">目录为空，或暂未读取到文件。</p>
             ) : (
               renderExplorerNodes('', 1)
@@ -1593,6 +2748,44 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       </div>
     );
   };
+
+  const selectedDirectoryLabel = useMemo(() => {
+    if (selectedDirectoryPath == null || selectedDirectoryPath === '') {
+      return '根目录';
+    }
+    return getFileNameByPath(selectedDirectoryPath);
+  }, [selectedDirectoryPath]);
+
+  const associatedDirectoryAbsolutePath = useMemo(() => {
+    if (!activeProject) {
+      return '-';
+    }
+    const handleAny = rootHandle as unknown as Record<string, unknown> | null;
+    const candidates = [
+      handleAny?.path,
+      handleAny?.fullPath,
+      handleAny?.absolutePath,
+      handleAny?.resolvedPath,
+      handleAny?._path,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate;
+      }
+    }
+    // 浏览器的 File System Access API 通常不会暴露绝对路径，这里做降级提示。
+    return `无法获取绝对路径（浏览器安全限制），当前目录名：${activeProject.rootDirName}`;
+  }, [activeProject, rootHandle]);
+
+  const moveDialogTargetLabel = useMemo(() => {
+    if (!pendingMoveDialog) {
+      return '';
+    }
+    if (pendingMoveDialog.targetDirectoryPath === '') {
+      return activeProject?.rootDirName ?? '根目录';
+    }
+    return getFileNameByPath(pendingMoveDialog.targetDirectoryPath);
+  }, [activeProject?.rootDirName, pendingMoveDialog]);
 
   const renderGroupContent = (groupId: EditorGroupId): React.ReactNode => {
     const group = groups[groupId];
@@ -1640,12 +2833,19 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     if (activeTab.loadError) {
       return <div className="h-full overflow-y-auto p-4 text-sm text-rose-500">{activeTab.loadError}</div>;
     }
+    const readOnlyByType = isLikelyBinaryFile(activeTab.name);
     return (
       <Editor
         height="100%"
         language={activeTab.language}
         value={activeTab.content}
         theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+        onChange={(value) => {
+          if (readOnlyByType) {
+            return;
+          }
+          handleEditorContentChange(group.activeTabPath, value ?? '');
+        }}
         onMount={(editor) => {
           editorInstanceRef.current[groupId] = editor;
           editor.onDidFocusEditorText(() => {
@@ -1658,7 +2858,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           });
         }}
         options={{
-          readOnly: true,
+          readOnly: readOnlyByType,
           minimap: { enabled: true },
           fontSize: 13,
           wordWrap: 'on',
@@ -1682,17 +2882,20 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         onDragOver={(event) => {
           const tabPayload = parseTabDragPayload(event);
           const explorerPayload = parseExplorerDragPayload(event);
-          if (!tabPayload && !explorerPayload) {
+          const canDropExplorerFile = explorerPayload?.kind === 'file';
+          if (!tabPayload && !canDropExplorerFile) {
             return;
           }
           event.preventDefault();
-          event.dataTransfer.dropEffect = explorerPayload ? 'copy' : 'move';
+          event.dataTransfer.dropEffect = canDropExplorerFile ? 'copy' : 'move';
         }}
         onDrop={(event) => {
           const explorerPayload = parseExplorerDragPayload(event);
           if (explorerPayload) {
             event.preventDefault();
-            void handleOpenFile(explorerPayload.path, explorerPayload.name, groupId);
+            if (explorerPayload.kind === 'file') {
+              void handleOpenFile(explorerPayload.path, explorerPayload.name, groupId);
+            }
             setDraggingTab(null);
             return;
           }
@@ -1708,26 +2911,28 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         }}
       >
         <div
-          className={`project-tab-scroll flex h-9 items-center gap-0 overflow-x-auto overflow-y-hidden border-b border-[rgb(209,209,209)] bg-white px-1 ${
-            draggingTab && draggingTab.fromGroup !== groupId ? 'bg-[rgb(245,245,245)]' : ''
-          } ${tabStripScrolling[groupId] ? 'is-scrolling' : ''}`}
+          className={`project-tab-scroll flex h-9 items-center gap-0 overflow-x-auto overflow-y-hidden border-b border-[rgb(209,209,209)] bg-white px-1 ${draggingTab && draggingTab.fromGroup !== groupId ? 'bg-[rgb(245,245,245)]' : ''
+            } ${tabStripScrolling[groupId] ? 'is-scrolling' : ''}`}
           onScroll={() => {
             markTabStripScrolling(groupId);
           }}
           onDragOver={(event) => {
             const tabPayload = parseTabDragPayload(event);
             const explorerPayload = parseExplorerDragPayload(event);
-            if (!tabPayload && !explorerPayload) {
+            const canDropExplorerFile = explorerPayload?.kind === 'file';
+            if (!tabPayload && !canDropExplorerFile) {
               return;
             }
             event.preventDefault();
-            event.dataTransfer.dropEffect = explorerPayload ? 'copy' : 'move';
+            event.dataTransfer.dropEffect = canDropExplorerFile ? 'copy' : 'move';
           }}
           onDrop={(event) => {
             event.preventDefault();
             const explorerPayload = parseExplorerDragPayload(event);
             if (explorerPayload) {
-              void handleOpenFile(explorerPayload.path, explorerPayload.name, groupId);
+              if (explorerPayload.kind === 'file') {
+                void handleOpenFile(explorerPayload.path, explorerPayload.name, groupId);
+              }
               setDraggingTab(null);
               return;
             }
@@ -1745,6 +2950,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             const tab = openTabs[tabPath];
             const tabName = tab?.name ?? getFileNameByPath(tabPath);
             const isActive = group.diffView == null && group.activeTabPath === tabPath;
+            const isDirty = dirtyFileMap[tabPath] === true;
+            const isSaving = savingFileMap[tabPath] === true;
+            const saveError = saveErrorMap[tabPath];
             return (
               <div
                 key={`${groupId}:${tabPath}`}
@@ -1785,12 +2993,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   }
                   setDraggingTab(null);
                 }}
-                className={`group flex h-6 max-w-[220px] shrink-0 items-center rounded-md border px-2 text-sm ${
-                  isActive
-                    ? 'border-[rgb(209,209,209)] bg-[rgb(245,245,245)] text-[rgb(13,13,13)]'
-                    : 'border-transparent bg-transparent text-slate-500 hover:bg-[rgb(245,245,245)]'
-                }`}
-                title={tabPath}
+                className={`group flex h-6 max-w-[220px] shrink-0 items-center rounded-md border px-2 text-sm ${isActive
+                  ? 'border-[rgb(209,209,209)] bg-[rgb(245,245,245)] text-[rgb(13,13,13)]'
+                  : 'border-transparent bg-transparent text-slate-500 hover:bg-[rgb(245,245,245)]'
+                  }`}
+                title={saveError ? `${tabPath}\n保存失败：${saveError}` : tabPath}
               >
                 <button
                   type="button"
@@ -1809,6 +3016,19 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 >
                   {tabName}
                 </button>
+                {saveError ? (
+                  <span className="ml-1 text-[10px] leading-none text-rose-500" title={saveError}>
+                    !
+                  </span>
+                ) : isSaving ? (
+                  <span className="ml-1 text-[10px] leading-none text-slate-400" title="保存中">
+                    …
+                  </span>
+                ) : isDirty ? (
+                  <span className="ml-1 text-[10px] leading-none text-amber-500" title="未保存">
+                    ●
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-sm leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)]"
@@ -1868,22 +3088,20 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     <div className="h-full min-h-0 overflow-hidden">
       <div className="flex h-full min-h-0 overflow-hidden">
         <div
-          className={`flex w-12 shrink-0 flex-col items-center border-r border-[rgb(209,209,209)] py-2 ${
-            theme === 'dark' ? 'bg-[#1b1b1b]' : 'bg-[#f5f5f5]'
-          }`}
+          className={`flex w-12 shrink-0 flex-col items-center border-r border-[rgb(209,209,209)] py-2 ${theme === 'dark' ? 'bg-[#1b1b1b]' : 'bg-[#f5f5f5]'
+            }`}
         >
           <button
             type="button"
             onClick={() => handleSwitchSidebarView('explorer')}
-            className={`relative mt-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
-              !explorerCollapsed && activeSidebarView === 'explorer' && theme === 'dark'
-                ? 'bg-[#2a2a2a] text-slate-100'
-                : !explorerCollapsed && activeSidebarView === 'explorer'
-                  ? 'border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)]'
-                  : theme === 'dark'
-                    ? 'text-slate-300 hover:bg-[#2a2a2a]'
-                    : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
-            }`}
+            className={`relative mt-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${!explorerCollapsed && activeSidebarView === 'explorer' && theme === 'dark'
+              ? 'bg-[#2a2a2a] text-slate-100'
+              : !explorerCollapsed && activeSidebarView === 'explorer'
+                ? 'border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)]'
+                : theme === 'dark'
+                  ? 'text-slate-300 hover:bg-[#2a2a2a]'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
+              }`}
             title="资源管理器"
           >
             {!explorerCollapsed && activeSidebarView === 'explorer' && (
@@ -1894,15 +3112,14 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           <button
             type="button"
             onClick={() => handleSwitchSidebarView('search')}
-            className={`relative mt-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
-              !explorerCollapsed && activeSidebarView === 'search' && theme === 'dark'
-                ? 'bg-[#2a2a2a] text-slate-100'
-                : !explorerCollapsed && activeSidebarView === 'search'
-                  ? 'border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)]'
-                  : theme === 'dark'
-                    ? 'text-slate-300 hover:bg-[#2a2a2a]'
-                    : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
-            }`}
+            className={`relative mt-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${!explorerCollapsed && activeSidebarView === 'search' && theme === 'dark'
+              ? 'bg-[#2a2a2a] text-slate-100'
+              : !explorerCollapsed && activeSidebarView === 'search'
+                ? 'border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)]'
+                : theme === 'dark'
+                  ? 'text-slate-300 hover:bg-[#2a2a2a]'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
+              }`}
             title="搜索"
           >
             {!explorerCollapsed && activeSidebarView === 'search' && (
@@ -1913,196 +3130,233 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         </div>
 
         {!explorerCollapsed && (
-        <aside
-          className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8]"
-          style={{ width: `${explorerWidth}px` }}
-        >
-          <div className="flex h-10 items-center px-2">
+          <aside
+            className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8]"
+            style={{ width: `${explorerWidth}px` }}
+          >
+            <div className="flex h-10 items-center px-2">
+              <button
+                type="button"
+                onClick={onBackToChat}
+                className="text-xs inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 font-normal text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span className="leading-none [word-break:keep-all]">返回</span>
+              </button>
+              <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                {activeSidebarView === 'explorer' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleCreateFileFromToolbar}
+                      disabled={!activeProject}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                      title={`新建文件（目标：${selectedDirectoryLabel}）`}
+                    >
+                      <FilePlus2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateFolderFromToolbar}
+                      disabled={!activeProject}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                      title={`新建文件夹（目标：${selectedDirectoryLabel}）`}
+                    >
+                      <FolderPlus className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCompareSelectedFiles}
+                      disabled={selectedFilePaths.length !== 2}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                      title={selectedFilePaths.length === 2 ? '对比所选文件' : '先在文件树中多选两个文件'}
+                    >
+                      <Columns2 className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
+                {activeSidebarView === 'explorer' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void reloadActiveProjectTree();
+                    }}
+                    disabled={!activeProject || loadingRoot}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    title="刷新目录"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                )}
+                {activeSidebarView === 'explorer' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRebindDirectory()}
+                    disabled={!activeProject}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    title="重新关联目录"
+                  >
+                    <Link className="w-4 h-4" />
+                  </button>
+                )}
+                {activeSidebarView === 'explorer' && (
+                  <button
+                    type="button"
+                    onClick={onRequestCreateProject}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+                    title="新建项目"
+                  >
+                    <FolderRoot className="w-4 h-4" />
+                  </button>
+                )}
+                {activeSidebarView === 'explorer' && (
+                  <button
+                    type="button"
+                    onClick={() => setDirectoryInfoDialogOpen(true)}
+                    disabled={!activeProject}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    title="查看关联目录信息"
+                  >
+                    <Info className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500">
+              {activeSidebarView === 'search' ? '搜索' : '资源管理器'}
+            </div>
+
+            {activeSidebarView === 'search' && (
+              <div className="px-2 py-2">
+                <div className="flex items-center gap-1.5">
+                  <div className="relative min-w-0 flex-1">
+                    <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400">
+                      <Search className="w-4 h-4" />
+                    </span>
+                    <input
+                      ref={globalSearchInputRef}
+                      value={globalSearchKeyword}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setGlobalSearchKeyword(nextValue);
+                        if (!nextValue.trim()) {
+                          globalSearchTaskSeqRef.current += 1;
+                          setGlobalSearchResults([]);
+                          setGlobalSearching(false);
+                          setGlobalSearchError(null);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') {
+                          return;
+                        }
+                        event.preventDefault();
+                        void runGlobalCodeSearch(event.currentTarget.value);
+                      }}
+                      placeholder="搜索代码"
+                      className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white pl-8 pr-8 text-xs text-[rgb(13,13,13)] outline-none transition-colors placeholder:text-[rgb(143,143,143)] focus:border-[rgb(148,163,184)]"
+                    />
+                    {globalSearchKeyword && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          globalSearchTaskSeqRef.current += 1;
+                          setGlobalSearchKeyword('');
+                          setGlobalSearchResults([]);
+                          setGlobalSearching(false);
+                          setGlobalSearchError(null);
+                        }}
+                        className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-sm text-slate-400 hover:bg-[rgb(239,239,239)] hover:text-[rgb(13,13,13)]"
+                        title="清空搜索"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void runGlobalCodeSearch(globalSearchKeyword);
+                    }}
+                    disabled={!globalSearchKeyword.trim()}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    title="执行搜索"
+                  >
+                    <Search className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <label className="mt-2 inline-flex cursor-pointer items-center gap-2 px-0.5 text-[11px] text-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={searchIncludeGitignored}
+                    onChange={(event) => {
+                      setSearchIncludeGitignored(event.target.checked);
+                    }}
+                    className="h-3.5 w-3.5 rounded border-[rgb(209,209,209)] text-[rgb(13,13,13)] focus:ring-0"
+                  />
+                  <span>包含 .gitignore 忽略项</span>
+                </label>
+              </div>
+            )}
+
+            {(error || treeError) && (
+              <div className="bg-rose-50 px-3 py-2 text-xs text-rose-600">
+                {treeError || error}
+              </div>
+            )}
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-1">
+              {!activeProject ? (
+                <div className="space-y-3 px-2 py-3">
+                  <p className="text-sm text-slate-500">未打开项目</p>
+                  <Button size="sm" onClick={onRequestCreateProject}>
+                    新建项目
+                  </Button>
+                </div>
+              ) : activeSidebarView === 'search' ? (
+                globalSearchKeyword.trim().length === 0 ? (
+                  <p className="px-2 py-2 text-xs text-slate-400">输入关键字后按 Enter 搜索代码</p>
+                ) : globalSearching ? (
+                  <p className="px-2 py-2 text-xs text-slate-400">正在全局搜索...</p>
+                ) : globalSearchError ? (
+                  <p className="px-2 py-2 text-xs text-rose-500">{globalSearchError}</p>
+                ) : globalSearchResults.length === 0 ? (
+                  <p className="px-2 py-2 text-xs text-slate-400">未搜索到匹配代码</p>
+                ) : (
+                  <div className="space-y-1">
+                    {globalSearchResults.map((result) => (
+                      <button
+                        key={`${result.path}:${result.lineNumber}`}
+                        type="button"
+                        onClick={() => {
+                          void handleOpenGlobalSearchResult(result);
+                        }}
+                        className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+                        title={`${result.path}:${result.lineNumber}`}
+                      >
+                        <span className="truncate font-medium">{result.name}</span>
+                        <span className="truncate text-[11px] text-slate-400">{result.path}</span>
+                        <span className="mt-0.5 truncate text-[11px] text-slate-500">
+                          第 {result.lineNumber} 行 · {result.snippet}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )
+              ) : (
+                renderRootNode()
+              )}
+            </div>
+
             <button
               type="button"
-              onClick={onBackToChat}
-              className="text-xs inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 font-normal text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
-            >
-            <ArrowLeft className="w-4 h-4" />              
-            <span className="leading-none [word-break:keep-all]">返回</span>
-            </button>
-            <div className="ml-auto flex shrink-0 items-center gap-0 pl-1">
-              {activeSidebarView === 'explorer' && (
-                <button
-                  type="button"
-                  onClick={handleCompareSelectedFiles}
-                  disabled={selectedFilePaths.length !== 2}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
-                  title={selectedFilePaths.length === 2 ? '对比所选文件' : '先在文件树中多选两个文件'}
-                >
-                  <Columns2 className="w-4 h-4" />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  void reloadActiveProjectTree();
-                }}
-                disabled={!activeProject || loadingRoot}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
-                title="刷新目录"
-              >
-                <RefreshCw className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleRebindDirectory()}
-                disabled={!activeProject}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
-                title="重新关联目录"
-              >
-                <Link className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={onRequestCreateProject}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
-                title="新建项目"
-              >
-                <FolderRoot className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500">
-            {activeSidebarView === 'search' ? '搜索' : '资源管理器'}
-          </div>
-
-          {activeSidebarView === 'search' && (
-            <div className="px-2 py-2">
-              <div className="flex items-center gap-1.5">
-                <div className="relative min-w-0 flex-1">
-                  <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400">
-                    <Search className="w-4 h-4" />
-                  </span>
-                  <input
-                    ref={globalSearchInputRef}
-                    value={globalSearchKeyword}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      setGlobalSearchKeyword(nextValue);
-                      if (!nextValue.trim()) {
-                        globalSearchTaskSeqRef.current += 1;
-                        setGlobalSearchResults([]);
-                        setGlobalSearching(false);
-                        setGlobalSearchError(null);
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter') {
-                        return;
-                      }
-                      event.preventDefault();
-                      void runGlobalCodeSearch(event.currentTarget.value);
-                    }}
-                    placeholder="搜索代码"
-                    className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white pl-8 pr-8 text-xs text-[rgb(13,13,13)] outline-none transition-colors placeholder:text-[rgb(143,143,143)] focus:border-[rgb(148,163,184)]"
-                  />
-                  {globalSearchKeyword && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        globalSearchTaskSeqRef.current += 1;
-                        setGlobalSearchKeyword('');
-                        setGlobalSearchResults([]);
-                        setGlobalSearching(false);
-                        setGlobalSearchError(null);
-                      }}
-                      className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-sm text-slate-400 hover:bg-[rgb(239,239,239)] hover:text-[rgb(13,13,13)]"
-                      title="清空搜索"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void runGlobalCodeSearch(globalSearchKeyword);
-                  }}
-                  disabled={!globalSearchKeyword.trim()}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
-                  title="执行搜索"
-                >
-                  <Search className="w-4 h-4" />
-                </button>
-              </div>
-
-              <label className="mt-2 inline-flex cursor-pointer items-center gap-2 px-0.5 text-[11px] text-slate-500">
-                <input
-                  type="checkbox"
-                  checked={searchIncludeGitignored}
-                  onChange={(event) => {
-                    setSearchIncludeGitignored(event.target.checked);
-                  }}
-                  className="h-3.5 w-3.5 rounded border-[rgb(209,209,209)] text-[rgb(13,13,13)] focus:ring-0"
-                />
-                <span>包含 .gitignore 忽略项</span>
-              </label>
-            </div>
-          )}
-
-          {(error || treeError) && (
-            <div className="bg-rose-50 px-3 py-2 text-xs text-rose-600">
-              {treeError || error}
-            </div>
-          )}
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-1">
-            {!activeProject ? (
-              <div className="space-y-3 px-2 py-3">
-                <p className="text-sm text-slate-500">未打开项目</p>
-                <Button size="sm" onClick={onRequestCreateProject}>
-                  新建项目
-                </Button>
-              </div>
-            ) : activeSidebarView === 'search' ? (
-              globalSearchKeyword.trim().length === 0 ? (
-                <p className="px-2 py-2 text-xs text-slate-400">输入关键字后按 Enter 搜索代码</p>
-              ) : globalSearching ? (
-                <p className="px-2 py-2 text-xs text-slate-400">正在全局搜索...</p>
-              ) : globalSearchError ? (
-                <p className="px-2 py-2 text-xs text-rose-500">{globalSearchError}</p>
-              ) : globalSearchResults.length === 0 ? (
-                <p className="px-2 py-2 text-xs text-slate-400">未搜索到匹配代码</p>
-              ) : (
-                <div className="space-y-1">
-                  {globalSearchResults.map((result) => (
-                    <button
-                      key={`${result.path}:${result.lineNumber}`}
-                      type="button"
-                      onClick={() => {
-                        void handleOpenGlobalSearchResult(result);
-                      }}
-                      className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
-                      title={`${result.path}:${result.lineNumber}`}
-                    >
-                      <span className="truncate font-medium">{result.name}</span>
-                      <span className="truncate text-[11px] text-slate-400">{result.path}</span>
-                      <span className="mt-0.5 truncate text-[11px] text-slate-500">
-                        第 {result.lineNumber} 行 · {result.snippet}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )
-            ) : (
-              renderRootNode()
-            )}
-          </div>
-
-          <button
-            type="button"
-            aria-label="调整侧栏宽度"
-            onMouseDown={handleExplorerResizeStart}
-            className="absolute right-[-3px] top-0 h-full w-[6px] cursor-col-resize bg-transparent hover:bg-slate-300/60"
-          />
-        </aside>
+              aria-label="调整侧栏宽度"
+              onMouseDown={handleExplorerResizeStart}
+              className="absolute right-[-3px] top-0 h-full w-[6px] cursor-col-resize bg-transparent hover:bg-slate-300/60"
+            />
+          </aside>
         )}
 
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -2143,13 +3397,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               key={action.key}
               type="button"
               disabled={action.disabled}
-              className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-                action.disabled
-                  ? 'cursor-not-allowed text-slate-300'
-                  : action.danger
-                    ? 'text-rose-500 hover:bg-rose-50'
-                    : 'text-[rgb(13,13,13)] hover:bg-[rgb(245,245,245)]'
-              }`}
+              className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${action.disabled
+                ? 'cursor-not-allowed text-slate-300'
+                : action.danger
+                  ? 'text-rose-500 hover:bg-rose-50'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(245,245,245)]'
+                }`}
               onClick={() => {
                 if (action.disabled) {
                   return;
@@ -2163,6 +3416,119 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           ))}
         </div>
       )}
+      <Dialog
+        open={deleteDialog.entry != null}
+        onClose={() => {
+          if (deleteDialog.submitting) {
+            return;
+          }
+          setDeleteDialog({ entry: null, submitting: false, error: null });
+        }}
+        title="确认删除"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[rgb(13,13,13)]">
+            {`确定删除${deleteDialog.entry?.kind === 'directory' ? '文件夹' : '文件'} “${deleteDialog.entry?.name ?? ''}” 吗？`}
+          </p>
+          <p className="text-xs text-slate-500">
+            {deleteDialog.entry?.kind === 'directory'
+              ? '删除文件夹会同时移除其所有子文件与子目录，此操作不可撤销。'
+              : '删除后不可撤销。'}
+          </p>
+          {deleteDialog.error && (
+            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-600">{deleteDialog.error}</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={deleteDialog.submitting}
+              onClick={() => {
+                setDeleteDialog({ entry: null, submitting: false, error: null });
+              }}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              size="sm"
+              disabled={deleteDialog.submitting}
+              onClick={() => {
+                void handleConfirmDeleteExplorerEntry();
+              }}
+            >
+              {deleteDialog.submitting ? '删除中...' : '确认删除'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+      <Dialog
+        open={pendingMoveDialog != null}
+        onClose={() => {
+          if (pendingMoveDialog?.submitting) {
+            return;
+          }
+          setPendingMoveDialog(null);
+        }}
+        title="确认移动"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[rgb(13,13,13)]">
+            将
+            <span className="font-semibold"> {pendingMoveDialog?.payload.name ?? ''} </span>
+            移动到
+            <span className="font-semibold"> {moveDialogTargetLabel} </span>
+            吗？
+          </p>
+          <p className="text-xs text-slate-500">
+            目录移动会同时移动其所有子文件和子目录。
+          </p>
+          {pendingMoveDialog?.error && (
+            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-600">{pendingMoveDialog.error}</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={pendingMoveDialog?.submitting}
+              onClick={() => setPendingMoveDialog(null)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              disabled={pendingMoveDialog?.submitting}
+              onClick={() => {
+                void handleConfirmMoveExplorerEntry();
+              }}
+            >
+              {pendingMoveDialog?.submitting ? '移动中...' : '确认移动'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+      <Dialog
+        open={directoryInfoDialogOpen}
+        onClose={() => setDirectoryInfoDialogOpen(false)}
+        title="关联目录信息"
+        size="sm"
+      >
+        <div className="space-y-2 text-sm text-[rgb(13,13,13)]">
+          <p>
+            项目：<span className="font-semibold">{activeProject?.name ?? '-'}</span>
+          </p>
+          <p className="break-all">
+            关联目录：<span className="font-semibold">{associatedDirectoryAbsolutePath}</span>
+          </p>
+        </div>
+      </Dialog>
     </div>
   );
 };
