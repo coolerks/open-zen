@@ -161,6 +161,27 @@ npm run dev
 
 ---
 
+## 运行步骤（首次启动）
+
+1. 安装依赖环境：`Java 21+`、`Node.js 18+`、`Maven 3.8+`
+2. 启动后端服务：
+```bash
+cd server
+mvn clean test
+mvn spring-boot:run
+```
+3. 启动前端服务（新开一个终端）：
+```bash
+cd web
+npm install
+npm run dev
+```
+4. 打开浏览器访问：`http://localhost:5173/chat`
+5. 进入模型管理（`/models`）先配置供应商，再添加可用模型（至少启用 1 个）
+6. 返回聊天页开始对话
+
+---
+
 ## 路由说明
 
 - 聊天：`/chat`、`/chat/:sessionId`
@@ -248,4 +269,3 @@ npm run dev
 ## 许可证
 
 [MIT](LICENSE)
-

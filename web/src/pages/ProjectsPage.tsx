@@ -6,6 +6,7 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectItem } from '../types';
+import { ArrowLeft, Columns2, Files, FolderRoot, Link, RefreshCw, Search } from 'lucide-react';
 
 type ExplorerEntry = {
   name: string;
@@ -297,62 +298,43 @@ const TreeChevronIcon: React.FC<{ expanded: boolean }> = ({ expanded }) => (
 );
 
 const BackToChatIcon: React.FC = () => (
-  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M20 11H7.83L13.42 5.41L12 4L4 12L12 20L13.41 18.59L7.83 13H20V11Z" fill="currentColor" />
+  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M11.8 8H4.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M7.1 5.7L4.8 8L7.1 10.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
 const RefreshIcon: React.FC = () => (
-  // Heroicons 'arrow-path' (outline)
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    fill="none"
-    viewBox="0 0 24 24"
-    strokeWidth={1.5}
-    stroke="currentColor"
-    className="h-4 w-4"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"
-    />
+  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M11.8 5V2.9H9.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M11.7 3.5C10.9 2.6 9.8 2.1 8.5 2.1C6.2 2.1 4.4 3.9 4.4 6.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M4.2 11V13.1H6.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4.3 12.5C5.1 13.4 6.2 13.9 7.5 13.9C9.8 13.9 11.6 12.1 11.6 9.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 );
 
 const FolderSelectIcon: React.FC = () => (
-  // Heroicons 'folder-open' (outline)
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    fill="none"
-    viewBox="0 0 24 24"
-    strokeWidth={1.5}
-    stroke="currentColor"
-    className="h-4 w-4"
-  >
+  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
-      strokeLinecap="round"
+      d="M2.4 5.3C2.4 4.64 2.94 4.1 3.6 4.1H5.9L7 5.3H12.4C13.06 5.3 13.6 5.84 13.6 6.5V11.7C13.6 12.36 13.06 12.9 12.4 12.9H3.6C2.94 12.9 2.4 12.36 2.4 11.7V5.3Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
       strokeLinejoin="round"
-      d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"
     />
+    <path d="M8 7.3V10.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M6.6 8.9L8 10.3L9.4 8.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
 const NewProjectActionIcon: React.FC = () => (
-  // Heroicons 'folder-plus' (outline)
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    fill="none"
-    viewBox="0 0 24 24"
-    strokeWidth={1.5}
-    stroke="currentColor"
-    className="h-4 w-4"
-  >
+  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
-      strokeLinecap="round"
+      d="M2.4 5.3C2.4 4.64 2.94 4.1 3.6 4.1H5.9L7 5.3H12.4C13.06 5.3 13.6 5.84 13.6 6.5V11.7C13.6 12.36 13.06 12.9 12.4 12.9H3.6C2.94 12.9 2.4 12.36 2.4 11.7V5.3Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
       strokeLinejoin="round"
-      d="M12 10.5v6m3-3H9m4.06-7.19l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"
     />
+    <path d="M8 7.1V10.1M6.5 8.6H9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 );
 
@@ -444,6 +426,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const [globalSearching, setGlobalSearching] = useState(false);
   const [globalSearchError, setGlobalSearchError] = useState<string | null>(null);
   const [searchIncludeGitignored, setSearchIncludeGitignored] = useState(false);
+  const [gitignoreMatcher, setGitignoreMatcher] = useState<Ignore | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [openTabs, setOpenTabs] = useState<Record<string, OpenFileTab>>({});
   const [groups, setGroups] = useState<Record<EditorGroupId, EditorGroupState>>(() => createEmptyGroups());
@@ -705,6 +688,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setGlobalSearching(false);
       setGlobalSearchError(null);
       setRootHandle(null);
+      setGitignoreMatcher(null);
       setChildrenMap({});
       setExpandedMap({});
       setLoadingMap({});
@@ -734,6 +718,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       const handle = await getDirectoryHandle(activeProject.id);
       if (!handle) {
         setRootHandle(null);
+        setGitignoreMatcher(null);
         setChildrenMap({});
         setExpandedMap({});
         setTreeError('项目目录未关联或权限已失效，请点击“重新关联目录”。');
@@ -743,6 +728,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       const granted = await ensureDirectoryReadPermission(handle);
       if (!granted) {
         setRootHandle(null);
+        setGitignoreMatcher(null);
         setChildrenMap({});
         setExpandedMap({});
         setTreeError('读取项目目录需要权限，请重新关联目录并授权。');
@@ -750,11 +736,13 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       }
 
       setRootHandle(handle);
+      setGitignoreMatcher(await readRootGitignoreMatcher(handle));
       setChildrenMap({});
       setExpandedMap({ '': true });
       await loadDirectoryAtPath('', handle);
     } catch (loadError: any) {
       setRootHandle(null);
+      setGitignoreMatcher(null);
       setChildrenMap({});
       setExpandedMap({});
       setTreeError(loadError?.message ?? '加载项目目录失败');
@@ -1475,7 +1463,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     ],
   );
 
-  const renderExplorerNodes = (directoryPath: string, depth: number): React.ReactNode => {
+  const renderExplorerNodes = (directoryPath: string, depth: number, ancestorIgnored = false): React.ReactNode => {
     const nodes = childrenMap[directoryPath] ?? [];
     if (nodes.length === 0) {
       return null;
@@ -1483,6 +1471,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
     return nodes.map((node) => {
       const isDirectory = node.kind === 'directory';
+      const ignoredByGitignore =
+        ancestorIgnored || shouldIgnoreByGitignore(gitignoreMatcher, node.path, node.kind);
       const expanded = expandedMap[node.path] === true;
       const isSelectedFile = !isDirectory && selectedFilePaths.includes(node.path);
       const isActiveFile =
@@ -1525,7 +1515,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             onContextMenu={(event) => {
               openExplorerContextMenu(event, node);
             }}
-            className={`flex h-[30px] w-full items-center gap-1 rounded-md px-2 text-left text-sm transition-colors ${
+            className={`flex h-[24px] w-full text-xs items-center gap-1 rounded-md px-2 text-left transition-colors ${
               isSelectedFile || isActiveFile
                 ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)]'
                 : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
@@ -1539,14 +1529,20 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             ) : (
               <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
             )}
-            <span className="truncate">{node.name}</span>
-            {isLoadingFile && <span className="ml-1 text-xs text-slate-400">读取中...</span>}
+            <span className={`truncate ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : ''}`}>{node.name}</span>
+            {isLoadingFile && (
+              <span className={`ml-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400'}`}>读取中...</span>
+            )}
           </button>
 
           {isDirectory && expanded && (
             <>
-              {loadingChildren && <p className="px-3 py-1 text-xs text-slate-400">加载中...</p>}
-              {renderExplorerNodes(node.path, depth + 1)}
+              {loadingChildren && (
+                <p className={`px-3 py-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400'}`}>
+                  加载中...
+                </p>
+              )}
+              {renderExplorerNodes(node.path, depth + 1, ignoredByGitignore)}
             </>
           )}
         </div>
@@ -1571,7 +1567,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           onClick={() => {
             void handleToggleDirectory('');
           }}
-          className="flex h-[30px] w-full items-center gap-1 rounded-md px-2 text-left text-sm text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+          className="flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
           title={activeProject.rootDirName}
         >
           <TreeChevronIcon expanded={rootExpanded} />
@@ -1789,7 +1785,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   }
                   setDraggingTab(null);
                 }}
-                className={`group flex h-8 max-w-[220px] shrink-0 items-center rounded-md border px-2 text-sm ${
+                className={`group flex h-6 max-w-[220px] shrink-0 items-center rounded-md border px-2 text-sm ${
                   isActive
                     ? 'border-[rgb(209,209,209)] bg-[rgb(245,245,245)] text-[rgb(13,13,13)]'
                     : 'border-transparent bg-transparent text-slate-500 hover:bg-[rgb(245,245,245)]'
@@ -1798,7 +1794,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               >
                 <button
                   type="button"
-                  className="min-w-0 flex-1 truncate text-left"
+                  className="min-w-0 flex-1 truncate text-left text-xs"
                   onClick={() => {
                     setGroups((prev) => ({
                       ...prev,
@@ -1815,7 +1811,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-xs leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)]"
+                  className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-sm leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)]"
                   onClick={(event) => {
                     event.stopPropagation();
                     closeTabInGroup(groupId, tabPath);
@@ -1893,7 +1889,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             {!explorerCollapsed && activeSidebarView === 'explorer' && (
               <span className="absolute left-[-1px] top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r bg-[#2563eb]" />
             )}
-            <ActivityFilesIcon />
+            <Files className="w-4 h-4" />
           </button>
           <button
             type="button"
@@ -1912,7 +1908,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             {!explorerCollapsed && activeSidebarView === 'search' && (
               <span className="absolute left-[-1px] top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r bg-[#2563eb]" />
             )}
-            <ActivitySearchIcon />
+            <Search className="w-4 h-4" />
           </button>
         </div>
 
@@ -1921,14 +1917,14 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8]"
           style={{ width: `${explorerWidth}px` }}
         >
-          <div className="flex h-10 items-center border-b border-[rgb(209,209,209)] px-2">
+          <div className="flex h-10 items-center px-2">
             <button
               type="button"
               onClick={onBackToChat}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-sm font-normal text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+              className="text-xs inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 font-normal text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
             >
-              <BackToChatIcon />
-              <span className="leading-none [word-break:keep-all]">返回</span>
+            <ArrowLeft className="w-4 h-4" />              
+            <span className="leading-none [word-break:keep-all]">返回</span>
             </button>
             <div className="ml-auto flex shrink-0 items-center gap-0 pl-1">
               {activeSidebarView === 'explorer' && (
@@ -1939,7 +1935,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
                   title={selectedFilePaths.length === 2 ? '对比所选文件' : '先在文件树中多选两个文件'}
                 >
-                  <CompareSelectedFilesIcon />
+                  <Columns2 className="w-4 h-4" />
                 </button>
               )}
               <button
@@ -1951,7 +1947,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
                 title="刷新目录"
               >
-                <RefreshIcon />
+                <RefreshCw className="w-4 h-4" />
               </button>
               <button
                 type="button"
@@ -1960,7 +1956,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
                 title="重新关联目录"
               >
-                <FolderSelectIcon />
+                <Link className="w-4 h-4" />
               </button>
               <button
                 type="button"
@@ -1968,21 +1964,21 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
                 title="新建项目"
               >
-                <NewProjectActionIcon />
+                <FolderRoot className="w-4 h-4" />
               </button>
             </div>
           </div>
 
-          <div className="border-b border-[rgb(209,209,209)] px-3 py-2 text-xs font-semibold tracking-wide text-slate-500">
+          <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500">
             {activeSidebarView === 'search' ? '搜索' : '资源管理器'}
           </div>
 
           {activeSidebarView === 'search' && (
-            <div className="border-b border-[rgb(209,209,209)] px-2 py-2">
+            <div className="px-2 py-2">
               <div className="flex items-center gap-1.5">
                 <div className="relative min-w-0 flex-1">
                   <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400">
-                    <SearchCodeIcon />
+                    <Search className="w-4 h-4" />
                   </span>
                   <input
                     ref={globalSearchInputRef}
@@ -2033,7 +2029,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
                   title="执行搜索"
                 >
-                  <SearchCodeIcon />
+                  <Search className="w-4 h-4" />
                 </button>
               </div>
 
@@ -2052,12 +2048,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           )}
 
           {(error || treeError) && (
-            <div className="border-b border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600">
+            <div className="bg-rose-50 px-3 py-2 text-xs text-rose-600">
               {treeError || error}
             </div>
           )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-1">
             {!activeProject ? (
               <div className="space-y-3 px-2 py-3">
                 <p className="text-sm text-slate-500">未打开项目</p>
