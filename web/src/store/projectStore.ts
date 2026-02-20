@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ProjectItem } from '../types';
 
 const PROJECT_META_STORAGE_KEY = 'openzen.projects.meta.v1';
+const PROJECT_LAST_REAL_DIR_STORAGE_KEY = 'openzen.projects.last.real_dir.v1';
 const PROJECT_HANDLE_DB_NAME = 'openzen.projects.db';
 const PROJECT_HANDLE_DB_VERSION = 1;
 const PROJECT_HANDLE_STORE_NAME = 'project_handles';
@@ -14,6 +15,14 @@ type ProjectHandleRecord = {
 type ProjectCreatePayload = {
   name: string;
   description?: string;
+  realDirPath: string;
+  rootDirName?: string;
+  directoryHandle: FileSystemDirectoryHandle;
+};
+
+type ProjectUpdateDirectoryPayload = {
+  realDirPath: string;
+  rootDirName?: string;
   directoryHandle: FileSystemDirectoryHandle;
 };
 
@@ -23,10 +32,21 @@ interface ProjectState {
   error: string | null;
   fetchItems: () => Promise<void>;
   createItem: (payload: ProjectCreatePayload) => Promise<ProjectItem>;
-  updateDirectory: (projectId: string, directoryHandle: FileSystemDirectoryHandle) => Promise<void>;
+  updateDirectory: (projectId: string, payload: ProjectUpdateDirectoryPayload) => Promise<void>;
   deleteItem: (projectId: string) => Promise<void>;
   getDirectoryHandle: (projectId: string) => Promise<FileSystemDirectoryHandle | null>;
+  getLastRealDirectoryPath: () => string | null;
+  setLastRealDirectoryPath: (path: string) => void;
   clearError: () => void;
+}
+
+function getDirectoryNameFromPath(path: string): string {
+  const normalized = path.trim().replace(/[\\/]+$/, '');
+  if (!normalized) {
+    return '根目录';
+  }
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? normalized;
 }
 
 function normalizeProjectItems(raw: unknown): ProjectItem[] {
@@ -48,6 +68,7 @@ function normalizeProjectItems(raw: unknown): ProjectItem[] {
         name: String(record.name),
         description: record.description ? String(record.description) : null,
         rootDirName: String(record.rootDirName),
+        realDirPath: record.realDirPath ? String(record.realDirPath) : null,
         createdAt: String(record.createdAt),
         updatedAt: String(record.updatedAt),
       } as ProjectItem;
@@ -78,6 +99,30 @@ function writeProjectItemsToStorage(items: ProjectItem[]): void {
     return;
   }
   window.localStorage.setItem(PROJECT_META_STORAGE_KEY, JSON.stringify(items));
+}
+
+function readLastRealDirectoryPath(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const raw = window.localStorage.getItem(PROJECT_LAST_REAL_DIR_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.trim();
+  return normalized || null;
+}
+
+function writeLastRealDirectoryPath(path: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const normalized = path.trim();
+  if (!normalized) {
+    window.localStorage.removeItem(PROJECT_LAST_REAL_DIR_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(PROJECT_LAST_REAL_DIR_STORAGE_KEY, normalized);
 }
 
 function generateProjectId(): string {
@@ -172,12 +217,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   createItem: async (payload) => {
     const trimmedName = payload.name.trim();
     const normalizedDescription = payload.description?.trim() || null;
+    const normalizedRealDirPath = payload.realDirPath.trim();
+    if (!payload.directoryHandle) {
+      throw new Error('请选择浏览器目录授权');
+    }
+    const normalizedRootDirName =
+      payload.rootDirName?.trim() ||
+      (normalizedRealDirPath ? getDirectoryNameFromPath(normalizedRealDirPath) : '') ||
+      payload.directoryHandle?.name ||
+      '未关联目录';
     const now = new Date().toISOString();
     const created: ProjectItem = {
       id: generateProjectId(),
-      name: trimmedName || payload.directoryHandle.name || '未命名项目',
+      name: trimmedName || normalizedRootDirName || '未命名项目',
       description: normalizedDescription,
-      rootDirName: payload.directoryHandle.name,
+      rootDirName: normalizedRootDirName,
+      realDirPath: normalizedRealDirPath || null,
       createdAt: now,
       updatedAt: now,
     };
@@ -186,24 +241,40 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     const nextItems = [created, ...get().items];
     writeProjectItemsToStorage(nextItems);
+    if (normalizedRealDirPath) {
+      writeLastRealDirectoryPath(normalizedRealDirPath);
+    }
     set({ items: nextItems, error: null });
     return created;
   },
 
-  updateDirectory: async (projectId, directoryHandle) => {
-    await putProjectHandle(projectId, directoryHandle);
+  updateDirectory: async (projectId, payload) => {
+    const normalizedRealDirPath = payload.realDirPath.trim();
+    if (!payload.directoryHandle) {
+      throw new Error('请选择浏览器目录授权');
+    }
+    const normalizedRootDirName =
+      payload.rootDirName?.trim() ||
+      (normalizedRealDirPath ? getDirectoryNameFromPath(normalizedRealDirPath) : '') ||
+      payload.directoryHandle?.name ||
+      '未关联目录';
+    await putProjectHandle(projectId, payload.directoryHandle);
 
     const now = new Date().toISOString();
     const nextItems = get().items.map((item) =>
       item.id === projectId
         ? {
             ...item,
-            rootDirName: directoryHandle.name,
+            rootDirName: normalizedRootDirName,
+            realDirPath: normalizedRealDirPath || null,
             updatedAt: now,
           }
         : item,
     );
     writeProjectItemsToStorage(nextItems);
+    if (normalizedRealDirPath) {
+      writeLastRealDirectoryPath(normalizedRealDirPath);
+    }
     set({ items: nextItems, error: null });
   },
 
@@ -221,6 +292,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set({ error: error?.message ?? '读取项目目录失败' });
       return null;
     }
+  },
+
+  getLastRealDirectoryPath: () => readLastRealDirectoryPath(),
+  setLastRealDirectoryPath: (path) => {
+    writeLastRealDirectoryPath(path);
   },
 
   clearError: () => set({ error: null }),

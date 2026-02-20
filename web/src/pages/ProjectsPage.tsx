@@ -3,6 +3,7 @@ import Editor, { DiffEditor } from '@monaco-editor/react';
 import ignore, { type Ignore } from 'ignore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
+import { DirectoryPickerDialog } from '../components/project/DirectoryPickerDialog';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
@@ -574,7 +575,15 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   onBackToChat,
 }) => {
   const { theme } = useThemeStore();
-  const { items, error, getDirectoryHandle, updateDirectory, clearError } = useProjectStore();
+  const {
+    items,
+    error,
+    getDirectoryHandle,
+    updateDirectory,
+    getLastRealDirectoryPath,
+    setLastRealDirectoryPath,
+    clearError,
+  } = useProjectStore();
 
   const activeProject: ProjectItem | null = useMemo(() => {
     if (!routeProjectId) {
@@ -644,6 +653,13 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     submitting: boolean;
     error: string | null;
   } | null>(null);
+  const [directoryPickerState, setDirectoryPickerState] = useState<{
+    open: boolean;
+    initialPath: string;
+  }>({
+    open: false,
+    initialPath: '~/',
+  });
   const [directoryInfoDialogOpen, setDirectoryInfoDialogOpen] = useState(false);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string | null>(null);
   const draggingExplorerEntryRef = useRef<ExplorerDragPayload | null>(null);
@@ -2058,28 +2074,60 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     void runGlobalCodeSearch(keyword);
   }, [activeSidebarView, globalSearchKeyword, runGlobalCodeSearch, searchIncludeGitignored]);
 
-  const handleRebindDirectory = async () => {
+  const handleRebindDirectory = () => {
     if (!activeProject) {
       return;
     }
+    const lastPath = getLastRealDirectoryPath();
+    const initialPath = lastPath || activeProject.realDirPath || '~/';
+    setDirectoryPickerState({
+      open: true,
+      initialPath,
+    });
+  };
+
+  const pickBrowserDirectoryForRebind = useCallback(async (): Promise<FileSystemDirectoryHandle | null> => {
     const pickerWindow = window as DirectoryPickerWindow;
     if (!pickerWindow.showDirectoryPicker) {
       setTreeError('当前浏览器不支持文件夹选择器，请使用 Chromium 内核浏览器。');
-      return;
+      return null;
     }
-
     try {
-      const selectedHandle = await pickerWindow.showDirectoryPicker({ mode: 'read' });
-      await updateDirectory(activeProject.id, selectedHandle);
-      await reloadActiveProjectTree();
-      clearError();
-    } catch (error: any) {
-      if (error?.name === 'AbortError') {
+      const handle = await pickerWindow.showDirectoryPicker({ mode: 'readwrite' });
+      return handle;
+    } catch (pickError: any) {
+      if (pickError?.name === 'AbortError') {
+        setTreeError('已取消浏览器目录授权，关联未更新。');
+        return null;
+      }
+      setTreeError(pickError?.message ?? '选择浏览器目录失败');
+      return null;
+    }
+  }, []);
+
+  const handleConfirmRebindDirectory = useCallback(
+    async (payload: { path: string; name: string }) => {
+      if (!activeProject) {
         return;
       }
-      setTreeError(error?.message ?? '重新关联目录失败');
-    }
-  };
+
+      const directoryHandle = await pickBrowserDirectoryForRebind();
+      if (!directoryHandle) {
+        return;
+      }
+
+      await updateDirectory(activeProject.id, {
+        realDirPath: payload.path,
+        rootDirName: payload.name,
+        directoryHandle,
+      });
+      setLastRealDirectoryPath(payload.path);
+      setDirectoryPickerState((prev) => ({ ...prev, open: false }));
+      setTreeError(null);
+      clearError();
+    },
+    [activeProject, pickBrowserDirectoryForRebind, updateDirectory, setLastRealDirectoryPath, clearError],
+  );
 
   const handleExplorerResizeStart = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -2760,22 +2808,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     if (!activeProject) {
       return '-';
     }
-    const handleAny = rootHandle as unknown as Record<string, unknown> | null;
-    const candidates = [
-      handleAny?.path,
-      handleAny?.fullPath,
-      handleAny?.absolutePath,
-      handleAny?.resolvedPath,
-      handleAny?._path,
-    ];
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' && candidate.trim()) {
-        return candidate;
-      }
-    }
-    // 浏览器的 File System Access API 通常不会暴露绝对路径，这里做降级提示。
-    return `无法获取绝对路径（浏览器安全限制），当前目录名：${activeProject.rootDirName}`;
-  }, [activeProject, rootHandle]);
+    return activeProject.realDirPath || '未关联真实目录';
+  }, [activeProject]);
 
   const moveDialogTargetLabel = useMemo(() => {
     if (!pendingMoveDialog) {
@@ -3366,7 +3400,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             </div>
           ) : rightGroupVisible ? (
             <div ref={editorSplitContainerRef} className="flex h-full min-h-0 min-w-0">
-              <div className="flex h-full min-h-0 min-w-0 shrink-0 overflow-hidden" style={{ flexBasis: `${editorSplitRatio * 100}%` }}>
+              <div className="flex h-full min-h-0 min-w-0 sh  rink-0 overflow-hidden" style={{ flexBasis: `${editorSplitRatio * 100}%` }}>
                 {renderEditorGroup('left')}
               </div>
               <button
@@ -3514,6 +3548,16 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           </div>
         </div>
       </Dialog>
+      <DirectoryPickerDialog
+        open={directoryPickerState.open}
+        title="重新关联真实目录"
+        initialPath={directoryPickerState.initialPath}
+        description="每次点击目录都会进入下一层。确认真实目录后，会继续要求浏览器目录授权（必填）。"
+        onClose={() => {
+          setDirectoryPickerState((prev) => ({ ...prev, open: false }));
+        }}
+        onConfirm={handleConfirmRebindDirectory}
+      />
       <Dialog
         open={directoryInfoDialogOpen}
         onClose={() => setDirectoryInfoDialogOpen(false)}

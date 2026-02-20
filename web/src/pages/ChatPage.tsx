@@ -16,6 +16,7 @@ import { useThemeStore } from '../store/themeStore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
 import { Input, Textarea } from '../components/ui/Input';
+import { DirectoryPickerDialog } from '../components/project/DirectoryPickerDialog';
 import ModelsPage from './ModelsPage';
 import AgentsPage from './AgentsPage';
 import AppsPage from './AppsPage';
@@ -155,8 +156,10 @@ type ProjectCreateDialogState = {
   open: boolean;
   name: string;
   description: string;
-  directoryHandle: FileSystemDirectoryHandle | null;
-  directoryName: string;
+  realDirectoryPath: string;
+  realDirectoryName: string;
+  browserDirectoryHandle: FileSystemDirectoryHandle | null;
+  browserDirectoryName: string;
   error: string | null;
   submitting: boolean;
 };
@@ -2609,8 +2612,10 @@ function createInitialProjectCreateDialogState(): ProjectCreateDialogState {
     open: false,
     name: '',
     description: '',
-    directoryHandle: null,
-    directoryName: '',
+    realDirectoryPath: '',
+    realDirectoryName: '',
+    browserDirectoryHandle: null,
+    browserDirectoryName: '',
     error: null,
     submitting: false,
   };
@@ -3583,6 +3588,8 @@ const ChatPage: React.FC = () => {
     error: projectError,
     fetchItems: fetchProjectItems,
     createItem: createProjectItem,
+    deleteItem: deleteProjectItem,
+    setLastRealDirectoryPath: setLastProjectRealDirectoryPath,
     clearError: clearProjectError,
   } = useProjectStore();
 
@@ -3599,6 +3606,8 @@ const ChatPage: React.FC = () => {
     }
     return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
   });
+  const [projectSectionExpanded, setProjectSectionExpanded] = useState(false);
+  const [chatSectionExpanded, setChatSectionExpanded] = useState(true);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addMenuAgentOpen, setAddMenuAgentOpen] = useState(false);
   const [addMenuOutputLengthOpen, setAddMenuOutputLengthOpen] = useState(false);
@@ -3623,6 +3632,7 @@ const ChatPage: React.FC = () => {
   const [saveAppDialog, setSaveAppDialog] = useState<SaveAppDialogState>(() => createInitialSaveAppDialogState());
   const [saveAppSubmitting, setSaveAppSubmitting] = useState(false);
   const [projectCreateDialog, setProjectCreateDialog] = useState<ProjectCreateDialogState>(() => createInitialProjectCreateDialogState());
+  const [projectDirectoryPickerOpen, setProjectDirectoryPickerOpen] = useState(false);
 
   const [renameDialog, setRenameDialog] = useState<{ open: boolean; session: ChatSession | null; title: string }>({
     open: false,
@@ -3630,6 +3640,7 @@ const ChatPage: React.FC = () => {
     title: '',
   });
   const [deleteSessionTarget, setDeleteSessionTarget] = useState<ChatSession | null>(null);
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ id: string; name: string } | null>(null);
   const [copyDialog, setCopyDialog] = useState<{ open: boolean; session: ChatSession | null; title: string }>({
     open: false,
     session: null,
@@ -4041,12 +4052,28 @@ const ChatPage: React.FC = () => {
   const appSourceKeySet = useMemo(() => new Set(appCenterItems.map((item) => item.sourceKey)), [appCenterItems]);
 
   useEffect(() => {
-    fetchSessions();
     fetchEnabledModels();
     fetchEnabledAgents();
     fetchAppCenterItems();
+  }, [fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems]);
+
+  useEffect(() => {
+    if (!showGlobalSidebar || sidebarCollapsed || !chatSectionExpanded) {
+      return;
+    }
+    fetchSessions();
+  }, [showGlobalSidebar, sidebarCollapsed, chatSectionExpanded, fetchSessions]);
+
+  useEffect(() => {
+    if (pageMode === 'projects') {
+      fetchProjectItems();
+      return;
+    }
+    if (!showGlobalSidebar || sidebarCollapsed || !projectSectionExpanded) {
+      return;
+    }
     fetchProjectItems();
-  }, [fetchSessions, fetchEnabledModels, fetchEnabledAgents, fetchAppCenterItems, fetchProjectItems]);
+  }, [pageMode, showGlobalSidebar, sidebarCollapsed, projectSectionExpanded, fetchProjectItems]);
 
   useEffect(() => {
     if (!isChatRoute) {
@@ -4712,10 +4739,11 @@ const ChatPage: React.FC = () => {
     if (projectCreateDialog.submitting) {
       return;
     }
+    setProjectDirectoryPickerOpen(false);
     setProjectCreateDialog(createInitialProjectCreateDialogState());
   }, [projectCreateDialog.submitting]);
 
-  const handlePickProjectDirectory = useCallback(async () => {
+  const handlePickBrowserProjectDirectory = useCallback(async () => {
     const pickerWindow = window as DirectoryPickerWindow;
     if (!pickerWindow.showDirectoryPicker) {
       setProjectCreateDialog((prev) => ({
@@ -4726,11 +4754,11 @@ const ChatPage: React.FC = () => {
     }
 
     try {
-      const handle = await pickerWindow.showDirectoryPicker({ mode: 'read' });
+      const handle = await pickerWindow.showDirectoryPicker({ mode: 'readwrite' });
       setProjectCreateDialog((prev) => ({
         ...prev,
-        directoryHandle: handle,
-        directoryName: handle.name,
+        browserDirectoryHandle: handle,
+        browserDirectoryName: handle.name,
         error: null,
       }));
     } catch (error: any) {
@@ -4743,6 +4771,19 @@ const ChatPage: React.FC = () => {
       }));
     }
   }, []);
+
+  const handleConfirmProjectDirectory = useCallback(
+    async (payload: { path: string; name: string }) => {
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        realDirectoryPath: payload.path,
+        realDirectoryName: payload.name,
+        error: null,
+      }));
+      setProjectDirectoryPickerOpen(false);
+    },
+    [],
+  );
 
   const handleSubmitCreateProject = useCallback(async () => {
     if (!projectCreateDialog.open) {
@@ -4757,13 +4798,21 @@ const ChatPage: React.FC = () => {
       }));
       return;
     }
-    if (!projectCreateDialog.directoryHandle) {
+    if (!projectCreateDialog.realDirectoryPath.trim()) {
       setProjectCreateDialog((prev) => ({
         ...prev,
-        error: '请选择项目目录',
+        error: '请选择真实目录',
       }));
       return;
     }
+    if (!projectCreateDialog.browserDirectoryHandle) {
+      setProjectCreateDialog((prev) => ({
+        ...prev,
+        error: '请选择浏览器目录授权',
+      }));
+      return;
+    }
+    const browserDirectoryHandle = projectCreateDialog.browserDirectoryHandle;
 
     setProjectCreateDialog((prev) => ({
       ...prev,
@@ -4774,8 +4823,12 @@ const ChatPage: React.FC = () => {
       const created = await createProjectItem({
         name: trimmedName,
         description: projectCreateDialog.description.trim(),
-        directoryHandle: projectCreateDialog.directoryHandle,
+        realDirPath: projectCreateDialog.realDirectoryPath.trim(),
+        rootDirName: projectCreateDialog.realDirectoryName || undefined,
+        directoryHandle: browserDirectoryHandle,
       });
+      setLastProjectRealDirectoryPath(projectCreateDialog.realDirectoryPath.trim());
+      setProjectDirectoryPickerOpen(false);
       setProjectCreateDialog(createInitialProjectCreateDialogState());
       navigate(`/projects/${created.id}`);
     } catch (error: any) {
@@ -4785,7 +4838,7 @@ const ChatPage: React.FC = () => {
         error: error?.message ?? '创建项目失败',
       }));
     }
-  }, [projectCreateDialog, createProjectItem, navigate]);
+  }, [projectCreateDialog, createProjectItem, navigate, setLastProjectRealDirectoryPath]);
 
   const handleSelectProjectFromSidebar = useCallback(
     (projectId: string) => {
@@ -4793,6 +4846,18 @@ const ChatPage: React.FC = () => {
     },
     [navigate],
   );
+
+  const handleConfirmDeleteProject = useCallback(async () => {
+    if (!deleteProjectTarget) {
+      return;
+    }
+    const targetId = deleteProjectTarget.id;
+    await deleteProjectItem(targetId);
+    if (routeProjectId === targetId) {
+      navigate('/chat');
+    }
+    setDeleteProjectTarget(null);
+  }, [deleteProjectTarget, deleteProjectItem, routeProjectId, navigate]);
 
   const handleBackToChatFromProject = useCallback(() => {
     if (currentSessionId) {
@@ -6048,64 +6113,113 @@ const ChatPage: React.FC = () => {
 
         {!sidebarCollapsed && (
           <div className="chat-sidebar-scroll min-h-0 flex-1 overflow-y-auto pr-0">
-            <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">项目</p>
-            <div className="mb-3 space-y-1">
-              <button
-                className="mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-sm font-normal text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]"
-                type="button"
-                onClick={handleOpenCreateProjectDialog}
-                title="新建项目"
-              >
-                <NewProjectIcon />
-                <span>新项目</span>
-              </button>
-
-              {projectItems.map((project) => (
-                <button
-                  key={project.id}
-                  className={`mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-left text-sm font-normal transition-colors ${
-                    activeSidebarProjectId === project.id
-                      ? 'bg-[rgb(234,234,234)] text-[#0d0d0d]'
-                      : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]'
-                  }`}
-                  type="button"
-                  onClick={() => handleSelectProjectFromSidebar(project.id)}
-                  title={project.name}
-                >
-                  <SidebarProjectIcon />
-                  <span className="truncate">{project.name}</span>
-                </button>
-              ))}
-            </div>
-
-            <p className="mb-2 px-[12px] text-xs font-normal text-[#8f8f8f]">聊天</p>
-            <div className="space-y-1">
-              {sessions.map((session) => (
-                <SessionItem
-                  key={session.id}
-                  session={session}
-                  collapsed={sidebarCollapsed}
-                  active={currentSessionId === session.id}
-                  onSelect={() => navigate(`/chat/${session.id}`)}
-                  onAbout={() => void handleOpenSessionAbout(session)}
-                  onRename={() => setRenameDialog({ open: true, session, title: session.title })}
-                  onCopy={() =>
-                    setCopyDialog({
-                      open: true,
-                      session,
-                      title: `${session.title}（副本）`,
-                    })
-                  }
-                  onDelete={() => setDeleteSessionTarget(session)}
-                />
-              ))}
-
-              {sessions.length === 0 && (
-                <div className="mx-[6px] rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-[#8f8f8f] dark:border-slate-700">
-                  还没有会话，点击上方按钮开始
-                </div>
+            <button
+              type="button"
+              onClick={() => setProjectSectionExpanded((prev) => !prev)}
+              className="mb-2 mx-[6px] inline-flex h-[28px] w-[calc(100%-12px)] items-center rounded-lg px-[6px] text-xs font-normal text-[#8f8f8f] transition-colors hover:bg-[rgb(239,239,239)] dark:hover:bg-[#2a2a2a]"
+              title={projectSectionExpanded ? '折叠项目' : '展开项目'}
+            >
+              <span>项目</span>
+              {projectSectionExpanded ? (
+                <ChevronDownIcon className="ml-auto h-3.5 w-3.5 text-[#8f8f8f]" />
+              ) : (
+                <ChevronRightIcon className="ml-auto h-3.5 w-3.5 text-[#8f8f8f]" />
               )}
-            </div>
+            </button>
+            {projectSectionExpanded && (
+              <div className="mb-3 space-y-1">
+                <button
+                  className="mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-sm font-normal text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]"
+                  type="button"
+                  onClick={handleOpenCreateProjectDialog}
+                  title="新建项目"
+                >
+                  <NewProjectIcon />
+                  <span>新项目</span>
+                </button>
+
+                {projectItems.map((project) => (
+                  <div
+                    key={project.id}
+                    className={`group/project mx-[6px] flex h-[36px] w-[calc(100%-12px)] items-center gap-1 rounded-xl px-[10px] py-[6px] text-left text-sm font-normal transition-colors ${
+                      activeSidebarProjectId === project.id
+                        ? 'bg-[rgb(234,234,234)] text-[#0d0d0d]'
+                        : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]'
+                    }`}
+                  >
+                    <button
+                      className="inline-flex min-w-0 flex-1 items-center gap-2 text-left"
+                      type="button"
+                      onClick={() => handleSelectProjectFromSidebar(project.id)}
+                      title={project.name}
+                    >
+                      <SidebarProjectIcon />
+                      <span className="truncate">{project.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setDeleteProjectTarget({ id: project.id, name: project.name });
+                      }}
+                      className="rounded-lg p-1.5 text-[#8f8f8f] opacity-0 transition-colors transition-opacity hover:bg-[rgb(234,234,234)] hover:text-rose-500 group-hover/project:opacity-100 focus-visible:opacity-100"
+                      title="删除项目"
+                    >
+                      <DeleteIcon />
+                    </button>
+                  </div>
+                ))}
+
+                {projectItems.length === 0 && (
+                  <div className="mx-[6px] rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-[#8f8f8f] dark:border-slate-700">
+                    还没有项目，点击上方按钮新建
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setChatSectionExpanded((prev) => !prev)}
+              className="mb-2 mx-[6px] inline-flex h-[28px] w-[calc(100%-12px)] items-center rounded-lg px-[6px] text-xs font-normal text-[#8f8f8f] transition-colors hover:bg-[rgb(239,239,239)] dark:hover:bg-[#2a2a2a]"
+              title={chatSectionExpanded ? '折叠聊天' : '展开聊天'}
+            >
+              <span>聊天</span>
+              {chatSectionExpanded ? (
+                <ChevronDownIcon className="ml-auto h-3.5 w-3.5 text-[#8f8f8f]" />
+              ) : (
+                <ChevronRightIcon className="ml-auto h-3.5 w-3.5 text-[#8f8f8f]" />
+              )}
+            </button>
+            {chatSectionExpanded && (
+              <div className="space-y-1">
+                {sessions.map((session) => (
+                  <SessionItem
+                    key={session.id}
+                    session={session}
+                    collapsed={sidebarCollapsed}
+                    active={currentSessionId === session.id}
+                    onSelect={() => navigate(`/chat/${session.id}`)}
+                    onAbout={() => void handleOpenSessionAbout(session)}
+                    onRename={() => setRenameDialog({ open: true, session, title: session.title })}
+                    onCopy={() =>
+                      setCopyDialog({
+                        open: true,
+                        session,
+                        title: `${session.title}（副本）`,
+                      })
+                    }
+                    onDelete={() => setDeleteSessionTarget(session)}
+                  />
+                ))}
+
+                {sessions.length === 0 && (
+                  <div className="mx-[6px] rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-[#8f8f8f] dark:border-slate-700">
+                    还没有会话，点击上方按钮开始
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -7156,24 +7270,48 @@ const ChatPage: React.FC = () => {
           />
 
           <div className="space-y-2">
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">项目目录</p>
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">关联真实目录（必填）</p>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                type="button"
+                disabled={projectCreateDialog.submitting}
+                onClick={() => {
+                  setProjectDirectoryPickerOpen(true);
+                }}
+              >
+                选择真实目录
+              </Button>
+              </div>
+              <p className="break-all rounded-md bg-[rgb(245,245,245)] px-3 py-2 font-mono text-xs text-slate-600 dark:bg-[#2a2a2a] dark:text-slate-300">
+                {projectCreateDialog.realDirectoryPath || '未选择'}
+              </p>
+            </div>
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              将保存真实绝对路径，用于后续后端读取目录内容。
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">浏览器目录授权（必填）</p>
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
                 type="button"
                 disabled={projectCreateDialog.submitting}
                 onClick={() => {
-                  void handlePickProjectDirectory();
+                  void handlePickBrowserProjectDirectory();
                 }}
               >
-                选择文件夹
+                选择浏览器目录
               </Button>
               <span className="min-w-0 text-sm text-slate-500 dark:text-slate-400">
-                {projectCreateDialog.directoryName || '未选择'}
+                {projectCreateDialog.browserDirectoryName || '未选择'}
               </span>
             </div>
             <p className="text-xs text-slate-400 dark:text-slate-500">
-              仅保存目录关联信息，不会上传本地代码内容。
+              必须授权，用于前端资源管理器预览和编辑本地文件。
             </p>
           </div>
 
@@ -7202,6 +7340,20 @@ const ChatPage: React.FC = () => {
           </div>
         </div>
       </Dialog>
+
+      <DirectoryPickerDialog
+        open={projectDirectoryPickerOpen}
+        title="选择真实目录"
+        initialPath={projectCreateDialog.realDirectoryPath.trim() || '~/'}
+        description="每次点击目录都会进入下一层，确认后将保存目录的真实绝对路径。"
+        onClose={() => {
+          if (projectCreateDialog.submitting) {
+            return;
+          }
+          setProjectDirectoryPickerOpen(false);
+        }}
+        onConfirm={handleConfirmProjectDirectory}
+      />
 
       <Dialog
         open={renameDialog.open}
@@ -7250,6 +7402,26 @@ const ChatPage: React.FC = () => {
               }}
             >
               复制
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteProjectTarget)}
+        onClose={() => setDeleteProjectTarget(null)}
+        title="删除项目"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            确认将项目「{deleteProjectTarget?.name}」从项目列表移除吗？不会删除真实目录中的文件。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setDeleteProjectTarget(null)}>
+              取消
+            </Button>
+            <Button variant="danger" onClick={() => void handleConfirmDeleteProject()}>
+              确认移除
             </Button>
           </div>
         </div>

@@ -143,12 +143,26 @@ export interface AppCenterItemUpdateRequest {
   resetToOriginal?: boolean;
 }
 
+// 目录选择器
+export interface DirectoryEntry {
+  name: string;
+  absolutePath: string;
+  hidden: boolean;
+}
+
+export interface DirectoryBrowseResult {
+  currentPath: string;
+  parentPath: string | null;
+  directories: DirectoryEntry[];
+}
+
 // 项目中心
 export interface ProjectItem {
   id: string;
   name: string;
   description: string | null;
   rootDirName: string;
+  realDirPath: string | null;
   createdAt: string;
   updatedAt: string;
 }
