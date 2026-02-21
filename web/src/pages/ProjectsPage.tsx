@@ -9,7 +9,7 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectFsWatchEvent, ProjectItem } from '../types';
-import { ArrowLeft, Columns2, FilePlus2, Files, FolderPlus, FolderRoot, Info, Link, Moon, RefreshCw, Search, Sun } from 'lucide-react';
+import { ArrowLeft, Columns2, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Moon, RefreshCw, Search, Sun } from 'lucide-react';
 
 type ExplorerEntry = {
   name: string;
@@ -69,10 +69,11 @@ type GlobalCodeSearchResult = {
   name: string;
   lineNumber: number;
   snippet: string;
-  matchByName: boolean;
+  searchMode: 'content' | 'filename';
 };
 
 type ProjectSidebarView = 'explorer' | 'search';
+type ProjectSearchMode = 'content' | 'filename';
 
 type ProjectsPageProps = {
   routeProjectId: string | null;
@@ -695,6 +696,54 @@ function hasGroupContent(group: EditorGroupState): boolean {
   return group.tabs.length > 0 || group.diffView != null;
 }
 
+type SegmentedOption<T extends string> = {
+  value: T;
+  label: string;
+  icon: React.ReactNode;
+};
+
+function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  showLabel,
+  className = '',
+}: {
+  value: T;
+  options: SegmentedOption<T>[];
+  onChange: (next: T) => void;
+  showLabel?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={`inline-flex h-7 items-center rounded-md border border-[rgb(209,209,209)] bg-white p-0.5 dark:border-[#3a3a3a] dark:bg-[#242424] ${className}`}>
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => {
+              if (active) {
+                return;
+              }
+              onChange(option.value);
+            }}
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] leading-none transition-colors ${active
+              ? 'bg-[rgb(245,245,245)] text-[rgb(13,13,13)] dark:bg-[#333333] dark:text-slate-100'
+              : 'text-slate-500 hover:bg-[rgb(245,245,245)] hover:text-[rgb(13,13,13)] dark:text-slate-400 dark:hover:bg-[#2f2f2f] dark:hover:text-slate-100'
+              }`}
+            title={option.label}
+          >
+            {option.icon}
+            {showLabel && <span>{option.label}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 const ProjectsPage: React.FC<ProjectsPageProps> = ({
   routeProjectId,
   onSelectProject,
@@ -737,6 +786,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const [loadingRoot, setLoadingRoot] = useState(false);
   const [activeSidebarView, setActiveSidebarView] = useState<ProjectSidebarView>('explorer');
   const [globalSearchKeyword, setGlobalSearchKeyword] = useState('');
+  const [globalSearchMode, setGlobalSearchMode] = useState<ProjectSearchMode>('content');
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalCodeSearchResult[]>([]);
   const [globalSearching, setGlobalSearching] = useState(false);
   const [globalSearchError, setGlobalSearchError] = useState<string | null>(null);
@@ -2464,10 +2514,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   );
 
   const runGlobalCodeSearch = useCallback(
-    async (inputKeyword?: string) => {
+    async (inputKeyword?: string, inputMode?: ProjectSearchMode) => {
       if (!rootHandle) {
         return;
       }
+      const effectiveMode = inputMode ?? globalSearchMode;
       const effectiveKeyword = (inputKeyword ?? globalSearchKeywordRef.current).trim();
       if (!effectiveKeyword) {
         globalSearchTaskSeqRef.current += 1;
@@ -2500,9 +2551,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           resultItems.push(item);
           return;
         }
-        if (!item.matchByName) {
-          resultItems[existingIndex] = item;
-        }
+        resultItems[existingIndex] = item;
       };
 
       const walkDirectory = async (
@@ -2537,15 +2586,18 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
           const fileNameLower = entryName.toLocaleLowerCase();
           const filePathLower = entryPath.toLocaleLowerCase();
-          const hitByName = fileNameLower.includes(searchKeywordLower) || filePathLower.includes(searchKeywordLower);
-          if (hitByName) {
-            addOrUpdateResult({
-              path: entryPath,
-              name: entryName,
-              lineNumber: 1,
-              snippet: `文件名匹配：${entryPath}`,
-              matchByName: true,
-            });
+          if (effectiveMode === 'filename') {
+            const hitByName = fileNameLower.includes(searchKeywordLower) || filePathLower.includes(searchKeywordLower);
+            if (hitByName) {
+              addOrUpdateResult({
+                path: entryPath,
+                name: entryName,
+                lineNumber: 0,
+                snippet: entryPath,
+                searchMode: 'filename',
+              });
+            }
+            continue;
           }
 
           if (isLikelyBinaryFile(entryName)) {
@@ -2567,7 +2619,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 name: entryName,
                 lineNumber,
                 snippet,
-                matchByName: false,
+                searchMode: 'content',
               });
             }
           } catch {
@@ -2592,7 +2644,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         setGlobalSearchError(searchError?.message ?? '全局搜索失败');
       }
     },
-    [rootHandle, searchIncludeGitignored],
+    [globalSearchMode, rootHandle, searchIncludeGitignored],
   );
 
   useEffect(() => {
@@ -2603,8 +2655,31 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     if (!keyword) {
       return;
     }
-    void runGlobalCodeSearch(keyword);
-  }, [activeSidebarView, globalSearchKeyword, runGlobalCodeSearch, searchIncludeGitignored]);
+    void runGlobalCodeSearch(keyword, globalSearchMode);
+  }, [activeSidebarView, globalSearchKeyword, globalSearchMode, runGlobalCodeSearch, searchIncludeGitignored]);
+
+  const searchModeOptions = useMemo<SegmentedOption<ProjectSearchMode>[]>(() => {
+    return [
+      {
+        value: 'content',
+        label: '代码',
+        icon: <FileCodeCorner className="h-3.5 w-3.5" />,
+      },
+      {
+        value: 'filename',
+        label: '文件名',
+        icon: <FileSearchCorner className="h-3.5 w-3.5" />,
+      },
+    ];
+  }, []);
+
+  const handleChangeSearchMode = useCallback(
+    (nextMode: ProjectSearchMode) => {
+      setGlobalSearchMode(nextMode);
+      void runGlobalCodeSearch(globalSearchKeyword, nextMode);
+    },
+    [globalSearchKeyword, runGlobalCodeSearch],
+  );
 
   const handleRebindDirectory = () => {
     if (!activeProject) {
@@ -3766,6 +3841,14 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     <Info className="w-4 h-4" />
                   </button>
                 )}
+                {activeSidebarView === 'search' && (
+                    <Segmented
+                        value={globalSearchMode}
+                        options={searchModeOptions}
+                        onChange={handleChangeSearchMode}
+                        className="ml-2"
+                    />
+                )}
                 <button
                   type="button"
                   onClick={toggleTheme}
@@ -3806,9 +3889,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                           return;
                         }
                         event.preventDefault();
-                        void runGlobalCodeSearch(event.currentTarget.value);
+                        void runGlobalCodeSearch(event.currentTarget.value, globalSearchMode);
                       }}
-                      placeholder="搜索代码"
+                      placeholder={globalSearchMode === 'content' ? '搜索代码内容' : '搜索文件名'}
                       className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white pl-8 pr-8 text-xs text-[rgb(13,13,13)] outline-none transition-colors placeholder:text-[rgb(143,143,143)] focus:border-[rgb(148,163,184)] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-100"
                     />
                     {globalSearchKeyword && (
@@ -3831,7 +3914,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      void runGlobalCodeSearch(globalSearchKeyword);
+                      void runGlobalCodeSearch(globalSearchKeyword, globalSearchMode);
                     }}
                     disabled={!globalSearchKeyword.trim()}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
@@ -3871,32 +3954,46 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 </div>
               ) : activeSidebarView === 'search' ? (
                 globalSearchKeyword.trim().length === 0 ? (
-                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">输入关键字后按 Enter 搜索代码</p>
+                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">
+                    输入关键字后按 Enter 搜索{globalSearchMode === 'content' ? '代码内容' : '文件名'}
+                  </p>
                 ) : globalSearching ? (
                   <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">正在全局搜索...</p>
                 ) : globalSearchError ? (
                   <p className="px-2 py-2 text-xs text-rose-500">{globalSearchError}</p>
                 ) : globalSearchResults.length === 0 ? (
-                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">未搜索到匹配代码</p>
+                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">
+                    未搜索到匹配{globalSearchMode === 'content' ? '代码' : '文件'}
+                  </p>
                 ) : (
                   <div className="space-y-1">
-                    {globalSearchResults.map((result) => (
-                      <button
-                        key={`${result.path}:${result.lineNumber}`}
-                        type="button"
-                        onClick={() => {
-                          void handleOpenGlobalSearchResult(result);
-                        }}
-                        className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
-                        title={`${result.path}:${result.lineNumber}`}
-                      >
-                        <span className="truncate font-medium">{result.name}</span>
-                        <span className="truncate text-[11px] text-slate-400 dark:text-slate-500">{result.path}</span>
-                        <span className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
-                          第 {result.lineNumber} 行 · {result.snippet}
-                        </span>
-                      </button>
-                    ))}
+                    {globalSearchResults.map((result) => {
+                      const resultIconUrl = resolveProjectFileIcon(result.name);
+                      return (
+                        <button
+                          key={`${result.path}:${result.searchMode}:${result.lineNumber}`}
+                          type="button"
+                          onClick={() => {
+                            void handleOpenGlobalSearchResult(result);
+                          }}
+                          className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
+                          title={`${result.path}${result.lineNumber > 0 ? `:${result.lineNumber}` : ''}`}
+                        >
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {resultIconUrl ? (
+                              <img src={resultIconUrl} alt="" className="h-4 w-4 shrink-0" />
+                            ) : (
+                              <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200 dark:bg-slate-700" />
+                            )}
+                            <span className="min-w-0 truncate font-medium">{result.name}</span>
+                          </div>
+                          <span className="truncate text-[11px] text-slate-400 dark:text-slate-500">{result.path}</span>
+                          <span className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
+                            {result.searchMode === 'filename' ? '文件名匹配' : `第 ${result.lineNumber} 行`} · {result.snippet}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 )
               ) : (
