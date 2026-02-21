@@ -4,6 +4,7 @@ import ignore, { type Ignore } from 'ignore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
 import { DirectoryPickerDialog } from '../components/project/DirectoryPickerDialog';
+import { projectFilesystemApi } from '../api/projectFilesystem';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
@@ -76,10 +77,6 @@ type ProjectsPageProps = {
   onSelectProject: (projectId: string) => void;
   onRequestCreateProject: () => void;
   onBackToChat: () => void;
-};
-
-type DirectoryPickerWindow = Window & {
-  showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
 };
 
 const BINARY_EXTENSIONS = new Set([
@@ -227,51 +224,206 @@ function remapRecordByPathPrefix<T>(
   return next;
 }
 
-async function ensureDirectoryReadPermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
-  try {
-    if (typeof handle.queryPermission === 'function') {
-      const status = await handle.queryPermission({ mode: 'read' });
-      if (status === 'granted') {
-        return true;
-      }
-    }
+type ExplorerPermissionStatus = 'granted' | 'denied' | 'prompt';
 
-    if (typeof handle.requestPermission === 'function') {
-      const requested = await handle.requestPermission({ mode: 'read' });
-      return requested === 'granted';
-    }
+type ExplorerReadableFile = {
+  text: () => Promise<string>;
+  size: number;
+};
 
-    return true;
-  } catch {
-    // 某些浏览器没有实现权限 API，默认尝试继续读取。
-    return true;
+type ExplorerWritableFile = {
+  write: (data: unknown) => Promise<void>;
+  close: () => Promise<void>;
+};
+
+type ExplorerFileHandle = {
+  kind: 'file';
+  name: string;
+  getFile: () => Promise<ExplorerReadableFile>;
+  createWritable: () => Promise<ExplorerWritableFile>;
+};
+
+type ExplorerDirectoryHandle = {
+  kind: 'directory';
+  name: string;
+  queryPermission?: (_options: { mode: 'read' | 'readwrite' }) => Promise<ExplorerPermissionStatus>;
+  requestPermission?: (_options: { mode: 'read' | 'readwrite' }) => Promise<ExplorerPermissionStatus>;
+  getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<ExplorerDirectoryHandle>;
+  getFileHandle: (name: string, options?: { create?: boolean }) => Promise<ExplorerFileHandle>;
+  removeEntry: (name: string, options?: { recursive?: boolean }) => Promise<void>;
+  entries: () => AsyncIterableIterator<[string, ExplorerHandle]>;
+};
+
+type ExplorerHandle = ExplorerDirectoryHandle | ExplorerFileHandle;
+
+function normalizeRelativeExplorerPath(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  return normalized;
+}
+
+function toWritableString(input: unknown): Promise<string> {
+  if (typeof input === 'string') {
+    return Promise.resolve(input);
+  }
+  if (input instanceof Blob) {
+    return input.text();
+  }
+  if (
+    input &&
+    typeof input === 'object' &&
+    'text' in input &&
+    typeof (input as { text: () => Promise<string> | string }).text === 'function'
+  ) {
+    return Promise.resolve((input as { text: () => Promise<string> | string }).text()).then((value) => String(value));
+  }
+  return Promise.resolve(String(input ?? ''));
+}
+
+class ServerProjectWritableFile implements ExplorerWritableFile {
+  private content = '';
+
+  constructor(
+    private readonly projectId: string,
+    private readonly path: string,
+  ) {}
+
+  async write(data: unknown): Promise<void> {
+    this.content = await toWritableString(data);
+  }
+
+  async close(): Promise<void> {
+    await projectFilesystemApi.writeFile(this.projectId, {
+      path: this.path,
+      content: this.content,
+    });
   }
 }
 
-async function ensureDirectoryReadWritePermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
-  try {
-    if (typeof handle.queryPermission === 'function') {
-      const status = await handle.queryPermission({ mode: 'readwrite' });
-      if (status === 'granted') {
-        return true;
+class ServerProjectFileHandle implements ExplorerFileHandle {
+  readonly kind = 'file' as const;
+  readonly name: string;
+
+  constructor(
+    private readonly projectId: string,
+    public readonly path: string,
+  ) {
+    this.name = getFileNameByPath(path);
+  }
+
+  async getFile(): Promise<ExplorerReadableFile> {
+    const data = await projectFilesystemApi.readFile(this.projectId, this.path);
+    return {
+      size: data.size ?? new Blob([data.content]).size,
+      text: async () => data.content,
+    };
+  }
+
+  async createWritable(): Promise<ExplorerWritableFile> {
+    return new ServerProjectWritableFile(this.projectId, this.path);
+  }
+}
+
+class ServerProjectDirectoryHandle implements ExplorerDirectoryHandle {
+  readonly kind = 'directory' as const;
+  readonly name: string;
+
+  constructor(
+    private readonly projectId: string,
+    public readonly path: string,
+    name?: string,
+  ) {
+    this.name = name ?? (path ? getFileNameByPath(path) : '');
+  }
+
+  async queryPermission(): Promise<ExplorerPermissionStatus> {
+    return 'granted';
+  }
+
+  async requestPermission(): Promise<ExplorerPermissionStatus> {
+    return 'granted';
+  }
+
+  private normalizeChildPath(name: string): string {
+    const cleanName = name.trim();
+    if (!cleanName) {
+      throw new Error('名称不能为空。');
+    }
+    return normalizeRelativeExplorerPath(joinPath(this.path, cleanName));
+  }
+
+  private async findChildByName(name: string): Promise<{ name: string; path: string; kind: 'file' | 'directory' } | null> {
+    const data = await projectFilesystemApi.listEntries(this.projectId, this.path);
+    const child = data.entries.find((entry) => entry.name === name);
+    if (!child) {
+      return null;
+    }
+    return {
+      name: child.name,
+      path: normalizeRelativeExplorerPath(child.path),
+      kind: child.kind,
+    };
+  }
+
+  async getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<ExplorerDirectoryHandle> {
+    const childPath = this.normalizeChildPath(name);
+    if (options?.create) {
+      await projectFilesystemApi.createEntry(this.projectId, {
+        parentPath: this.path,
+        name: name.trim(),
+        kind: 'directory',
+      });
+      return new ServerProjectDirectoryHandle(this.projectId, childPath, name.trim());
+    }
+    const child = await this.findChildByName(name.trim());
+    if (!child || child.kind !== 'directory') {
+      throw new Error(`目录不存在：${name}`);
+    }
+    return new ServerProjectDirectoryHandle(this.projectId, child.path, child.name);
+  }
+
+  async getFileHandle(name: string, options?: { create?: boolean }): Promise<ExplorerFileHandle> {
+    const childPath = this.normalizeChildPath(name);
+    if (options?.create) {
+      await projectFilesystemApi.createEntry(this.projectId, {
+        parentPath: this.path,
+        name: name.trim(),
+        kind: 'file',
+      });
+      return new ServerProjectFileHandle(this.projectId, childPath);
+    }
+    const child = await this.findChildByName(name.trim());
+    if (!child || child.kind !== 'file') {
+      throw new Error(`文件不存在：${name}`);
+    }
+    return new ServerProjectFileHandle(this.projectId, child.path);
+  }
+
+  async removeEntry(name: string, options?: { recursive?: boolean }): Promise<void> {
+    const childPath = this.normalizeChildPath(name);
+    await projectFilesystemApi.deleteEntry(this.projectId, childPath, options?.recursive === true);
+  }
+
+  async *entries(): AsyncIterableIterator<[string, ExplorerHandle]> {
+    const data = await projectFilesystemApi.listEntries(this.projectId, this.path);
+    for (const entry of data.entries) {
+      const entryPath = normalizeRelativeExplorerPath(entry.path);
+      if (entry.kind === 'directory') {
+        yield [entry.name, new ServerProjectDirectoryHandle(this.projectId, entryPath, entry.name)];
+      } else {
+        yield [entry.name, new ServerProjectFileHandle(this.projectId, entryPath)];
       }
     }
-
-    if (typeof handle.requestPermission === 'function') {
-      const requested = await handle.requestPermission({ mode: 'readwrite' });
-      return requested === 'granted';
-    }
-
-    return true;
-  } catch {
-    return false;
   }
+}
+
+function createProjectRootHandle(projectId: string): ExplorerDirectoryHandle {
+  return new ServerProjectDirectoryHandle(projectId, '', '');
 }
 
 async function resolveDirectoryHandleByPath(
-  rootHandle: FileSystemDirectoryHandle,
+  rootHandle: ExplorerDirectoryHandle,
   path: string,
-): Promise<FileSystemDirectoryHandle> {
+): Promise<ExplorerDirectoryHandle> {
   let current = rootHandle;
   const segments = path.split('/').filter(Boolean);
   for (const segment of segments) {
@@ -281,9 +433,9 @@ async function resolveDirectoryHandleByPath(
 }
 
 async function resolveFileHandleByPath(
-  rootHandle: FileSystemDirectoryHandle,
+  rootHandle: ExplorerDirectoryHandle,
   filePath: string,
-): Promise<FileSystemFileHandle> {
+): Promise<ExplorerFileHandle> {
   const segments = filePath.split('/').filter(Boolean);
   if (segments.length === 0) {
     throw new Error('无效文件路径');
@@ -297,7 +449,7 @@ async function resolveFileHandleByPath(
 }
 
 async function detectEntryKind(
-  directoryHandle: FileSystemDirectoryHandle,
+  directoryHandle: ExplorerDirectoryHandle,
   name: string,
 ): Promise<'file' | 'directory' | null> {
   try {
@@ -314,30 +466,8 @@ async function detectEntryKind(
   }
 }
 
-async function copyDirectoryRecursively(
-  sourceHandle: FileSystemDirectoryHandle,
-  targetHandle: FileSystemDirectoryHandle,
-): Promise<void> {
-  const iterator = sourceHandle.entries?.();
-  if (!iterator) {
-    throw new Error('当前浏览器不支持目录遍历，无法执行目录移动。');
-  }
-  for await (const [entryName, entryHandle] of iterator) {
-    if (entryHandle.kind === 'directory') {
-      const nextTarget = await targetHandle.getDirectoryHandle(entryName, { create: true });
-      await copyDirectoryRecursively(entryHandle as FileSystemDirectoryHandle, nextTarget);
-      continue;
-    }
-    const sourceFile = await (entryHandle as FileSystemFileHandle).getFile();
-    const targetFileHandle = await targetHandle.getFileHandle(entryName, { create: true });
-    const writable = await targetFileHandle.createWritable();
-    await writable.write(sourceFile);
-    await writable.close();
-  }
-}
-
 async function moveExplorerEntry(
-  rootHandle: FileSystemDirectoryHandle,
+  projectId: string,
   sourcePath: string,
   kind: 'file' | 'directory',
   targetDirectoryPath: string,
@@ -360,44 +490,21 @@ async function moveExplorerEntry(
     throw new Error('不能将目录移动到自身或其子目录中。');
   }
 
-  const targetDirectoryHandle = await resolveDirectoryHandleByPath(rootHandle, targetDirectoryPath);
-  const existingKind = await detectEntryKind(targetDirectoryHandle, name);
-  const willKeepSameEntry = sourceParentPath === targetDirectoryPath && sourceName === name;
-  if (existingKind && !willKeepSameEntry) {
-    throw new Error(`目标目录已存在同名${existingKind === 'directory' ? '目录' : '文件'}：${name}`);
-  }
-
-  if (kind === 'file') {
-    const sourceFileHandle = await resolveFileHandleByPath(rootHandle, sourcePath);
-    const sourceFile = await sourceFileHandle.getFile();
-    const targetFileHandle = await targetDirectoryHandle.getFileHandle(name, { create: true });
-    const writable = await targetFileHandle.createWritable();
-    await writable.write(sourceFile);
-    await writable.close();
-  } else {
-    const sourceDirectoryHandle = await resolveDirectoryHandleByPath(rootHandle, sourcePath);
-    const targetDirectory = await targetDirectoryHandle.getDirectoryHandle(name, { create: true });
-    await copyDirectoryRecursively(sourceDirectoryHandle, targetDirectory);
-  }
-
-  const sourceParentHandle = await resolveDirectoryHandleByPath(rootHandle, sourceParentPath);
-  await sourceParentHandle.removeEntry(sourceName, { recursive: kind === 'directory' });
-  return joinPath(targetDirectoryPath, name);
+  const moved = await projectFilesystemApi.moveEntry(projectId, {
+    sourcePath,
+    targetDirectoryPath,
+    targetName: name,
+  });
+  return normalizeRelativeExplorerPath(moved.path || joinPath(targetDirectoryPath, name));
 }
 
 async function readDirectoryEntries(
-  rootHandle: FileSystemDirectoryHandle,
+  rootHandle: ExplorerDirectoryHandle,
   directoryPath: string,
 ): Promise<ExplorerEntry[]> {
   const directoryHandle = await resolveDirectoryHandleByPath(rootHandle, directoryPath);
   const entries: ExplorerEntry[] = [];
-  const iterator = directoryHandle.entries?.();
-  if (!iterator) {
-    throw new Error('当前浏览器不支持目录遍历，请升级浏览器后重试。');
-  }
-
-  // 通过浏览器文件系统 API 读取目录项。
-  for await (const [name, handle] of iterator) {
+  for await (const [name, handle] of directoryHandle.entries()) {
     entries.push({
       name,
       path: joinPath(directoryPath, name),
@@ -409,7 +516,7 @@ async function readDirectoryEntries(
 }
 
 async function readRootGitignoreMatcher(
-  rootHandle: FileSystemDirectoryHandle,
+  rootHandle: ExplorerDirectoryHandle,
 ): Promise<Ignore | null> {
   try {
     const gitignoreHandle = await rootHandle.getFileHandle('.gitignore');
@@ -417,7 +524,6 @@ async function readRootGitignoreMatcher(
     const content = await file.text();
     return ignore().add(content);
   } catch {
-    // 项目根目录没有 .gitignore 时直接忽略过滤。
     return null;
   }
 }
@@ -578,7 +684,6 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const {
     items,
     error,
-    getDirectoryHandle,
     updateDirectory,
     getLastRealDirectoryPath,
     setLastRealDirectoryPath,
@@ -602,7 +707,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     onSelectProject(items[0].id);
   }, [routeProjectId, items, onSelectProject]);
 
-  const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [rootHandle, setRootHandle] = useState<ExplorerDirectoryHandle | null>(null);
   const [childrenMap, setChildrenMap] = useState<Record<string, ExplorerEntry[]>>({});
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
@@ -945,7 +1050,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   }, [groups.left, groups.right]);
 
   const loadDirectoryAtPath = useCallback(
-    async (path: string, handle: FileSystemDirectoryHandle) => {
+    async (path: string, handle: ExplorerDirectoryHandle) => {
       setLoadingMap((prev) => ({ ...prev, [path]: true }));
       try {
         const entries = await readDirectoryEntries(handle, path);
@@ -967,12 +1072,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
   const ensureProjectWritable = useCallback(async (): Promise<boolean> => {
     if (!rootHandle) {
-      setTreeError('项目目录未关联，无法写入。');
-      return false;
-    }
-    const granted = await ensureDirectoryReadWritePermission(rootHandle);
-    if (!granted) {
-      setTreeError('需要写入权限才能修改文件，请重新关联目录并授权。');
+      setTreeError('项目目录尚未加载，无法写入。');
       return false;
     }
     return true;
@@ -1290,26 +1390,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     saveVersionRef.current = {};
 
     try {
-      const handle = await getDirectoryHandle(activeProject.id);
-      if (!handle) {
-        setRootHandle(null);
-        setGitignoreMatcher(null);
-        setChildrenMap({});
-        setExpandedMap({});
-        setTreeError('项目目录未关联或权限已失效，请点击“重新关联目录”。');
-        return;
-      }
-
-      const granted = await ensureDirectoryReadPermission(handle);
-      if (!granted) {
-        setRootHandle(null);
-        setGitignoreMatcher(null);
-        setChildrenMap({});
-        setExpandedMap({});
-        setTreeError('读取项目目录需要权限，请重新关联目录并授权。');
-        return;
-      }
-
+      const handle = createProjectRootHandle(activeProject.id);
       setRootHandle(handle);
       setGitignoreMatcher(await readRootGitignoreMatcher(handle));
       setChildrenMap({});
@@ -1324,7 +1405,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     } finally {
       setLoadingRoot(false);
     }
-  }, [activeProject, getDirectoryHandle, loadDirectoryAtPath]);
+  }, [activeProject, loadDirectoryAtPath]);
 
   useEffect(() => {
     void reloadActiveProjectTree();
@@ -1404,7 +1485,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
   const handleSubmitPendingExplorerEdit = useCallback(async () => {
     const draft = pendingExplorerEdit;
-    if (!draft || draft.submitting || !rootHandle) {
+    if (!draft || draft.submitting || !rootHandle || !activeProject) {
       return;
     }
     const nextName = draft.value.trim();
@@ -1448,7 +1529,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           return;
         }
         await flushPendingSavesUnderPath(originalPath);
-        const movedPath = await moveExplorerEntry(rootHandle, originalPath, draft.kind, draft.parentPath, nextName);
+        const movedPath = await moveExplorerEntry(activeProject.id, originalPath, draft.kind, draft.parentPath, nextName);
         remapExplorerStateByPath(originalPath, movedPath);
         remapOpenEditorsByPath(originalPath, movedPath);
         setPendingExplorerEdit(null);
@@ -1490,6 +1571,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       );
     }
   }, [
+    activeProject,
     ensureProjectWritable,
     flushPendingSavesUnderPath,
     pendingExplorerEdit,
@@ -1582,7 +1664,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
   const performMoveExplorerEntryToDirectory = useCallback(
     async (payload: ExplorerDragPayload, targetDirectoryPath: string) => {
-      if (!rootHandle) {
+      if (!rootHandle || !activeProject) {
         return;
       }
       const writable = await ensureProjectWritable();
@@ -1598,7 +1680,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       }
       try {
         await flushPendingSavesUnderPath(payload.path);
-        const nextPath = await moveExplorerEntry(rootHandle, payload.path, payload.kind, targetDirectoryPath);
+        const nextPath = await moveExplorerEntry(activeProject.id, payload.path, payload.kind, targetDirectoryPath);
         remapExplorerStateByPath(payload.path, nextPath);
         remapOpenEditorsByPath(payload.path, nextPath);
         setPendingExplorerEdit((prev) => {
@@ -1618,6 +1700,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       }
     },
     [
+      activeProject,
       ensureProjectWritable,
       flushPendingSavesUnderPath,
       refreshDirectoryEntries,
@@ -1971,16 +2054,13 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       };
 
       const walkDirectory = async (
-        directoryHandle: FileSystemDirectoryHandle,
+        directoryHandle: ExplorerDirectoryHandle,
         currentPath: string,
       ): Promise<void> => {
         if (isSearchExpired() || resultItems.length >= PROJECT_GLOBAL_SEARCH_MAX_RESULTS) {
           return;
         }
-        const iterator = directoryHandle.entries?.();
-        if (!iterator) {
-          throw new Error('当前浏览器不支持目录遍历，无法执行全局搜索。');
-        }
+        const iterator = directoryHandle.entries();
         for await (const [entryName, entryHandle] of iterator) {
           if (isSearchExpired() || resultItems.length >= PROJECT_GLOBAL_SEARCH_MAX_RESULTS) {
             return;
@@ -1991,7 +2071,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             continue;
           }
           if (entryKind === 'directory') {
-            await walkDirectory(entryHandle as FileSystemDirectoryHandle, entryPath);
+            await walkDirectory(entryHandle as ExplorerDirectoryHandle, entryPath);
             continue;
           }
 
@@ -2021,7 +2101,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           }
 
           try {
-            const fileHandle = entryHandle as FileSystemFileHandle;
+            const fileHandle = entryHandle as ExplorerFileHandle;
             const file = await fileHandle.getFile();
             if (file.size > PROJECT_GLOBAL_SEARCH_MAX_FILE_BYTES) {
               continue;
@@ -2086,47 +2166,23 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     });
   };
 
-  const pickBrowserDirectoryForRebind = useCallback(async (): Promise<FileSystemDirectoryHandle | null> => {
-    const pickerWindow = window as DirectoryPickerWindow;
-    if (!pickerWindow.showDirectoryPicker) {
-      setTreeError('当前浏览器不支持文件夹选择器，请使用 Chromium 内核浏览器。');
-      return null;
-    }
-    try {
-      const handle = await pickerWindow.showDirectoryPicker({ mode: 'readwrite' });
-      return handle;
-    } catch (pickError: any) {
-      if (pickError?.name === 'AbortError') {
-        setTreeError('已取消浏览器目录授权，关联未更新。');
-        return null;
-      }
-      setTreeError(pickError?.message ?? '选择浏览器目录失败');
-      return null;
-    }
-  }, []);
-
   const handleConfirmRebindDirectory = useCallback(
     async (payload: { path: string; name: string }) => {
       if (!activeProject) {
         return;
       }
 
-      const directoryHandle = await pickBrowserDirectoryForRebind();
-      if (!directoryHandle) {
-        return;
-      }
-
       await updateDirectory(activeProject.id, {
         realDirPath: payload.path,
         rootDirName: payload.name,
-        directoryHandle,
       });
       setLastRealDirectoryPath(payload.path);
       setDirectoryPickerState((prev) => ({ ...prev, open: false }));
       setTreeError(null);
       clearError();
+      void reloadActiveProjectTree();
     },
-    [activeProject, pickBrowserDirectoryForRebind, updateDirectory, setLastRealDirectoryPath, clearError],
+    [activeProject, updateDirectory, setLastRealDirectoryPath, clearError, reloadActiveProjectTree],
   );
 
   const handleExplorerResizeStart = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -3552,7 +3608,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         open={directoryPickerState.open}
         title="重新关联真实目录"
         initialPath={directoryPickerState.initialPath}
-        description="每次点击目录都会进入下一层。确认真实目录后，会继续要求浏览器目录授权（必填）。"
+        description="选择目标目录后点击确定，将更新项目关联的真实目录。"
         onClose={() => {
           setDirectoryPickerState((prev) => ({ ...prev, open: false }));
         }}

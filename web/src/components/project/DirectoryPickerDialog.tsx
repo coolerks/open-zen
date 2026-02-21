@@ -37,6 +37,7 @@ export const DirectoryPickerDialog: React.FC<DirectoryPickerDialogProps> = ({
   const [currentPath, setCurrentPath] = useState('');
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [directories, setDirectories] = useState<DirectoryEntry[]>([]);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +57,7 @@ export const DirectoryPickerDialog: React.FC<DirectoryPickerDialogProps> = ({
       setParentPath(data.parentPath);
       setPathInput(data.currentPath);
       setDirectories(data.directories);
+      setSelectedPath(data.currentPath);
       return data;
     } catch (loadError: any) {
       if (requestIdRef.current !== requestId) {
@@ -76,6 +78,7 @@ export const DirectoryPickerDialog: React.FC<DirectoryPickerDialogProps> = ({
     }
     const normalizedPath = initialPath.trim() || '~/';
     setPathInput(normalizedPath);
+    setSelectedPath(null);
     void loadDirectories(normalizedPath);
   }, [open, initialPath, loadDirectories]);
 
@@ -137,6 +140,7 @@ export const DirectoryPickerDialog: React.FC<DirectoryPickerDialogProps> = ({
             value={pathInput}
             onChange={(event) => {
               setPathInput(event.target.value);
+              setSelectedPath(null);
               setError(null);
             }}
             onKeyDown={(event) => {
@@ -191,14 +195,24 @@ export const DirectoryPickerDialog: React.FC<DirectoryPickerDialogProps> = ({
             <div className="space-y-0.5">
               {directories.map((directory) => {
                 const iconUrl = resolveProjectFolderIcon(directory.name, false);
+                const isSelected = selectedPath === directory.absolutePath;
                 return (
                   <button
                     key={directory.absolutePath}
                     type="button"
                     onClick={() => {
+                      setPathInput(directory.absolutePath);
+                      setSelectedPath(directory.absolutePath);
+                      setError(null);
+                    }}
+                    onDoubleClick={() => {
                       void handleOpenPath(directory.absolutePath);
                     }}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(245,245,245)] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
+                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[rgb(13,13,13)] transition-colors dark:text-slate-100 ${
+                      isSelected
+                        ? 'bg-[rgb(245,245,245)] dark:bg-[#2a2a2a]'
+                        : 'hover:bg-[rgb(245,245,245)] dark:hover:bg-[#2a2a2a]'
+                    }`}
                     title={directory.absolutePath}
                   >
                     {iconUrl ? (

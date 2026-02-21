@@ -167,6 +167,24 @@ export interface ProjectItem {
   updatedAt: string;
 }
 
+export interface ProjectFsEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  hidden: boolean;
+}
+
+export interface ProjectFsDirectoryResult {
+  path: string;
+  entries: ProjectFsEntry[];
+}
+
+export interface ProjectFsFileResult {
+  path: string;
+  content: string;
+  size: number;
+}
+
 // 会话
 export interface ChatSession {
   id: number;

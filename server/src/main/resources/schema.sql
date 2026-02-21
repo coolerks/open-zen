@@ -255,3 +255,23 @@ COMMENT ON COLUMN chat_message.created_at IS '创建时间';
 CREATE INDEX IF NOT EXISTS idx_message_session ON chat_message(session_id);
 CREATE INDEX IF NOT EXISTS idx_message_session_created ON chat_message(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_message_agent_id ON chat_message(agent_id);
+
+-- 项目表：存储项目元数据，目录内容本身不入库，只记录真实目录路径
+CREATE TABLE IF NOT EXISTS project_item (
+    id             VARCHAR(64) PRIMARY KEY,
+    name           VARCHAR(200) NOT NULL,
+    description    CLOB,
+    root_dir_name  VARCHAR(255) NOT NULL,
+    real_dir_path  VARCHAR(2000) NOT NULL,
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+COMMENT ON TABLE project_item IS '项目元数据表';
+COMMENT ON COLUMN project_item.id IS '项目 ID（UUID）';
+COMMENT ON COLUMN project_item.name IS '项目名称';
+COMMENT ON COLUMN project_item.description IS '项目描述';
+COMMENT ON COLUMN project_item.root_dir_name IS '项目根目录名称';
+COMMENT ON COLUMN project_item.real_dir_path IS '项目关联的真实目录绝对路径';
+COMMENT ON COLUMN project_item.created_at IS '创建时间';
+COMMENT ON COLUMN project_item.updated_at IS '更新时间';
+CREATE INDEX IF NOT EXISTS idx_project_updated_at ON project_item(updated_at);

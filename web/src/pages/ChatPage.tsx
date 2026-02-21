@@ -148,9 +148,6 @@ function resolveStreamMarkdownInterval(contentLength: number): number {
 }
 
 type ExportImageFormat = 'svg' | 'png' | 'jpeg';
-type DirectoryPickerWindow = Window & {
-  showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
-};
 
 type ProjectCreateDialogState = {
   open: boolean;
@@ -158,8 +155,6 @@ type ProjectCreateDialogState = {
   description: string;
   realDirectoryPath: string;
   realDirectoryName: string;
-  browserDirectoryHandle: FileSystemDirectoryHandle | null;
-  browserDirectoryName: string;
   error: string | null;
   submitting: boolean;
 };
@@ -2614,8 +2609,6 @@ function createInitialProjectCreateDialogState(): ProjectCreateDialogState {
     description: '',
     realDirectoryPath: '',
     realDirectoryName: '',
-    browserDirectoryHandle: null,
-    browserDirectoryName: '',
     error: null,
     submitting: false,
   };
@@ -4743,35 +4736,6 @@ const ChatPage: React.FC = () => {
     setProjectCreateDialog(createInitialProjectCreateDialogState());
   }, [projectCreateDialog.submitting]);
 
-  const handlePickBrowserProjectDirectory = useCallback(async () => {
-    const pickerWindow = window as DirectoryPickerWindow;
-    if (!pickerWindow.showDirectoryPicker) {
-      setProjectCreateDialog((prev) => ({
-        ...prev,
-        error: '当前浏览器不支持文件夹选择器，请使用 Chromium 内核浏览器。',
-      }));
-      return;
-    }
-
-    try {
-      const handle = await pickerWindow.showDirectoryPicker({ mode: 'readwrite' });
-      setProjectCreateDialog((prev) => ({
-        ...prev,
-        browserDirectoryHandle: handle,
-        browserDirectoryName: handle.name,
-        error: null,
-      }));
-    } catch (error: any) {
-      if (error?.name === 'AbortError') {
-        return;
-      }
-      setProjectCreateDialog((prev) => ({
-        ...prev,
-        error: error?.message ?? '选择目录失败',
-      }));
-    }
-  }, []);
-
   const handleConfirmProjectDirectory = useCallback(
     async (payload: { path: string; name: string }) => {
       setProjectCreateDialog((prev) => ({
@@ -4805,14 +4769,6 @@ const ChatPage: React.FC = () => {
       }));
       return;
     }
-    if (!projectCreateDialog.browserDirectoryHandle) {
-      setProjectCreateDialog((prev) => ({
-        ...prev,
-        error: '请选择浏览器目录授权',
-      }));
-      return;
-    }
-    const browserDirectoryHandle = projectCreateDialog.browserDirectoryHandle;
 
     setProjectCreateDialog((prev) => ({
       ...prev,
@@ -4825,7 +4781,6 @@ const ChatPage: React.FC = () => {
         description: projectCreateDialog.description.trim(),
         realDirPath: projectCreateDialog.realDirectoryPath.trim(),
         rootDirName: projectCreateDialog.realDirectoryName || undefined,
-        directoryHandle: browserDirectoryHandle,
       });
       setLastProjectRealDirectoryPath(projectCreateDialog.realDirectoryPath.trim());
       setProjectDirectoryPickerOpen(false);
@@ -7293,28 +7248,6 @@ const ChatPage: React.FC = () => {
             </p>
           </div>
 
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">浏览器目录授权（必填）</p>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                type="button"
-                disabled={projectCreateDialog.submitting}
-                onClick={() => {
-                  void handlePickBrowserProjectDirectory();
-                }}
-              >
-                选择浏览器目录
-              </Button>
-              <span className="min-w-0 text-sm text-slate-500 dark:text-slate-400">
-                {projectCreateDialog.browserDirectoryName || '未选择'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 dark:text-slate-500">
-              必须授权，用于前端资源管理器预览和编辑本地文件。
-            </p>
-          </div>
-
           {(projectCreateDialog.error || projectError) && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
               {projectCreateDialog.error || projectError}
@@ -7345,7 +7278,7 @@ const ChatPage: React.FC = () => {
         open={projectDirectoryPickerOpen}
         title="选择真实目录"
         initialPath={projectCreateDialog.realDirectoryPath.trim() || '~/'}
-        description="每次点击目录都会进入下一层，确认后将保存目录的真实绝对路径。"
+        description="选择目标目录后点击确定，将保存项目的真实绝对路径。"
         onClose={() => {
           if (projectCreateDialog.submitting) {
             return;
