@@ -6084,7 +6084,7 @@ const ChatPage: React.FC = () => {
             {projectSectionExpanded && (
               <div className="mb-3 space-y-1">
                 <button
-                  className="mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-sm font-normal text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]"
+                  className="mx-[6px] inline-flex h-[36px] w-[calc(100%-12px)] items-center gap-2 rounded-xl px-[10px] py-[6px] text-sm font-normal text-[#0d0d0d] transition-colors hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] dark:active:bg-[#2a2a2a]"
                   type="button"
                   onClick={handleOpenCreateProjectDialog}
                   title="新建项目"
@@ -6098,8 +6098,8 @@ const ChatPage: React.FC = () => {
                     key={project.id}
                     className={`group/project mx-[6px] flex h-[36px] w-[calc(100%-12px)] items-center gap-1 rounded-xl px-[10px] py-[6px] text-left text-sm font-normal transition-colors ${
                       activeSidebarProjectId === project.id
-                        ? 'bg-[rgb(234,234,234)] text-[#0d0d0d]'
-                        : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)]'
+                        ? 'bg-[rgb(234,234,234)] text-[#0d0d0d] dark:bg-[#2a2a2a] dark:text-slate-100'
+                        : 'text-[#0d0d0d] hover:bg-[rgb(239,239,239)] active:bg-[rgb(234,234,234)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] dark:active:bg-[#2a2a2a]'
                     }`}
                   >
                     <button
@@ -6117,7 +6117,7 @@ const ChatPage: React.FC = () => {
                         event.stopPropagation();
                         setDeleteProjectTarget({ id: project.id, name: project.name });
                       }}
-                      className="rounded-lg p-1.5 text-[#8f8f8f] opacity-0 transition-colors transition-opacity hover:bg-[rgb(234,234,234)] hover:text-rose-500 group-hover/project:opacity-100 focus-visible:opacity-100"
+                      className="rounded-lg p-1.5 text-[#8f8f8f] opacity-0 transition-colors transition-opacity hover:bg-[rgb(234,234,234)] hover:text-rose-500 group-hover/project:opacity-100 focus-visible:opacity-100 dark:hover:bg-[#303030]"
                       title="删除项目"
                     >
                       <DeleteIcon />

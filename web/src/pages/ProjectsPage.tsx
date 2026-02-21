@@ -9,7 +9,7 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectFsWatchEvent, ProjectItem } from '../types';
-import { ArrowLeft, Columns2, FilePlus2, Files, FolderPlus, FolderRoot, Info, Link, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, Columns2, FilePlus2, Files, FolderPlus, FolderRoot, Info, Link, Moon, RefreshCw, Search, Sun } from 'lucide-react';
 
 type ExplorerEntry = {
   name: string;
@@ -701,7 +701,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   onRequestCreateProject,
   onBackToChat,
 }) => {
-  const { theme } = useThemeStore();
+  const { theme, toggleTheme } = useThemeStore();
   const {
     items,
     error,
@@ -3018,7 +3018,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 {iconUrl ? (
                   <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
                 ) : (
-                  <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+                  <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200 dark:bg-slate-700" />
                 )}
                 <input
                   ref={pendingExplorerInputRef}
@@ -3039,7 +3039,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   onKeyDown={handlePendingExplorerInputKeyDown}
                   onCompositionStart={handlePendingExplorerCompositionStart}
                   onCompositionEnd={handlePendingExplorerCompositionEnd}
-                  className="h-5 min-w-0 flex-1 rounded-sm border border-[rgb(148,163,184)] bg-white px-1 text-xs text-[rgb(13,13,13)] outline-none focus:border-[rgb(59,130,246)]"
+                  className="h-5 min-w-0 flex-1 rounded-sm border border-[rgb(148,163,184)] bg-white px-1 text-xs text-[rgb(13,13,13)] outline-none focus:border-[rgb(59,130,246)] dark:border-slate-600 dark:bg-[#2f2f2f] dark:text-slate-100"
                 />
               </div>
               {pendingExplorerEdit?.error && (
@@ -3128,11 +3128,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               onContextMenu={(event) => {
                 openExplorerContextMenu(event, node);
               }}
-              className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs transition-colors ${isDirectory && dragOverDirectoryPath === node.path
-                ? 'bg-[rgb(239,239,239)] text-[rgb(13,13,13)]'
+                  className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs transition-colors ${isDirectory && dragOverDirectoryPath === node.path
+                ? 'bg-[rgb(239,239,239)] text-[rgb(13,13,13)] dark:bg-[#2f2f2f] dark:text-slate-100'
                 : isSelectedDirectory || isSelectedFile || isActiveFile
-                  ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)]'
-                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
+                  ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)] dark:bg-[#303030] dark:text-slate-100'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]'
                 }`}
               style={{ paddingLeft: `${depth * 16 + 8}px` }}
               title={node.path}
@@ -3141,18 +3141,18 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               {iconUrl ? (
                 <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
               ) : (
-                <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+                <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200 dark:bg-slate-700" />
               )}
               <span className={`truncate ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : ''}`}>{node.name}</span>
               {isLoadingFile && (
-                <span className={`ml-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400'}`}>读取中...</span>
+                <span className={`ml-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400 dark:text-slate-500'}`}>读取中...</span>
               )}
             </button>
           )}
           {isDirectory && expanded && (
             <>
               {loadingChildren && (
-                <p className={`px-3 py-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400'}`}>
+                <p className={`px-3 py-1 text-xs ${ignoredByGitignore ? 'text-[rgb(143,143,143)]' : 'text-slate-400 dark:text-slate-500'}`}>
                   加载中...
                 </p>
               )}
@@ -3180,7 +3180,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               {pendingIconUrl ? (
                 <img src={pendingIconUrl} alt="" className="h-4 w-4 shrink-0" />
               ) : (
-                <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+                <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200 dark:bg-slate-700" />
               )}
               <input
                 ref={pendingExplorerInputRef}
@@ -3201,7 +3201,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 onKeyDown={handlePendingExplorerInputKeyDown}
                 onCompositionStart={handlePendingExplorerCompositionStart}
                 onCompositionEnd={handlePendingExplorerCompositionEnd}
-                className="h-5 min-w-0 flex-1 rounded-sm border border-[rgb(148,163,184)] bg-white px-1 text-xs text-[rgb(13,13,13)] outline-none focus:border-[rgb(59,130,246)]"
+                className="h-5 min-w-0 flex-1 rounded-sm border border-[rgb(148,163,184)] bg-white px-1 text-xs text-[rgb(13,13,13)] outline-none focus:border-[rgb(59,130,246)] dark:border-slate-600 dark:bg-[#2f2f2f] dark:text-slate-100"
                 placeholder={pendingExplorerEdit.kind === 'directory' ? '新建文件夹' : '新建文件'}
               />
             </div>
@@ -3278,7 +3278,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             setDragOverDirectoryPath(null);
             handleRequestMoveExplorerEntryToDirectory(payload, '');
           }}
-          className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] ${dragOverDirectoryPath === '' || selectedDirectoryPath === '' ? 'bg-[rgb(239,239,239)]' : ''
+          className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${dragOverDirectoryPath === '' || selectedDirectoryPath === '' ? 'bg-[rgb(239,239,239)] dark:bg-[#2f2f2f]' : ''
             }`}
           title={activeProject.rootDirName}
         >
@@ -3286,7 +3286,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           {rootIconUrl ? (
             <img src={rootIconUrl} alt="" className="h-4 w-4 shrink-0" />
           ) : (
-            <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200" />
+            <span className="h-4 w-4 shrink-0 rounded-sm bg-slate-200 dark:bg-slate-700" />
           )}
           <span className="truncate font-medium">{activeProject.rootDirName}</span>
         </button>
@@ -3294,9 +3294,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         {rootExpanded && (
           <>
             {rootLoadingHint ? (
-              <p className="px-3 py-1 text-xs text-slate-400">正在加载目录...</p>
+              <p className="px-3 py-1 text-xs text-slate-400 dark:text-slate-500">正在加载目录...</p>
             ) : rootChildren.length === 0 && !hasRootPendingCreate && !rootLoading ? (
-              <p className="px-3 py-1 text-xs text-slate-400">目录为空，或暂未读取到文件。</p>
+              <p className="px-3 py-1 text-xs text-slate-400 dark:text-slate-500">目录为空，或暂未读取到文件。</p>
             ) : (
               renderExplorerNodes('', 1)
             )}
@@ -3336,7 +3336,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       const leftTab = openTabs[group.diffView.leftPath];
       const rightTab = openTabs[group.diffView.rightPath];
       if (!leftTab || !rightTab) {
-        return <div className="flex h-full items-center justify-center text-sm text-slate-400">Diff 文件未就绪</div>;
+        return <div className="flex h-full items-center justify-center text-sm text-slate-400 dark:text-slate-500">Diff 文件未就绪</div>;
       }
       if (leftTab.loadError || rightTab.loadError) {
         return (
@@ -3366,12 +3366,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     }
 
     if (!group.activeTabPath) {
-      return <div className="flex h-full items-center justify-center text-sm text-slate-400">请在左侧选择文件打开</div>;
+      return <div className="flex h-full items-center justify-center text-sm text-slate-400 dark:text-slate-500">请在左侧选择文件打开</div>;
     }
 
     const activeTab = openTabs[group.activeTabPath];
     if (!activeTab) {
-      return <div className="flex h-full items-center justify-center text-sm text-slate-400">文件未加载</div>;
+      return <div className="flex h-full items-center justify-center text-sm text-slate-400 dark:text-slate-500">文件未加载</div>;
     }
     if (activeTab.loadError) {
       return <div className="h-full overflow-y-auto p-4 text-sm text-rose-500">{activeTab.loadError}</div>;
@@ -3454,7 +3454,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         }}
       >
         <div
-          className={`project-tab-scroll flex h-9 items-center gap-0 overflow-x-auto overflow-y-hidden border-b border-[rgb(209,209,209)] bg-white px-1 ${draggingTab && draggingTab.fromGroup !== groupId ? 'bg-[rgb(245,245,245)]' : ''
+          className={`project-tab-scroll flex h-9 items-center gap-0 overflow-x-auto overflow-y-hidden border-b border-[rgb(209,209,209)] bg-white px-1 dark:border-[#2f2f2f] dark:bg-[#1f1f1f] ${draggingTab && draggingTab.fromGroup !== groupId ? 'bg-[rgb(245,245,245)] dark:bg-[#2a2a2a]' : ''
             } ${tabStripScrolling[groupId] ? 'is-scrolling' : ''}`}
           onScroll={() => {
             markTabStripScrolling(groupId);
@@ -3537,8 +3537,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   setDraggingTab(null);
                 }}
                 className={`group flex h-6 max-w-[220px] shrink-0 items-center rounded-md border px-2 text-sm ${isActive
-                  ? 'border-[rgb(209,209,209)] bg-[rgb(245,245,245)] text-[rgb(13,13,13)]'
-                  : 'border-transparent bg-transparent text-slate-500 hover:bg-[rgb(245,245,245)]'
+                  ? 'border-[rgb(209,209,209)] bg-[rgb(245,245,245)] text-[rgb(13,13,13)] dark:border-[#3a3a3a] dark:bg-[#2a2a2a] dark:text-slate-100'
+                  : 'border-transparent bg-transparent text-slate-500 hover:bg-[rgb(245,245,245)] dark:text-slate-400 dark:hover:bg-[#2a2a2a]'
                   }`}
                 title={saveError ? `${tabPath}\n保存失败：${saveError}` : tabPath}
               >
@@ -3564,7 +3564,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     !
                   </span>
                 ) : isSaving ? (
-                  <span className="ml-1 text-[10px] leading-none text-slate-400" title="保存中">
+                  <span className="ml-1 text-[10px] leading-none text-slate-400 dark:text-slate-500" title="保存中">
                     …
                   </span>
                 ) : isDirty ? (
@@ -3574,7 +3574,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 ) : null}
                 <button
                   type="button"
-                  className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-sm leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)]"
+                  className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-sm leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)] dark:text-slate-500 dark:hover:bg-[#3a3a3a] dark:hover:text-slate-100"
                   onClick={(event) => {
                     event.stopPropagation();
                     closeTabInGroup(groupId, tabPath);
@@ -3589,7 +3589,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
           {diffLabel && (
             <div
-              className="group flex h-8 max-w-[280px] shrink-0 items-center rounded-md border border-[rgb(209,209,209)] bg-[rgb(245,245,245)] px-2 text-sm text-[rgb(13,13,13)]"
+              className="group flex h-8 max-w-[280px] shrink-0 items-center rounded-md border border-[rgb(209,209,209)] bg-[rgb(245,245,245)] px-2 text-sm text-[rgb(13,13,13)] dark:border-[#3a3a3a] dark:bg-[#2a2a2a] dark:text-slate-100"
               onContextMenu={(event) => {
                 openContextMenuAt(event, [
                   {
@@ -3609,7 +3609,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               <span className="min-w-0 flex-1 truncate">{diffLabel}</span>
               <button
                 type="button"
-                className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-xs leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)]"
+                className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded text-xs leading-none text-slate-400 hover:bg-[rgb(234,234,234)] hover:text-[rgb(13,13,13)] dark:text-slate-500 dark:hover:bg-[#3a3a3a] dark:hover:text-slate-100"
                 onClick={(event) => {
                   event.stopPropagation();
                   clearGroupDiff(groupId);
@@ -3620,7 +3620,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               </button>
             </div>
           )}
-          {!hasAnyTab && <div className="px-2 text-xs text-slate-400">未打开文件</div>}
+          {!hasAnyTab && <div className="px-2 text-xs text-slate-400 dark:text-slate-500">未打开文件</div>}
         </div>
         <div className="min-h-0 flex-1">{renderGroupContent(groupId)}</div>
       </div>
@@ -3628,10 +3628,10 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   };
 
   return (
-    <div className="h-full min-h-0 overflow-hidden">
+    <div className="h-full min-h-0 overflow-hidden bg-white text-[rgb(13,13,13)] dark:bg-[#212121] dark:text-slate-100">
       <div className="flex h-full min-h-0 overflow-hidden">
         <div
-          className={`flex w-12 shrink-0 flex-col items-center border-r border-[rgb(209,209,209)] py-2 ${theme === 'dark' ? 'bg-[#1b1b1b]' : 'bg-[#f5f5f5]'
+          className={`flex w-12 shrink-0 flex-col items-center border-r border-[rgb(209,209,209)] py-2 dark:border-[#2f2f2f] ${theme === 'dark' ? 'bg-[#1b1b1b]' : 'bg-[#f5f5f5]'
             }`}
         >
           <button
@@ -3674,14 +3674,14 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
         {!explorerCollapsed && (
           <aside
-            className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8]"
+            className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8] dark:border-[#2f2f2f] dark:bg-[#171717]"
             style={{ width: `${explorerWidth}px` }}
           >
             <div className="flex h-10 items-center px-2">
               <button
                 type="button"
                 onClick={onBackToChat}
-                className="text-xs inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 font-normal text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+                className="text-xs inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 font-normal text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span className="leading-none [word-break:keep-all]">返回</span>
@@ -3693,7 +3693,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                       type="button"
                       onClick={handleCreateFileFromToolbar}
                       disabled={!activeProject}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                       title={`新建文件（目标：${selectedDirectoryLabel}）`}
                     >
                       <FilePlus2 className="w-4 h-4" />
@@ -3702,7 +3702,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                       type="button"
                       onClick={handleCreateFolderFromToolbar}
                       disabled={!activeProject}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                       title={`新建文件夹（目标：${selectedDirectoryLabel}）`}
                     >
                       <FolderPlus className="w-4 h-4" />
@@ -3711,7 +3711,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                       type="button"
                       onClick={handleCompareSelectedFiles}
                       disabled={selectedFilePaths.length !== 2}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                       title={selectedFilePaths.length === 2 ? '对比所选文件' : '先在文件树中多选两个文件'}
                     >
                       <Columns2 className="w-4 h-4" />
@@ -3725,7 +3725,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                       void reloadActiveProjectTree();
                     }}
                     disabled={!activeProject || loadingRoot}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                     title="刷新目录"
                   >
                     <RefreshCw className="w-4 h-4" />
@@ -3736,7 +3736,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     type="button"
                     onClick={() => void handleRebindDirectory()}
                     disabled={!activeProject}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                     title="重新关联目录"
                   >
                     <Link className="w-4 h-4" />
@@ -3746,7 +3746,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                   <button
                     type="button"
                     onClick={onRequestCreateProject}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                     title="新建项目"
                   >
                     <FolderRoot className="w-4 h-4" />
@@ -3757,16 +3757,24 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     type="button"
                     onClick={() => setDirectoryInfoDialogOpen(true)}
                     disabled={!activeProject}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                     title="查看关联目录信息"
                   >
                     <Info className="w-4 h-4" />
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                  title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
+                >
+                  {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+                </button>
               </div>
             </div>
 
-            <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500">
+            <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400">
               {activeSidebarView === 'search' ? '搜索' : '资源管理器'}
             </div>
 
@@ -3798,7 +3806,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                         void runGlobalCodeSearch(event.currentTarget.value);
                       }}
                       placeholder="搜索代码"
-                      className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white pl-8 pr-8 text-xs text-[rgb(13,13,13)] outline-none transition-colors placeholder:text-[rgb(143,143,143)] focus:border-[rgb(148,163,184)]"
+                      className="h-8 w-full rounded-md border border-[rgb(209,209,209)] bg-white pl-8 pr-8 text-xs text-[rgb(13,13,13)] outline-none transition-colors placeholder:text-[rgb(143,143,143)] focus:border-[rgb(148,163,184)] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-100"
                     />
                     {globalSearchKeyword && (
                       <button
@@ -3810,7 +3818,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                           setGlobalSearching(false);
                           setGlobalSearchError(null);
                         }}
-                        className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-sm text-slate-400 hover:bg-[rgb(239,239,239)] hover:text-[rgb(13,13,13)]"
+                        className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-sm text-slate-400 hover:bg-[rgb(239,239,239)] hover:text-[rgb(13,13,13)] dark:text-slate-500 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
                         title="清空搜索"
                       >
                         ×
@@ -3823,21 +3831,21 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                       void runGlobalCodeSearch(globalSearchKeyword);
                     }}
                     disabled={!globalSearchKeyword.trim()}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
                     title="执行搜索"
                   >
                     <Search className="w-4 h-4" />
                   </button>
                 </div>
 
-                <label className="mt-2 inline-flex cursor-pointer items-center gap-2 px-0.5 text-[11px] text-slate-500">
+                <label className="mt-2 inline-flex cursor-pointer items-center gap-2 px-0.5 text-[11px] text-slate-500 dark:text-slate-400">
                   <input
                     type="checkbox"
                     checked={searchIncludeGitignored}
                     onChange={(event) => {
                       setSearchIncludeGitignored(event.target.checked);
                     }}
-                    className="h-3.5 w-3.5 rounded border-[rgb(209,209,209)] text-[rgb(13,13,13)] focus:ring-0"
+                    className="h-3.5 w-3.5 rounded border-[rgb(209,209,209)] text-[rgb(13,13,13)] focus:ring-0 dark:border-[#4a4a4a] dark:bg-[#2a2a2a]"
                   />
                   <span>包含 .gitignore 忽略项</span>
                 </label>
@@ -3845,7 +3853,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             )}
 
             {(error || treeError) && (
-              <div className="bg-rose-50 px-3 py-2 text-xs text-rose-600">
+              <div className="bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">
                 {treeError || error}
               </div>
             )}
@@ -3853,20 +3861,20 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             <div className="min-h-0 flex-1 overflow-y-auto px-1">
               {!activeProject ? (
                 <div className="space-y-3 px-2 py-3">
-                  <p className="text-sm text-slate-500">未打开项目</p>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">未打开项目</p>
                   <Button size="sm" onClick={onRequestCreateProject}>
                     新建项目
                   </Button>
                 </div>
               ) : activeSidebarView === 'search' ? (
                 globalSearchKeyword.trim().length === 0 ? (
-                  <p className="px-2 py-2 text-xs text-slate-400">输入关键字后按 Enter 搜索代码</p>
+                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">输入关键字后按 Enter 搜索代码</p>
                 ) : globalSearching ? (
-                  <p className="px-2 py-2 text-xs text-slate-400">正在全局搜索...</p>
+                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">正在全局搜索...</p>
                 ) : globalSearchError ? (
                   <p className="px-2 py-2 text-xs text-rose-500">{globalSearchError}</p>
                 ) : globalSearchResults.length === 0 ? (
-                  <p className="px-2 py-2 text-xs text-slate-400">未搜索到匹配代码</p>
+                  <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">未搜索到匹配代码</p>
                 ) : (
                   <div className="space-y-1">
                     {globalSearchResults.map((result) => (
@@ -3876,12 +3884,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                         onClick={() => {
                           void handleOpenGlobalSearchResult(result);
                         }}
-                        className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)]"
+                        className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
                         title={`${result.path}:${result.lineNumber}`}
                       >
                         <span className="truncate font-medium">{result.name}</span>
-                        <span className="truncate text-[11px] text-slate-400">{result.path}</span>
-                        <span className="mt-0.5 truncate text-[11px] text-slate-500">
+                        <span className="truncate text-[11px] text-slate-400 dark:text-slate-500">{result.path}</span>
+                        <span className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
                           第 {result.lineNumber} 行 · {result.snippet}
                         </span>
                       </button>
@@ -3897,28 +3905,28 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               type="button"
               aria-label="调整侧栏宽度"
               onMouseDown={handleExplorerResizeStart}
-              className="absolute right-[-3px] top-0 h-full w-[6px] cursor-col-resize bg-transparent hover:bg-slate-300/60"
+              className="absolute right-[-3px] top-0 h-full w-[6px] cursor-col-resize bg-transparent hover:bg-slate-300/60 dark:hover:bg-slate-600/60"
             />
           </aside>
         )}
 
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
           {!activeProject ? (
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+            <div className="flex h-full items-center justify-center text-sm text-slate-400 dark:text-slate-500">
               左侧返回聊天或创建项目后开始
             </div>
           ) : rightGroupVisible ? (
             <div ref={editorSplitContainerRef} className="flex h-full min-h-0 min-w-0">
-              <div className="flex h-full min-h-0 min-w-0 sh  rink-0 overflow-hidden" style={{ flexBasis: `${editorSplitRatio * 100}%` }}>
+              <div className="flex h-full min-h-0 min-w-0 shrink-0 overflow-hidden" style={{ flexBasis: `${editorSplitRatio * 100}%` }}>
                 {renderEditorGroup('left')}
               </div>
               <button
                 type="button"
                 aria-label="调整编辑区分栏宽度"
                 onMouseDown={handleEditorSplitResizeStart}
-                className="relative z-10 h-full w-[7px] shrink-0 cursor-col-resize bg-transparent hover:bg-slate-300/60"
+                className="relative z-10 h-full w-[7px] shrink-0 cursor-col-resize bg-transparent hover:bg-slate-300/60 dark:hover:bg-slate-600/60"
               >
-                <span className="pointer-events-none absolute left-1/2 top-1/2 h-8 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded bg-slate-300/90" />
+                <span className="pointer-events-none absolute left-1/2 top-1/2 h-8 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded bg-slate-300/90 dark:bg-slate-600/80" />
               </button>
               <div className="flex h-full min-h-0 min-w-0 shrink-0 overflow-hidden" style={{ flexBasis: `${(1 - editorSplitRatio) * 100}%` }}>
                 {renderEditorGroup('right')}
@@ -3932,7 +3940,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-[120] min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl"
+          className="fixed z-[120] min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-[#3a3a3a] dark:bg-[#2a2a2a]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {contextMenu.actions.map((action) => (
@@ -3941,10 +3949,10 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               type="button"
               disabled={action.disabled}
               className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${action.disabled
-                ? 'cursor-not-allowed text-slate-300'
+                ? 'cursor-not-allowed text-slate-300 dark:text-slate-600'
                 : action.danger
-                  ? 'text-rose-500 hover:bg-rose-50'
-                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(245,245,245)]'
+                  ? 'text-rose-500 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-900/20'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(245,245,245)] dark:text-slate-100 dark:hover:bg-[#333333]'
                 }`}
               onClick={() => {
                 if (action.disabled) {
@@ -3971,16 +3979,16 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         size="sm"
       >
         <div className="space-y-4">
-          <p className="text-sm text-[rgb(13,13,13)]">
+          <p className="text-sm text-[rgb(13,13,13)] dark:text-slate-100">
             {`确定删除${deleteDialog.entry?.kind === 'directory' ? '文件夹' : '文件'} “${deleteDialog.entry?.name ?? ''}” 吗？`}
           </p>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             {deleteDialog.entry?.kind === 'directory'
               ? '删除文件夹会同时移除其所有子文件与子目录，此操作不可撤销。'
               : '删除后不可撤销。'}
           </p>
           {deleteDialog.error && (
-            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-600">{deleteDialog.error}</p>
+            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">{deleteDialog.error}</p>
           )}
           <div className="flex justify-end gap-2">
             <Button
@@ -4020,18 +4028,18 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         size="sm"
       >
         <div className="space-y-4">
-          <p className="text-sm text-[rgb(13,13,13)]">
+          <p className="text-sm text-[rgb(13,13,13)] dark:text-slate-100">
             将
             <span className="font-semibold"> {pendingMoveDialog?.payload.name ?? ''} </span>
             移动到
             <span className="font-semibold"> {moveDialogTargetLabel} </span>
             吗？
           </p>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             目录移动会同时移动其所有子文件和子目录。
           </p>
           {pendingMoveDialog?.error && (
-            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-600">{pendingMoveDialog.error}</p>
+            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">{pendingMoveDialog.error}</p>
           )}
           <div className="flex justify-end gap-2">
             <Button
@@ -4064,14 +4072,14 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         size="sm"
       >
         <div className="space-y-4">
-          <p className="text-sm text-[rgb(13,13,13)]">
+          <p className="text-sm text-[rgb(13,13,13)] dark:text-slate-100">
             文件
             <span className="font-semibold"> {largeFileConfirmDialog?.name ?? ''} </span>
             大小为
             <span className="font-semibold"> {formatFileSize(largeFileConfirmDialog?.size ?? 0)} </span>
             ，超过 1MB，打开可能影响编辑器性能。
           </p>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             是否仍然打开该文件？
           </p>
           <div className="flex justify-end gap-2">
@@ -4120,7 +4128,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         title="关联目录信息"
         size="sm"
       >
-        <div className="space-y-2 text-sm text-[rgb(13,13,13)]">
+        <div className="space-y-2 text-sm text-[rgb(13,13,13)] dark:text-slate-100">
           <p>
             项目：<span className="font-semibold">{activeProject?.name ?? '-'}</span>
           </p>
