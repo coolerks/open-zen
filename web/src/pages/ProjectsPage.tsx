@@ -306,7 +306,7 @@ class ServerProjectWritableFile implements ExplorerWritableFile {
   constructor(
     private readonly projectId: string,
     private readonly path: string,
-  ) {}
+  ) { }
 
   async write(data: unknown): Promise<void> {
     this.content = await toWritableString(data);
@@ -3128,7 +3128,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               onContextMenu={(event) => {
                 openExplorerContextMenu(event, node);
               }}
-                  className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs transition-colors ${isDirectory && dragOverDirectoryPath === node.path
+              className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs transition-colors ${isDirectory && dragOverDirectoryPath === node.path
                 ? 'bg-[rgb(239,239,239)] text-[rgb(13,13,13)] dark:bg-[#2f2f2f] dark:text-slate-100'
                 : isSelectedDirectory || isSelectedFile || isActiveFile
                   ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)] dark:bg-[#303030] dark:text-slate-100'
@@ -3707,15 +3707,18 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     >
                       <FolderPlus className="w-4 h-4" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={handleCompareSelectedFiles}
-                      disabled={selectedFilePaths.length !== 2}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
-                      title={selectedFilePaths.length === 2 ? '对比所选文件' : '先在文件树中多选两个文件'}
-                    >
-                      <Columns2 className="w-4 h-4" />
-                    </button>
+                    {
+                      false &&
+                      <button
+                        type="button"
+                        onClick={handleCompareSelectedFiles}
+                        disabled={selectedFilePaths.length !== 2}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                        title={selectedFilePaths.length === 2 ? '对比所选文件' : '先在文件树中多选两个文件'}
+                      >
+                        <Columns2 className="w-4 h-4" />
+                      </button>
+                    }
                   </>
                 )}
                 {activeSidebarView === 'explorer' && (
@@ -3742,7 +3745,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     <Link className="w-4 h-4" />
                   </button>
                 )}
-                {activeSidebarView === 'explorer' && (
+                {activeSidebarView === 'explorer' && false && (
                   <button
                     type="button"
                     onClick={onRequestCreateProject}
