@@ -10,5 +10,9 @@ public class ProjectFsFileResponse {
     private String content;
 
     private Long size;
-}
 
+    /**
+     * 文件修订版本（用于冲突检测）
+     */
+    private String revision;
+}

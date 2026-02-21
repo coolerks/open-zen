@@ -4,6 +4,7 @@ import com.aiagent.dto.ProjectFsCreateEntryRequest;
 import com.aiagent.dto.ProjectFsDirectoryResponse;
 import com.aiagent.dto.ProjectFsEntryResponse;
 import com.aiagent.dto.ProjectFsFileResponse;
+import com.aiagent.dto.ProjectFsFileMetaResponse;
 import com.aiagent.dto.ProjectFsMoveEntryRequest;
 import com.aiagent.dto.ProjectFsWriteFileRequest;
 import com.aiagent.entity.ProjectItem;
@@ -20,6 +21,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Comparator;
 import java.util.List;
 
@@ -31,8 +33,10 @@ public class ProjectFilesystemService {
     private static final String INVALID_NAME_MESSAGE = "名称不合法，不能包含 / 或 \\。";
     private static final String DIRECTORY_NOT_FOUND_MESSAGE = "目录不存在，请重新关联真实目录。";
     private static final String FILE_NOT_FOUND_MESSAGE = "文件不存在。";
+    private static final long FILE_PREVIEW_SIZE_LIMIT_BYTES = 1024L * 1024L;
 
     private final ProjectItemMapper projectItemMapper;
+    private final ProjectFilesystemWatchService projectFilesystemWatchService;
 
     public ProjectFsDirectoryResponse listEntries(String projectId, String rawRelativePath) {
         Path rootPath = resolveProjectRootPath(projectId);
@@ -59,7 +63,7 @@ public class ProjectFilesystemService {
         return response;
     }
 
-    public ProjectFsFileResponse readFile(String projectId, String rawRelativePath) {
+    public ProjectFsFileMetaResponse readFileMeta(String projectId, String rawRelativePath) {
         Path rootPath = resolveProjectRootPath(projectId);
         Path filePath = resolvePathInsideProject(rootPath, rawRelativePath);
         if (!Files.exists(filePath) || Files.isDirectory(filePath)) {
@@ -67,11 +71,37 @@ public class ProjectFilesystemService {
         }
 
         try {
+            long size = Files.size(filePath);
+            ProjectFsFileMetaResponse response = new ProjectFsFileMetaResponse();
+            response.setPath(toRelativePath(rootPath, filePath));
+            response.setSize(size);
+            response.setRevision(resolveFileRevision(filePath));
+            response.setTooLarge(size > FILE_PREVIEW_SIZE_LIMIT_BYTES);
+            response.setLargeFileThresholdBytes(FILE_PREVIEW_SIZE_LIMIT_BYTES);
+            return response;
+        } catch (IOException ex) {
+            throw new RuntimeException("读取文件信息失败，请检查权限后重试。");
+        }
+    }
+
+    public ProjectFsFileResponse readFile(String projectId, String rawRelativePath, boolean allowLargeFile) {
+        Path rootPath = resolveProjectRootPath(projectId);
+        Path filePath = resolvePathInsideProject(rootPath, rawRelativePath);
+        if (!Files.exists(filePath) || Files.isDirectory(filePath)) {
+            throw new RuntimeException(FILE_NOT_FOUND_MESSAGE);
+        }
+
+        try {
+            long size = Files.size(filePath);
+            if (!allowLargeFile && size > FILE_PREVIEW_SIZE_LIMIT_BYTES) {
+                throw new RuntimeException("文件较大（超过 1MB），请确认后再打开。");
+            }
             byte[] bytes = Files.readAllBytes(filePath);
             ProjectFsFileResponse response = new ProjectFsFileResponse();
             response.setPath(toRelativePath(rootPath, filePath));
             response.setContent(new String(bytes, StandardCharsets.UTF_8));
             response.setSize((long) bytes.length);
+            response.setRevision(resolveFileRevision(filePath));
             return response;
         } catch (IOException ex) {
             throw new RuntimeException("读取文件失败，请检查权限后重试。");
@@ -91,6 +121,13 @@ public class ProjectFilesystemService {
         }
 
         String content = request.getContent() == null ? "" : request.getContent();
+        if (Files.exists(filePath)) {
+            String expectedRevision = request.getExpectedRevision() == null ? "" : request.getExpectedRevision().trim();
+            String currentRevision = resolveFileRevision(filePath);
+            if (!expectedRevision.isEmpty() && !expectedRevision.equals(currentRevision)) {
+                throw new RuntimeException("文件已被其他编辑器修改，请先刷新后再保存。");
+            }
+        }
         Path tempPath = null;
         try {
             tempPath = Files.createTempFile(parentPath, ".openzen-write-", ".tmp");
@@ -101,9 +138,12 @@ public class ProjectFilesystemService {
                 Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING);
             }
             ProjectFsFileResponse response = new ProjectFsFileResponse();
-            response.setPath(toRelativePath(rootPath, filePath));
+            String relativePath = toRelativePath(rootPath, filePath);
+            response.setPath(relativePath);
             response.setContent(content);
             response.setSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+            response.setRevision(resolveFileRevision(filePath));
+            projectFilesystemWatchService.markSelfWrite(projectId, rootPath, relativePath, request.getClientId());
             return response;
         } catch (IOException ex) {
             throw new RuntimeException("写入文件失败，请检查权限后重试。");
@@ -234,6 +274,10 @@ public class ProjectFilesystemService {
         return projectItem;
     }
 
+    public Path resolveProjectRootPathForWatch(String projectId) {
+        return resolveProjectRootPath(projectId);
+    }
+
     private Path resolveProjectRootPath(String projectId) {
         ProjectItem projectItem = getProjectById(projectId);
         String realDirPath = projectItem.getRealDirPath();
@@ -314,5 +358,18 @@ public class ProjectFilesystemService {
         entry.setKind(Files.isDirectory(path) ? "directory" : "file");
         entry.setHidden(name.startsWith("."));
         return entry;
+    }
+
+    /**
+     * 通过 fileKey + mtime + size 生成文件版本号，避免只依赖 mtime 导致冲突漏检。
+     */
+    private String resolveFileRevision(Path filePath) {
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(filePath, BasicFileAttributes.class);
+            String fileKey = attributes.fileKey() == null ? "none" : attributes.fileKey().toString();
+            return fileKey + ":" + attributes.lastModifiedTime().toMillis() + ":" + attributes.size();
+        } catch (IOException ex) {
+            throw new RuntimeException("读取文件版本失败，请稍后重试。");
+        }
     }
 }

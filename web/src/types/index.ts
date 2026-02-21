@@ -183,6 +183,23 @@ export interface ProjectFsFileResult {
   path: string;
   content: string;
   size: number;
+  revision: string | null;
+}
+
+export interface ProjectFsFileMetaResult {
+  path: string;
+  size: number;
+  revision: string | null;
+  tooLarge: boolean;
+  largeFileThresholdBytes: number;
+}
+
+export interface ProjectFsWatchEvent {
+  kind: 'create' | 'modify' | 'delete' | 'overflow';
+  path: string;
+  directoryPath: string;
+  directory: boolean;
+  timestamp: number;
 }
 
 // 会话

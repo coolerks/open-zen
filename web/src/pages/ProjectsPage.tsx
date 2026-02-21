@@ -8,7 +8,7 @@ import { projectFilesystemApi } from '../api/projectFilesystem';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
-import type { ProjectItem } from '../types';
+import type { ProjectFsWatchEvent, ProjectItem } from '../types';
 import { ArrowLeft, Columns2, FilePlus2, Files, FolderPlus, FolderRoot, Info, Link, RefreshCw, Search } from 'lucide-react';
 
 type ExplorerEntry = {
@@ -25,6 +25,8 @@ type OpenFileTab = {
   content: string;
   language: string;
   loadError: string | null;
+  revision: string | null;
+  size: number;
 };
 
 type GroupDiffView = {
@@ -118,6 +120,24 @@ const PROJECT_EDITOR_SPLIT_SNAP_THRESHOLD = 0.02;
 const PROJECT_GLOBAL_SEARCH_MAX_RESULTS = 200;
 const PROJECT_GLOBAL_SEARCH_MAX_FILE_BYTES = 1024 * 1024;
 const PROJECT_GLOBAL_SEARCH_MAX_SNIPPET_LENGTH = 140;
+const PROJECT_LARGE_FILE_OPEN_LIMIT_BYTES = 1024 * 1024;
+const PROJECT_WATCH_INTEREST_DEBOUNCE_MS = 120;
+const PROJECT_WATCH_TREE_REFRESH_DEBOUNCE_MS = 120;
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const kb = bytes / 1024;
+  if (kb < 1024) {
+    return `${kb.toFixed(kb >= 10 ? 0 : 1)} KB`;
+  }
+  const mb = kb / 1024;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
 
 function readStoredExplorerWidth(): number {
   if (typeof window === 'undefined') {
@@ -696,6 +716,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     }
     return items.find((item) => item.id === routeProjectId) ?? null;
   }, [items, routeProjectId]);
+  const activeProjectId = activeProject?.id ?? null;
 
   useEffect(() => {
     if (routeProjectId) {
@@ -767,6 +788,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   });
   const [directoryInfoDialogOpen, setDirectoryInfoDialogOpen] = useState(false);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string | null>(null);
+  const [largeFileConfirmDialog, setLargeFileConfirmDialog] = useState<{
+    path: string;
+    name: string;
+    size: number;
+    groupId: EditorGroupId;
+  } | null>(null);
   const draggingExplorerEntryRef = useRef<ExplorerDragPayload | null>(null);
   const [explorerWidth, setExplorerWidth] = useState<number>(() => readStoredExplorerWidth());
   const [explorerCollapsed, setExplorerCollapsed] = useState<boolean>(() => readStoredExplorerCollapsed());
@@ -797,6 +824,17 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     left: null,
     right: null,
   });
+  const watchEventSourceRef = useRef<EventSource | null>(null);
+  const watchInterestTimerRef = useRef<number | null>(null);
+  const pendingWatchRefreshDirsRef = useRef<Set<string>>(new Set());
+  const pendingWatchRefreshTimerRef = useRef<number | null>(null);
+  const openedFilePathsRef = useRef<Set<string>>(new Set());
+  const expandedMapRef = useRef<Record<string, boolean>>({});
+  const filesystemClientIdRef = useRef<string>(
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `fs-client-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
 
   useEffect(() => {
     explorerWidthRef.current = explorerWidth;
@@ -830,6 +868,40 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   useEffect(() => {
     dirtyFileMapRef.current = dirtyFileMap;
   }, [dirtyFileMap]);
+
+  useEffect(() => {
+    expandedMapRef.current = expandedMap;
+  }, [expandedMap]);
+
+  const openedFilePaths = useMemo(() => {
+    const paths = new Set<string>();
+    groups.left.tabs.forEach((path) => paths.add(path));
+    groups.right.tabs.forEach((path) => paths.add(path));
+    if (groups.left.diffView) {
+      paths.add(groups.left.diffView.leftPath);
+      paths.add(groups.left.diffView.rightPath);
+    }
+    if (groups.right.diffView) {
+      paths.add(groups.right.diffView.leftPath);
+      paths.add(groups.right.diffView.rightPath);
+    }
+    return Array.from(paths).sort();
+  }, [groups.left.diffView, groups.left.tabs, groups.right.diffView, groups.right.tabs]);
+
+  useEffect(() => {
+    openedFilePathsRef.current = new Set(openedFilePaths);
+  }, [openedFilePaths]);
+
+  const expandedDirectoryPaths = useMemo(() => {
+    const paths = Object.entries(expandedMap)
+      .filter(([, expanded]) => expanded)
+      .map(([path]) => path)
+      .sort();
+    if (!paths.includes('')) {
+      paths.unshift('');
+    }
+    return paths;
+  }, [expandedMap]);
 
   useEffect(() => {
     if (explorerCollapsed || activeSidebarView !== 'search') {
@@ -916,6 +988,19 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         }
       });
       saveTimerRef.current = {};
+      if (watchInterestTimerRef.current != null) {
+        window.clearTimeout(watchInterestTimerRef.current);
+        watchInterestTimerRef.current = null;
+      }
+      if (pendingWatchRefreshTimerRef.current != null) {
+        window.clearTimeout(pendingWatchRefreshTimerRef.current);
+        pendingWatchRefreshTimerRef.current = null;
+      }
+      pendingWatchRefreshDirsRef.current.clear();
+      if (watchEventSourceRef.current) {
+        watchEventSourceRef.current.close();
+        watchEventSourceRef.current = null;
+      }
     };
   }, []);
 
@@ -1080,7 +1165,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
   const persistFileContent = useCallback(
     async (filePath: string, targetVersion: number): Promise<boolean> => {
-      if (!rootHandle) {
+      if (!rootHandle || !activeProjectId) {
         return false;
       }
       const tab = openTabsRef.current[filePath];
@@ -1094,25 +1179,45 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setSavingFileMap((prev) => ({ ...prev, [filePath]: true }));
       setSaveErrorMap((prev) => ({ ...prev, [filePath]: null }));
       try {
-        const fileHandle = await resolveFileHandleByPath(rootHandle, filePath);
-        const writer = await fileHandle.createWritable();
-        await writer.write(tab.content);
-        await writer.close();
+        const saved = await projectFilesystemApi.writeFile(activeProjectId, {
+          path: filePath,
+          content: tab.content,
+          expectedRevision: tab.revision,
+          clientId: filesystemClientIdRef.current,
+        });
+        setOpenTabs((prev) => {
+          const current = prev[filePath];
+          if (!current) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [filePath]: {
+              ...current,
+              revision: saved.revision ?? null,
+              size: saved.size ?? current.size,
+            },
+          };
+        });
         if ((saveVersionRef.current[filePath] ?? 0) === targetVersion) {
           setDirtyFileMap((prev) => ({ ...prev, [filePath]: false }));
         }
         return true;
       } catch (saveError: any) {
+        const message = saveError?.message ?? `保存文件失败: ${filePath}`;
         setSaveErrorMap((prev) => ({
           ...prev,
-          [filePath]: saveError?.message ?? `保存文件失败: ${filePath}`,
+          [filePath]: message,
         }));
+        if (message.includes('文件已被其他编辑器修改')) {
+          setDirtyFileMap((prev) => ({ ...prev, [filePath]: true }));
+        }
         return false;
       } finally {
         setSavingFileMap((prev) => ({ ...prev, [filePath]: false }));
       }
     },
-    [ensureProjectWritable, rootHandle],
+    [activeProjectId, ensureProjectWritable, rootHandle],
   );
 
   const scheduleAutoSave = useCallback(
@@ -1325,6 +1430,86 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     [activeProject?.rootDirName, loadDirectoryAtPath, rootHandle],
   );
 
+  const scheduleWatchDirectoryRefresh = useCallback(
+    (directoryPath: string) => {
+      pendingWatchRefreshDirsRef.current.add(directoryPath);
+      if (pendingWatchRefreshTimerRef.current != null) {
+        return;
+      }
+      pendingWatchRefreshTimerRef.current = window.setTimeout(() => {
+        const targets = Array.from(pendingWatchRefreshDirsRef.current);
+        pendingWatchRefreshDirsRef.current.clear();
+        pendingWatchRefreshTimerRef.current = null;
+        targets.forEach((target) => {
+          void refreshDirectoryEntries(target);
+        });
+      }, PROJECT_WATCH_TREE_REFRESH_DEBOUNCE_MS);
+    },
+    [refreshDirectoryEntries],
+  );
+
+  const refreshOpenFileByWatchEvent = useCallback(
+    async (filePath: string) => {
+      if (!activeProjectId || !openedFilePathsRef.current.has(filePath)) {
+        return;
+      }
+      if (dirtyFileMapRef.current[filePath]) {
+        setSaveErrorMap((prev) => ({
+          ...prev,
+          [filePath]: '文件已被其他编辑器修改，当前存在未保存内容，请先处理冲突后再保存。',
+        }));
+        return;
+      }
+      const cached = openTabsRef.current[filePath];
+      const fileName = cached?.name ?? getFileNameByPath(filePath);
+      setLoadingFileMap((prev) => ({ ...prev, [filePath]: true }));
+      try {
+        const data = await projectFilesystemApi.readFileWithOptions(activeProjectId, filePath, true);
+        setOpenTabs((prev) => {
+          const current = prev[filePath];
+          if (!current) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [filePath]: {
+              ...current,
+              content: data.content,
+              language: resolveMonacoLanguageByFileName(fileName),
+              loadError: null,
+              revision: data.revision ?? null,
+              size: data.size ?? current.size,
+            },
+          };
+        });
+        setSaveErrorMap((prev) => ({ ...prev, [filePath]: null }));
+        setDirtyFileMap((prev) => ({ ...prev, [filePath]: false }));
+      } catch (refreshError: any) {
+        const message = refreshError?.message ?? '文件已被外部修改，刷新失败，请手动重试。';
+        setOpenTabs((prev) => {
+          const current = prev[filePath];
+          if (!current) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [filePath]: {
+              ...current,
+              loadError: message,
+            },
+          };
+        });
+        setSaveErrorMap((prev) => ({
+          ...prev,
+          [filePath]: message,
+        }));
+      } finally {
+        setLoadingFileMap((prev) => ({ ...prev, [filePath]: false }));
+      }
+    },
+    [activeProjectId],
+  );
+
   const reloadActiveProjectTree = useCallback(async () => {
     if (!activeProject) {
       globalSearchTaskSeqRef.current += 1;
@@ -1410,6 +1595,93 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   useEffect(() => {
     void reloadActiveProjectTree();
   }, [reloadActiveProjectTree]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+    const source = projectFilesystemApi.openWatchStream(activeProjectId, filesystemClientIdRef.current);
+    watchEventSourceRef.current = source;
+
+    const handleChange = (event: MessageEvent<string>) => {
+      let payload: ProjectFsWatchEvent | null = null;
+      try {
+        payload = JSON.parse(event.data) as ProjectFsWatchEvent;
+      } catch {
+        return;
+      }
+      if (!payload) {
+        return;
+      }
+
+      if (payload.kind === 'overflow') {
+        Object.entries(expandedMapRef.current).forEach(([path, expanded]) => {
+          if (expanded) {
+            scheduleWatchDirectoryRefresh(path);
+          }
+        });
+        return;
+      }
+
+      const changedPath = payload.path || '';
+      const changedDirectoryPath = payload.directoryPath || '';
+      if (expandedMapRef.current[changedDirectoryPath]) {
+        scheduleWatchDirectoryRefresh(changedDirectoryPath);
+      }
+      if (payload.directory && expandedMapRef.current[changedPath]) {
+        scheduleWatchDirectoryRefresh(changedPath);
+      }
+      if (openedFilePathsRef.current.has(changedPath)) {
+        void refreshOpenFileByWatchEvent(changedPath);
+      }
+    };
+
+    const handleSourceError = () => {
+      // SSE 断线后浏览器会自动重连，这里不主动打断用户操作，仅保留日志。
+      console.warn('[project-fs-watch] stream disconnected, waiting for browser auto-reconnect');
+    };
+
+    source.addEventListener('change', handleChange as EventListener);
+    source.addEventListener('error', handleSourceError as EventListener);
+
+    return () => {
+      source.removeEventListener('change', handleChange as EventListener);
+      source.removeEventListener('error', handleSourceError as EventListener);
+      source.close();
+      if (watchEventSourceRef.current === source) {
+        watchEventSourceRef.current = null;
+      }
+    };
+  }, [activeProjectId, refreshOpenFileByWatchEvent, scheduleWatchDirectoryRefresh]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+    if (watchInterestTimerRef.current != null) {
+      window.clearTimeout(watchInterestTimerRef.current);
+    }
+    watchInterestTimerRef.current = window.setTimeout(() => {
+      void projectFilesystemApi
+        .updateWatchInterests(activeProjectId, {
+          // 仅把打开文件和展开目录同步给后端，减少监听与刷新开销。
+          clientId: filesystemClientIdRef.current,
+          openFiles: openedFilePaths,
+          expandedDirs: expandedDirectoryPaths,
+        })
+        .catch((watchError: any) => {
+          console.warn('[project-fs-watch] update interests failed:', watchError?.message ?? watchError);
+        });
+      watchInterestTimerRef.current = null;
+    }, PROJECT_WATCH_INTEREST_DEBOUNCE_MS);
+
+    return () => {
+      if (watchInterestTimerRef.current != null) {
+        window.clearTimeout(watchInterestTimerRef.current);
+        watchInterestTimerRef.current = null;
+      }
+    };
+  }, [activeProjectId, expandedDirectoryPaths, openedFilePaths]);
 
   const handleToggleDirectory = async (nodePath: string) => {
     if (!rootHandle) {
@@ -1748,12 +2020,19 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   }, [pendingMoveDialog, performMoveExplorerEntryToDirectory]);
 
   const ensureTabReady = useCallback(
-    async (filePath: string, fileName: string): Promise<OpenFileTab | null> => {
-      if (!rootHandle) {
+    async (
+      filePath: string,
+      fileName: string,
+      options?: {
+        forceReload?: boolean;
+        allowLargeFile?: boolean;
+      },
+    ): Promise<OpenFileTab | null> => {
+      if (!rootHandle || !activeProjectId) {
         return null;
       }
       const cached = openTabs[filePath];
-      if (cached && !cached.loadError) {
+      if (!options?.forceReload && cached && !cached.loadError) {
         return cached;
       }
       const nextName = fileName || getFileNameByPath(filePath);
@@ -1767,17 +2046,23 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             content: `该文件可能是二进制文件，暂不支持文本预览。\n路径：${filePath}`,
             language: 'plaintext',
             loadError: null,
+            revision: null,
+            size: 0,
           };
         } else {
-          const fileHandle = await resolveFileHandleByPath(rootHandle, filePath);
-          const file = await fileHandle.getFile();
-          const text = await file.text();
+          const data = await projectFilesystemApi.readFileWithOptions(
+            activeProjectId,
+            filePath,
+            options?.allowLargeFile === true,
+          );
           tab = {
             path: filePath,
             name: nextName,
-            content: text,
+            content: data.content,
             language: resolveMonacoLanguageByFileName(nextName),
             loadError: null,
+            revision: data.revision ?? null,
+            size: data.size ?? new Blob([data.content]).size,
           };
         }
         setOpenTabs((prev) => ({ ...prev, [filePath]: tab }));
@@ -1789,6 +2074,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           content: '',
           language: resolveMonacoLanguageByFileName(nextName),
           loadError: openError?.message ?? `读取文件失败: ${filePath}`,
+          revision: null,
+          size: 0,
         };
         setOpenTabs((prev) => ({ ...prev, [filePath]: errorTab }));
         return errorTab;
@@ -1796,12 +2083,43 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         setLoadingFileMap((prev) => ({ ...prev, [filePath]: false }));
       }
     },
-    [openTabs, rootHandle],
+    [activeProjectId, openTabs, rootHandle],
   );
 
   const openFileInGroup = useCallback(
-    async (filePath: string, fileName: string, groupId: EditorGroupId) => {
-      const tab = await ensureTabReady(filePath, fileName);
+    async (
+      filePath: string,
+      fileName: string,
+      groupId: EditorGroupId,
+      options?: {
+        forceReload?: boolean;
+        allowLargeFile?: boolean;
+      },
+    ) => {
+      if (!activeProjectId) {
+        return;
+      }
+      const nextName = fileName || getFileNameByPath(filePath);
+      const cached = openTabs[filePath];
+      if (!isLikelyBinaryFile(nextName) && !options?.allowLargeFile && !options?.forceReload && (!cached || cached.loadError)) {
+        try {
+          const meta = await projectFilesystemApi.readFileMeta(activeProjectId, filePath);
+          if (meta.tooLarge || (meta.size ?? 0) > PROJECT_LARGE_FILE_OPEN_LIMIT_BYTES) {
+            setLargeFileConfirmDialog({
+              path: filePath,
+              name: nextName,
+              size: meta.size ?? 0,
+              groupId,
+            });
+            return;
+          }
+        } catch (metaError: any) {
+          setTreeError(metaError?.message ?? '读取文件信息失败');
+          return;
+        }
+      }
+
+      const tab = await ensureTabReady(filePath, nextName, options);
       if (!tab) {
         return;
       }
@@ -1821,7 +2139,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setActiveGroup(groupId);
       setTreeError(null);
     },
-    [ensureTabReady],
+    [activeProjectId, ensureTabReady, openTabs],
   );
 
   const closeTabInGroup = useCallback((groupId: EditorGroupId, filePath: string) => {
@@ -3600,6 +3918,53 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               }}
             >
               {pendingMoveDialog?.submitting ? '移动中...' : '确认移动'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+      <Dialog
+        open={largeFileConfirmDialog != null}
+        onClose={() => setLargeFileConfirmDialog(null)}
+        title="大文件打开确认"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[rgb(13,13,13)]">
+            文件
+            <span className="font-semibold"> {largeFileConfirmDialog?.name ?? ''} </span>
+            大小为
+            <span className="font-semibold"> {formatFileSize(largeFileConfirmDialog?.size ?? 0)} </span>
+            ，超过 1MB，打开可能影响编辑器性能。
+          </p>
+          <p className="text-xs text-slate-500">
+            是否仍然打开该文件？
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => setLargeFileConfirmDialog(null)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                const pending = largeFileConfirmDialog;
+                setLargeFileConfirmDialog(null);
+                if (!pending) {
+                  return;
+                }
+                void openFileInGroup(pending.path, pending.name, pending.groupId, {
+                  allowLargeFile: true,
+                  forceReload: true,
+                });
+              }}
+            >
+              继续打开
             </Button>
           </div>
         </div>
