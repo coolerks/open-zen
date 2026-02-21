@@ -121,6 +121,7 @@ const PROJECT_GLOBAL_SEARCH_MAX_RESULTS = 200;
 const PROJECT_GLOBAL_SEARCH_MAX_FILE_BYTES = 1024 * 1024;
 const PROJECT_GLOBAL_SEARCH_MAX_SNIPPET_LENGTH = 140;
 const PROJECT_LARGE_FILE_OPEN_LIMIT_BYTES = 1024 * 1024;
+const PROJECT_LOADING_HINT_DELAY_MS = 1000;
 const PROJECT_WATCH_INTEREST_DEBOUNCE_MS = 120;
 const PROJECT_WATCH_TREE_REFRESH_DEBOUNCE_MS = 120;
 
@@ -732,6 +733,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const [childrenMap, setChildrenMap] = useState<Record<string, ExplorerEntry[]>>({});
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
+  const [loadingHintDirectoryMap, setLoadingHintDirectoryMap] = useState<Record<string, boolean>>({});
   const [loadingRoot, setLoadingRoot] = useState(false);
   const [activeSidebarView, setActiveSidebarView] = useState<ProjectSidebarView>('explorer');
   const [globalSearchKeyword, setGlobalSearchKeyword] = useState('');
@@ -747,6 +749,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const rightGroupVisible = hasGroupContent(groups.right);
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [loadingFileMap, setLoadingFileMap] = useState<Record<string, boolean>>({});
+  const [loadingHintFileMap, setLoadingHintFileMap] = useState<Record<string, boolean>>({});
   const [savingFileMap, setSavingFileMap] = useState<Record<string, boolean>>({});
   const [dirtyFileMap, setDirtyFileMap] = useState<Record<string, boolean>>({});
   const [saveErrorMap, setSaveErrorMap] = useState<Record<string, string | null>>({});
@@ -817,6 +820,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     right: null,
   });
   const openTabsRef = useRef<Record<string, OpenFileTab>>({});
+  const loadingMapRef = useRef<Record<string, boolean>>({});
+  const loadingFileMapRef = useRef<Record<string, boolean>>({});
+  const loadingHintDirectoryMapRef = useRef<Record<string, boolean>>({});
+  const loadingHintFileMapRef = useRef<Record<string, boolean>>({});
+  const loadingHintDirectoryTimerRef = useRef<Record<string, number | null>>({});
+  const loadingHintFileTimerRef = useRef<Record<string, number | null>>({});
   const dirtyFileMapRef = useRef<Record<string, boolean>>({});
   const saveTimerRef = useRef<Record<string, number | null>>({});
   const saveVersionRef = useRef<Record<string, number>>({});
@@ -864,6 +873,112 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   useEffect(() => {
     openTabsRef.current = openTabs;
   }, [openTabs]);
+
+  useEffect(() => {
+    loadingMapRef.current = loadingMap;
+  }, [loadingMap]);
+
+  useEffect(() => {
+    loadingFileMapRef.current = loadingFileMap;
+  }, [loadingFileMap]);
+
+  useEffect(() => {
+    loadingHintDirectoryMapRef.current = loadingHintDirectoryMap;
+  }, [loadingHintDirectoryMap]);
+
+  useEffect(() => {
+    loadingHintFileMapRef.current = loadingHintFileMap;
+  }, [loadingHintFileMap]);
+
+  useEffect(() => {
+    const activePaths = new Set(Object.entries(loadingMap).filter(([, loading]) => loading).map(([path]) => path));
+    activePaths.forEach((path) => {
+      if (loadingHintDirectoryMapRef.current[path]) {
+        return;
+      }
+      if (loadingHintDirectoryTimerRef.current[path] != null) {
+        return;
+      }
+      loadingHintDirectoryTimerRef.current[path] = window.setTimeout(() => {
+        loadingHintDirectoryTimerRef.current[path] = null;
+        if (!loadingMapRef.current[path]) {
+          return;
+        }
+        setLoadingHintDirectoryMap((prev) => {
+          if (prev[path]) {
+            return prev;
+          }
+          return { ...prev, [path]: true };
+        });
+      }, PROJECT_LOADING_HINT_DELAY_MS);
+    });
+
+    Object.entries(loadingHintDirectoryTimerRef.current).forEach(([path, timerId]) => {
+      if (timerId == null || activePaths.has(path)) {
+        return;
+      }
+      window.clearTimeout(timerId);
+      delete loadingHintDirectoryTimerRef.current[path];
+    });
+
+    setLoadingHintDirectoryMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      Object.keys(prev).forEach((path) => {
+        if (activePaths.has(path)) {
+          return;
+        }
+        delete next[path];
+        changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [loadingMap]);
+
+  useEffect(() => {
+    const activePaths = new Set(Object.entries(loadingFileMap).filter(([, loading]) => loading).map(([path]) => path));
+    activePaths.forEach((path) => {
+      if (loadingHintFileMapRef.current[path]) {
+        return;
+      }
+      if (loadingHintFileTimerRef.current[path] != null) {
+        return;
+      }
+      loadingHintFileTimerRef.current[path] = window.setTimeout(() => {
+        loadingHintFileTimerRef.current[path] = null;
+        if (!loadingFileMapRef.current[path]) {
+          return;
+        }
+        setLoadingHintFileMap((prev) => {
+          if (prev[path]) {
+            return prev;
+          }
+          return { ...prev, [path]: true };
+        });
+      }, PROJECT_LOADING_HINT_DELAY_MS);
+    });
+
+    Object.entries(loadingHintFileTimerRef.current).forEach(([path, timerId]) => {
+      if (timerId == null || activePaths.has(path)) {
+        return;
+      }
+      window.clearTimeout(timerId);
+      delete loadingHintFileTimerRef.current[path];
+    });
+
+    setLoadingHintFileMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      Object.keys(prev).forEach((path) => {
+        if (activePaths.has(path)) {
+          return;
+        }
+        delete next[path];
+        changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [loadingFileMap]);
 
   useEffect(() => {
     dirtyFileMapRef.current = dirtyFileMap;
@@ -988,6 +1103,18 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         }
       });
       saveTimerRef.current = {};
+      Object.values(loadingHintDirectoryTimerRef.current).forEach((timerId) => {
+        if (timerId != null) {
+          window.clearTimeout(timerId);
+        }
+      });
+      loadingHintDirectoryTimerRef.current = {};
+      Object.values(loadingHintFileTimerRef.current).forEach((timerId) => {
+        if (timerId != null) {
+          window.clearTimeout(timerId);
+        }
+      });
+      loadingHintFileTimerRef.current = {};
       if (watchInterestTimerRef.current != null) {
         window.clearTimeout(watchInterestTimerRef.current);
         watchInterestTimerRef.current = null;
@@ -1309,6 +1436,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     });
     setExpandedMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
     setLoadingMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+    setLoadingHintDirectoryMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
     setSelectedDirectoryPath((prev) => {
       if (prev == null) {
         return prev;
@@ -1338,6 +1466,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         return next;
       });
       setLoadingFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
+      setLoadingHintFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
       setSavingFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
       setDirtyFileMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
       setSaveErrorMap((prev) => remapRecordByPathPrefix(prev, sourcePath, targetPath));
@@ -1522,6 +1651,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setChildrenMap({});
       setExpandedMap({});
       setLoadingMap({});
+      setLoadingHintDirectoryMap({});
       setTreeError(null);
       setOpenTabs({});
       setGroups(createEmptyGroups());
@@ -1529,6 +1659,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setSelectedFilePaths([]);
       setSelectedDirectoryPath(null);
       setLoadingFileMap({});
+      setLoadingHintFileMap({});
       setSavingFileMap({});
       setDirtyFileMap({});
       setSaveErrorMap({});
@@ -1548,6 +1679,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
     setLoadingRoot(true);
     setTreeError(null);
+    setLoadingMap({});
+    setLoadingHintDirectoryMap({});
     setGlobalSearchResults([]);
     setGlobalSearchError(null);
     globalSearchTaskSeqRef.current += 1;
@@ -1559,6 +1692,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     setSelectedFilePaths([]);
     setSelectedDirectoryPath(null);
     setLoadingFileMap({});
+    setLoadingHintFileMap({});
     setSavingFileMap({});
     setDirtyFileMap({});
     setSaveErrorMap({});
@@ -2866,11 +3000,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         !isDirectory &&
         ((groups.left.diffView == null && groups.left.activeTabPath === node.path) ||
           (groups.right.diffView == null && groups.right.activeTabPath === node.path));
-      const loadingChildren = isDirectory && loadingMap[node.path] === true;
+      const loadingChildren = isDirectory && loadingHintDirectoryMap[node.path] === true;
       const iconUrl = isDirectory
         ? resolveProjectFolderIcon(node.name, expanded)
         : resolveProjectFileIcon(node.name);
-      const isLoadingFile = !isDirectory && loadingFileMap[node.path] === true;
+      const isLoadingFile = !isDirectory && loadingHintFileMap[node.path] === true;
 
       rows.push(
         <div key={`${node.kind}:${node.path}`}>
@@ -3098,6 +3232,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     const rootIconUrl = resolveProjectFolderIcon(activeProject.rootDirName, rootExpanded);
     const rootChildren = childrenMap[''] ?? [];
     const rootLoading = loadingRoot || loadingMap[''] === true;
+    const rootLoadingHint = loadingHintDirectoryMap[''] === true;
     const hasRootPendingCreate = pendingExplorerEdit?.mode === 'create' && pendingExplorerEdit.parentPath === '';
 
     return (
@@ -3158,9 +3293,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
         {rootExpanded && (
           <>
-            {rootLoading ? (
+            {rootLoadingHint ? (
               <p className="px-3 py-1 text-xs text-slate-400">正在加载目录...</p>
-            ) : rootChildren.length === 0 && !hasRootPendingCreate ? (
+            ) : rootChildren.length === 0 && !hasRootPendingCreate && !rootLoading ? (
               <p className="px-3 py-1 text-xs text-slate-400">目录为空，或暂未读取到文件。</p>
             ) : (
               renderExplorerNodes('', 1)
