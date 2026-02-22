@@ -26,6 +26,31 @@ Open Zen 是一个面向 AI Agent 场景的全栈应用，当前已实现：
 
 ---
 
+## 预览图
+
+### 聊天
+| 浅色                             | 深色                             |
+| -------------------------------- | --------------------------------- |
+| ![深色](./docs/images/preview-light.png) | ![浅色](./docs/images/preview-dark.png) |
+
+### 模型管理
+
+![模型](./docs/images/models.png)
+
+### 项目
+
+后续将支持 Code Agent。
+
+![项目](./docs/images/projects.png)
+
+### 应用中心
+
+AI 生成的网页应用可以添加到此处。
+
+![应用中心](./docs/images/apps.png)
+
+---
+
 ## 当前功能（与代码实现一致）
 
 ### 1. 聊天与会话
