@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Editor, { DiffEditor } from '@monaco-editor/react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import ignore, { type Ignore } from 'ignore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
@@ -82,13 +87,18 @@ type ProjectsPageProps = {
   onBackToChat: () => void;
 };
 
-const BINARY_EXTENSIONS = new Set([
+const IMAGE_EXTENSIONS = new Set([
   'png',
   'jpg',
   'jpeg',
   'gif',
   'webp',
+  'bmp',
   'ico',
+  'svg',
+]);
+
+const BINARY_EXTENSIONS = new Set([
   'pdf',
   'zip',
   '7z',
@@ -566,6 +576,22 @@ function isLikelyBinaryFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   const extension = lower.includes('.') ? lower.split('.').pop() ?? '' : '';
   return BINARY_EXTENSIONS.has(extension);
+}
+
+function isImageFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const extension = lower.includes('.') ? lower.split('.').pop() ?? '' : '';
+  return IMAGE_EXTENSIONS.has(extension);
+}
+
+function isMarkdownFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith('.md') || lower.endsWith('.markdown');
+}
+
+function isSvgFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith('.svg');
 }
 
 function extractMatchedLineSnippet(
@@ -2166,6 +2192,96 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     ],
   );
 
+  const handleUploadExternalFiles = useCallback(
+    async (files: FileList, targetDirectoryPath: string) => {
+      if (!rootHandle || !activeProject) {
+        return;
+      }
+      const writable = await ensureProjectWritable();
+      if (!writable) {
+        return;
+      }
+
+      const uploadPromises = Array.from(files).map(async (file) => {
+        try {
+          const reader = new FileReader();
+          const content = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsText(file);
+          });
+
+          const fileName = file.name;
+          const filePath = targetDirectoryPath ? `${targetDirectoryPath}/${fileName}` : fileName;
+
+          // Create the file entry first
+          await projectFilesystemApi.createEntry(activeProject.id, {
+            parentPath: targetDirectoryPath,
+            name: fileName,
+            kind: 'file',
+          });
+
+          // Write the content
+          await projectFilesystemApi.writeFile(activeProject.id, {
+            path: filePath,
+            content,
+          });
+
+          return { success: true, fileName };
+        } catch (error: any) {
+          return { success: false, fileName: file.name, error: error?.message ?? '上传失败' };
+        }
+      });
+
+      const results = await Promise.all(uploadPromises);
+      const failures = results.filter(r => !r.success);
+
+      if (failures.length > 0) {
+        const errorMsg = failures.map(f => `${f.fileName}: ${f.error}`).join('\n');
+        setTreeError(`部分文件上传失败:\n${errorMsg}`);
+      } else {
+        setTreeError(null);
+      }
+
+      // Refresh the target directory
+      await refreshDirectoryEntries(targetDirectoryPath);
+    },
+    [activeProject, ensureProjectWritable, refreshDirectoryEntries, rootHandle],
+  );
+
+  const handlePaste = useCallback(
+    (event: ClipboardEvent) => {
+      // Don't handle paste in input fields or contenteditable elements
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      const clipboardData = event.clipboardData;
+      if (!clipboardData) {
+        return;
+      }
+
+      // Handle file paste
+      if (clipboardData.files && clipboardData.files.length > 0) {
+        event.preventDefault();
+        const targetDir = selectedDirectoryPath ?? '';
+        void handleUploadExternalFiles(clipboardData.files, targetDir);
+      }
+      // Text paste is handled natively by Monaco editor
+    },
+    [handleUploadExternalFiles, selectedDirectoryPath],
+  );
+
+  // Add paste event listener
+  useEffect(() => {
+    const handlePasteEvent = (event: ClipboardEvent) => handlePaste(event);
+    window.addEventListener('paste', handlePasteEvent);
+    return () => {
+      window.removeEventListener('paste', handlePasteEvent);
+    };
+  }, [handlePaste]);
+
   const handleRequestMoveExplorerEntryToDirectory = useCallback((payload: ExplorerDragPayload, targetDirectoryPath: string) => {
     const { parentPath } = splitParentPathAndName(payload.path);
     if (parentPath === targetDirectoryPath) {
@@ -2223,7 +2339,18 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       setLoadingFileMap((prev) => ({ ...prev, [filePath]: true }));
       try {
         let tab: OpenFileTab;
-        if (isLikelyBinaryFile(nextName)) {
+        if (isImageFile(nextName) && !isSvgFile(nextName)) {
+          // For images (except SVG which can be displayed as text), we just need the path for preview
+          tab = {
+            path: filePath,
+            name: nextName,
+            content: '', // No content needed for image preview
+            language: 'plaintext',
+            loadError: null,
+            revision: null,
+            size: 0,
+          };
+        } else if (isLikelyBinaryFile(nextName)) {
           tab = {
             path: filePath,
             name: nextName,
@@ -3158,19 +3285,26 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 if (!isDirectory) {
                   return;
                 }
+
                 const payload = parseExplorerDragPayload(event);
-                if (!payload) {
+                const hasExternalFiles = event.dataTransfer.types.includes('Files');
+
+                if (!payload && !hasExternalFiles) {
                   return;
                 }
-                if (payload.path === node.path) {
-                  return;
+
+                if (payload) {
+                  if (payload.path === node.path) {
+                    return;
+                  }
+                  if (payload.kind === 'directory' && isPathEqualOrChild(node.path, payload.path)) {
+                    return;
+                  }
                 }
-                if (payload.kind === 'directory' && isPathEqualOrChild(node.path, payload.path)) {
-                  return;
-                }
+
                 event.preventDefault();
                 event.stopPropagation();
-                event.dataTransfer.dropEffect = 'move';
+                event.dataTransfer.dropEffect = hasExternalFiles ? 'copy' : 'move';
                 if (dragOverDirectoryPath !== node.path) {
                   setDragOverDirectoryPath(node.path);
                 }
@@ -3191,13 +3325,22 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 if (!isDirectory) {
                   return;
                 }
+
+                event.preventDefault();
+                event.stopPropagation();
+                setDragOverDirectoryPath(null);
+
+                // Check for external files first
+                if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+                  void handleUploadExternalFiles(event.dataTransfer.files, node.path);
+                  return;
+                }
+
+                // Handle internal file/folder moves
                 const payload = parseExplorerDragPayload(event);
                 if (!payload) {
                   return;
                 }
-                event.preventDefault();
-                event.stopPropagation();
-                setDragOverDirectoryPath(null);
                 handleRequestMoveExplorerEntryToDirectory(payload, node.path);
               }}
               onContextMenu={(event) => {
@@ -3321,15 +3464,19 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           onContextMenu={openExplorerRootContextMenu}
           onDragOver={(event) => {
             const payload = parseExplorerDragPayload(event);
-            if (!payload) {
+            const hasExternalFiles = event.dataTransfer.types.includes('Files');
+
+            if (!payload && !hasExternalFiles) {
               return;
             }
-            if (payload.path === '' || splitParentPathAndName(payload.path).parentPath === '') {
+
+            if (payload && (payload.path === '' || splitParentPathAndName(payload.path).parentPath === '')) {
               return;
             }
+
             event.preventDefault();
             event.stopPropagation();
-            event.dataTransfer.dropEffect = 'move';
+            event.dataTransfer.dropEffect = hasExternalFiles ? 'copy' : 'move';
             if (dragOverDirectoryPath !== '') {
               setDragOverDirectoryPath('');
             }
@@ -3344,13 +3491,21 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             }
           }}
           onDrop={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDragOverDirectoryPath(null);
+
+            // Check for external files first
+            if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+              void handleUploadExternalFiles(event.dataTransfer.files, '');
+              return;
+            }
+
+            // Handle internal file/folder moves
             const payload = parseExplorerDragPayload(event);
             if (!payload) {
               return;
             }
-            event.preventDefault();
-            event.stopPropagation();
-            setDragOverDirectoryPath(null);
             handleRequestMoveExplorerEntryToDirectory(payload, '');
           }}
           className={`flex h-[24px] w-full items-center gap-1 rounded-md px-2 text-left text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-100 dark:hover:bg-[#2a2a2a] ${dragOverDirectoryPath === '' || selectedDirectoryPath === '' ? 'bg-[rgb(239,239,239)] dark:bg-[#2f2f2f]' : ''
@@ -3451,6 +3606,42 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     if (activeTab.loadError) {
       return <div className="h-full overflow-y-auto p-4 text-sm text-rose-500">{activeTab.loadError}</div>;
     }
+
+    // Handle image preview (except SVG which can be viewed as code)
+    if (isImageFile(activeTab.name) && !isSvgFile(activeTab.name)) {
+      const imageUrl = `/api/projects/${encodeURIComponent(activeProjectId ?? '')}/filesystem/file?path=${encodeURIComponent(activeTab.path)}`;
+      return (
+        <div className="h-full overflow-auto bg-[#f5f5f5] dark:bg-[#1e1e1e] flex items-center justify-center p-8">
+          <div className="max-w-full max-h-full">
+            <img
+              src={imageUrl}
+              alt={activeTab.name}
+              className="max-w-full max-h-full object-contain"
+              style={{ imageRendering: 'auto' }}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // Handle markdown preview
+    if (isMarkdownFile(activeTab.name)) {
+      return (
+        <div className="h-full overflow-auto bg-white dark:bg-[#1e1e1e]">
+          <div className="mx-auto max-w-4xl px-8 py-6">
+            <div className="prose prose-slate dark:prose-invert max-w-none">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+              >
+                {activeTab.content}
+              </ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     const readOnlyByType = isLikelyBinaryFile(activeTab.name);
     return (
       <Editor
