@@ -22,8 +22,10 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -99,10 +101,45 @@ public class ProjectFilesystemService {
             byte[] bytes = Files.readAllBytes(filePath);
             ProjectFsFileResponse response = new ProjectFsFileResponse();
             response.setPath(toRelativePath(rootPath, filePath));
-            response.setContent(new String(bytes, StandardCharsets.UTF_8));
+
+            // Check if file is binary (image file) by extension
+            String fileName = filePath.getFileName().toString().toLowerCase(Locale.ROOT);
+            boolean isBinaryImage = fileName.endsWith(".png") || fileName.endsWith(".jpg") ||
+                                   fileName.endsWith(".jpeg") || fileName.endsWith(".gif") ||
+                                   fileName.endsWith(".webp") || fileName.endsWith(".bmp") ||
+                                   fileName.endsWith(".ico");
+
+            if (isBinaryImage) {
+                // For binary image files, encode as base64
+                response.setContent(Base64.getEncoder().encodeToString(bytes));
+            } else {
+                // For text files, use UTF-8
+                response.setContent(new String(bytes, StandardCharsets.UTF_8));
+            }
+
             response.setSize((long) bytes.length);
             response.setRevision(resolveFileRevision(filePath));
             return response;
+        } catch (IOException ex) {
+            throw new RuntimeException("读取文件失败，请检查权限后重试。");
+        }
+    }
+
+    public DownloadedFile downloadFile(String projectId, String rawRelativePath) {
+        Path rootPath = resolveProjectRootPath(projectId);
+        Path filePath = resolvePathInsideProject(rootPath, rawRelativePath);
+        if (!Files.exists(filePath) || Files.isDirectory(filePath)) {
+            throw new RuntimeException(FILE_NOT_FOUND_MESSAGE);
+        }
+
+        try {
+            byte[] bytes = Files.readAllBytes(filePath);
+            String contentType = Files.probeContentType(filePath);
+            if (contentType == null || contentType.isBlank()) {
+                contentType = "application/octet-stream";
+            }
+            String fileName = filePath.getFileName() == null ? "download" : filePath.getFileName().toString();
+            return new DownloadedFile(fileName, contentType, bytes);
         } catch (IOException ex) {
             throw new RuntimeException("读取文件失败，请检查权限后重试。");
         }
@@ -131,7 +168,13 @@ public class ProjectFilesystemService {
         Path tempPath = null;
         try {
             tempPath = Files.createTempFile(parentPath, ".openzen-write-", ".tmp");
-            Files.writeString(tempPath, content, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+            byte[] binaryBytes = null;
+            if (Boolean.TRUE.equals(request.getBase64Encoded())) {
+                binaryBytes = Base64.getDecoder().decode(content);
+                Files.write(tempPath, binaryBytes, StandardOpenOption.TRUNCATE_EXISTING);
+            } else {
+                Files.writeString(tempPath, content, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+            }
             try {
                 Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException ex) {
@@ -141,7 +184,11 @@ public class ProjectFilesystemService {
             String relativePath = toRelativePath(rootPath, filePath);
             response.setPath(relativePath);
             response.setContent(content);
-            response.setSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+            if (Boolean.TRUE.equals(request.getBase64Encoded())) {
+                response.setSize((long) (binaryBytes == null ? 0 : binaryBytes.length));
+            } else {
+                response.setSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+            }
             response.setRevision(resolveFileRevision(filePath));
             projectFilesystemWatchService.markSelfWrite(projectId, rootPath, relativePath, request.getClientId());
             return response;
@@ -371,5 +418,8 @@ public class ProjectFilesystemService {
         } catch (IOException ex) {
             throw new RuntimeException("读取文件版本失败，请稍后重试。");
         }
+    }
+
+    public record DownloadedFile(String fileName, String contentType, byte[] bytes) {
     }
 }
