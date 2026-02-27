@@ -13,7 +13,11 @@ type TerminalInstance = {
   websocket: WebSocket | null;
 };
 
-export function Terminal() {
+type TerminalProps = {
+  defaultCwd?: string;
+};
+
+export function Terminal({ defaultCwd = '.' }: TerminalProps) {
   const {
     isOpen,
     height,
@@ -36,6 +40,13 @@ export function Terminal() {
   const resizeStartHeightRef = useRef(0);
   const terminalInstancesRef = useRef<Map<string, TerminalInstance>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Ensure first tab is created with correct cwd when terminal opens
+  useEffect(() => {
+    if (isOpen && tabs.length === 0) {
+      addTab(defaultCwd);
+    }
+  }, [isOpen, tabs.length, defaultCwd, addTab]);
 
   // Get terminal instance for active tab
   const getActiveTerminal = () => {
@@ -299,8 +310,7 @@ export function Terminal() {
 
   // Handle creating new terminal tab
   const handleAddTab = () => {
-    const cwd = '.';
-    addTab(cwd);
+    addTab(defaultCwd);
   };
 
   // Handle closing terminal tab
@@ -346,7 +356,7 @@ export function Terminal() {
   return (
     <div
       ref={containerRef}
-      className="flex shrink-0 flex-col border-t border-[rgb(209,209,209)] bg-white dark:border-[#2f2f2f] dark:bg-[#1e1e1e]"
+      className="relative flex shrink-0 flex-col border-t border-[rgb(209,209,209)] bg-white dark:border-[#2f2f2f] dark:bg-[#1e1e1e]"
       style={{ height: `${height}px` }}
     >
       {/* Resize handle */}

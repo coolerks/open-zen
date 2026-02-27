@@ -4907,8 +4907,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
   return (
     <div className="relative h-full min-h-0 overflow-hidden bg-white text-[rgb(13,13,13)] dark:bg-[#212121] dark:text-slate-100">
-      <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex h-full min-h-0 overflow-hidden">
         <div
           className={`flex w-12 shrink-0 flex-col items-center border-r border-[rgb(209,209,209)] py-2 dark:border-[#2f2f2f] ${theme === 'dark' ? 'bg-[#1b1b1b]' : 'bg-[#f5f5f5]'
             }`}
@@ -4963,6 +4962,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           </button>
         </div>
 
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
         {!explorerCollapsed && (
           <aside
             className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8] dark:border-[#2f2f2f] dark:bg-[#171717]"
@@ -5252,8 +5253,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             <div className="flex h-full min-h-0 min-w-0">{renderEditorGroup('left')}</div>
           )}
         </div>
-      </div>
-        <Terminal />
+          </div>
+        <Terminal defaultCwd={activeProject?.realDirPath || '.'} />
+        </div>
       </div>
       {contextMenu && (
         <div

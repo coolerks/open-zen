@@ -61,18 +61,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   fontFamily: DEFAULT_FONT_FAMILY,
 
   openTerminal: () => {
-    const state = get();
-    if (state.tabs.length === 0) {
-      // Create first tab if none exist
-      const tabId = `terminal-${Date.now()}`;
-      set({
-        isOpen: true,
-        tabs: [{ id: tabId, name: 'Terminal 1', cwd: '.' }],
-        activeTabId: tabId,
-      });
-    } else {
-      set({ isOpen: true });
-    }
+    set({ isOpen: true });
   },
 
   closeTerminal: () => set({ isOpen: false }),
