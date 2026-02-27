@@ -15,7 +15,9 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectFsWatchEvent, ProjectItem } from '../types';
-import { ArrowLeft, Columns2, Download, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Maximize2, Minimize2, Moon, RefreshCw, Search, Sun, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, Columns2, Download, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Maximize2, Minimize2, Moon, RefreshCw, Search, Sun, Terminal as TerminalIcon, ZoomIn, ZoomOut } from 'lucide-react';
+import { Terminal } from '../components/terminal/Terminal';
+import { useTerminalStore } from '../store/terminalStore';
 
 type ExplorerEntry = {
   name: string;
@@ -4904,7 +4906,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   };
 
   return (
-    <div className="h-full min-h-0 overflow-hidden bg-white text-[rgb(13,13,13)] dark:bg-[#212121] dark:text-slate-100">
+    <div className="relative h-full min-h-0 overflow-hidden bg-white text-[rgb(13,13,13)] dark:bg-[#212121] dark:text-slate-100">
       <div className="flex h-full min-h-0 overflow-hidden">
         <div
           className={`flex w-12 shrink-0 flex-col items-center border-r border-[rgb(209,209,209)] py-2 dark:border-[#2f2f2f] ${theme === 'dark' ? 'bg-[#1b1b1b]' : 'bg-[#f5f5f5]'
@@ -4946,8 +4948,22 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             )}
             <Search className="w-4 h-4" />
           </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={() => useTerminalStore.getState().toggleTerminal()}
+            className={`relative mb-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${theme === 'dark'
+              ? 'text-slate-300 hover:bg-[#2a2a2a]'
+              : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
+              }`}
+            title="终端"
+          >
+            <TerminalIcon className="w-4 h-4" />
+          </button>
         </div>
 
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
         {!explorerCollapsed && (
           <aside
             className="relative flex shrink-0 flex-col border-r border-[rgb(209,209,209)] bg-[#f7f7f8] dark:border-[#2f2f2f] dark:bg-[#171717]"
@@ -5236,6 +5252,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           ) : (
             <div className="flex h-full min-h-0 min-w-0">{renderEditorGroup('left')}</div>
           )}
+        </div>
+          </div>
+        <Terminal defaultCwd={activeProject?.realDirPath || '.'} />
         </div>
       </div>
       {contextMenu && (
