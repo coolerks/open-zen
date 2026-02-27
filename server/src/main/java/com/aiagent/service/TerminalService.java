@@ -42,8 +42,8 @@ public class TerminalService {
         public void resize(int cols, int rows) {
             if (!closed && process.isAlive()) {
                 try {
-                    process.getWinSize().setColumns(cols);
-                    process.getWinSize().setRows(rows);
+                    com.pty4j.WinSize winSize = new com.pty4j.WinSize(cols, rows);
+                    process.setWinSize(winSize);
                 } catch (Exception e) {
                     log.error("Failed to resize terminal", e);
                 }

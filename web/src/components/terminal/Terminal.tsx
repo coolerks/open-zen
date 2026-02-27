@@ -6,7 +6,6 @@ import '@xterm/xterm/css/xterm.css';
 import { Plus, X, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import { useTerminalStore } from '../../store/terminalStore';
 import { useThemeStore } from '../../store/themeStore';
-import { useProjectStore } from '../../store/projectStore';
 
 type TerminalInstance = {
   xterm: XTerm;
@@ -29,9 +28,6 @@ export function Terminal() {
   } = useTerminalStore();
 
   const theme = useThemeStore((state) => state.theme);
-  const activeProject = useProjectStore((state) =>
-    state.projects.find((p) => p.id === state.selectedProjectId)
-  );
 
   const [isResizing, setIsResizing] = useState(false);
   const [showFontSettings, setShowFontSettings] = useState(false);
@@ -297,7 +293,7 @@ export function Terminal() {
 
   // Handle creating new terminal tab
   const handleAddTab = () => {
-    const cwd = activeProject?.directory || '.';
+    const cwd = '.';
     addTab(cwd);
   };
 
