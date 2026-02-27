@@ -4129,7 +4129,28 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
     // Handle image preview (non-SVG images)
     if (isImageFile(activeTab.name) && !isSvgFile(activeTab.name)) {
-      const imageUrl = `/api/projects/${encodeURIComponent(activeProjectId ?? '')}/filesystem/file?path=${encodeURIComponent(activeTab.path)}`;
+      // Create data URL from base64 content
+      const getImageDataUrl = (content: string, fileName: string): string => {
+        const ext = fileName.split('.').pop()?.toLowerCase() || 'png';
+        const mimeTypes: Record<string, string> = {
+          png: 'image/png',
+          jpg: 'image/jpeg',
+          jpeg: 'image/jpeg',
+          gif: 'image/gif',
+          webp: 'image/webp',
+          bmp: 'image/bmp',
+          ico: 'image/x-icon',
+        };
+        const mimeType = mimeTypes[ext] || 'image/png';
+        // If content is already a data URL, return it as-is
+        if (content.startsWith('data:')) {
+          return content;
+        }
+        // Otherwise, assume it's base64 and create a data URL
+        return `data:${mimeType};base64,${content}`;
+      };
+
+      const imageUrl = getImageDataUrl(activeTab.content, activeTab.name);
       const zoomLevel = imageZoomLevels[activeTab.path] ?? 100;
 
       const handleZoomIn = () => {
@@ -4194,26 +4215,24 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     if (isMarkdownFile(activeTab.name)) {
       const isPreviewMode = markdownPreviewMode[activeTab.path] ?? true;
 
-      const markdownComponents = useMemo(() => {
-        return {
-          pre: ({ children, ...props }: any) => {
-            const firstChild = Array.isArray(children) ? children[0] : children;
-            const className = firstChild?.props?.className ?? '';
-            const language = normalizeCodeLanguage(/language-([^\s]+)/i.exec(className)?.[1] ?? '');
-            const code = getMarkdownCodeText(firstChild?.props?.children);
+      const markdownComponents = {
+        pre: ({ children, ...props }: any) => {
+          const firstChild = Array.isArray(children) ? children[0] : children;
+          const className = firstChild?.props?.className ?? '';
+          const language = normalizeCodeLanguage(/language-([^\s]+)/i.exec(className)?.[1] ?? '');
+          const code = getMarkdownCodeText(firstChild?.props?.children);
 
-            if (code == null) {
-              return <pre {...props}>{children}</pre>;
-            }
+          if (code == null) {
+            return <pre {...props}>{children}</pre>;
+          }
 
-            if (language === 'mermaid') {
-              return <MermaidBlock chart={code} />;
-            }
+          if (language === 'mermaid') {
+            return <MermaidBlock chart={code} />;
+          }
 
-            return <CodeBlock language={language} code={code} />;
-          },
-        };
-      }, []);
+          return <CodeBlock language={language} code={code} />;
+        },
+      };
 
       return (
         <div className="flex h-full flex-col">
