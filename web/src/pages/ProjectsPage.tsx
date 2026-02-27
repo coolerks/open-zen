@@ -346,7 +346,12 @@ const MermaidBlock: React.FC<{ chart: string }> = ({ chart }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const renderSeedRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 9)}`);
   const renderIndexRef = useRef(0);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'svg' | 'png' | 'jpeg' | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
   const [svgMarkup, setSvgMarkup] = useState('');
 
   useEffect(() => {
@@ -409,18 +414,155 @@ const MermaidBlock: React.FC<{ chart: string }> = ({ chart }) => {
     };
   }, [chart]);
 
-  if (renderError) {
-    return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
-        <div className="font-semibold">Mermaid 渲染失败</div>
-        <div className="mt-1 whitespace-pre-wrap font-mono text-xs">{renderError}</div>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!exportMenuOpen) {
+      return;
+    }
+    const onMouseDown = (event: MouseEvent) => {
+      if (exportMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setExportMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [exportMenuOpen]);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), 3000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied]);
+
+  useEffect(() => {
+    if (!downloaded) {
+      return;
+    }
+    const timer = window.setTimeout(() => setDownloaded(false), 3000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [downloaded]);
+
+  const handleExport = async (format: 'svg' | 'png' | 'jpeg') => {
+    if (!svgMarkup) {
+      return;
+    }
+    setExportingFormat(format);
+    try {
+      if (format === 'svg') {
+        const blob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+        triggerBlobDownload(blob, `mermaid-${createTimestampSuffix()}.svg`);
+      } else {
+        const blob = await renderSvgToRasterBlob(svgMarkup, format);
+        triggerBlobDownload(blob, `mermaid-${createTimestampSuffix()}.${format}`);
+      }
+      setDownloaded(true);
+    } catch (error) {
+      console.error('Mermaid 导出失败', error);
+    } finally {
+      setExportingFormat(null);
+      setExportMenuOpen(false);
+    }
+  };
 
   return (
-    <div className="my-4 flex justify-center overflow-auto rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
-      <div ref={containerRef} />
+    <div className="chat-mermaid-card">
+      <div className="chat-code-toolbar">
+        <span className="chat-code-language">Mermaid</span>
+        <div className="flex items-center gap-1">
+          {downloaded ? (
+            <span className="chat-toolbar-feedback">已下载</span>
+          ) : (
+            <div ref={exportMenuRef} className="relative">
+              <button
+                type="button"
+                className="chat-toolbar-icon-button"
+                title="下载图表"
+                onClick={() => setExportMenuOpen((prev) => !prev)}
+                disabled={Boolean(exportingFormat) || Boolean(renderError || !svgMarkup)}
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 4.5V15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <path d="M8 11.5L12 15.5L16 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M5.5 19.5H18.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </button>
+              {exportMenuOpen && !renderError && (
+                <div className="chat-export-menu">
+                  <button
+                    type="button"
+                    className="chat-export-menu-item"
+                    onClick={() => {
+                      void handleExport('svg');
+                    }}
+                    disabled={Boolean(exportingFormat)}
+                  >
+                    导出 SVG
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-export-menu-item"
+                    onClick={() => {
+                      void handleExport('png');
+                    }}
+                    disabled={Boolean(exportingFormat)}
+                  >
+                    导出 PNG
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-export-menu-item"
+                    onClick={() => {
+                      void handleExport('jpeg');
+                    }}
+                    disabled={Boolean(exportingFormat)}
+                  >
+                    导出 JPEG
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {copied ? (
+            <span className="chat-toolbar-feedback">已复制</span>
+          ) : (
+            <button
+              type="button"
+              className="chat-toolbar-icon-button"
+              title="复制 Mermaid 代码"
+              onClick={() => {
+                void copyTextToClipboard(chart)
+                  .then(() => setCopied(true))
+                  .catch((error) => {
+                    console.error('Mermaid 代码复制失败', error);
+                  });
+              }}
+              disabled={Boolean(!chart.trim())}
+            >
+              <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5.5 2.5h-3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <rect x="6.5" y="1.5" width="8" height="8" rx="1" stroke="currentColor" strokeWidth="1.2" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div ref={containerRef} className={`chat-mermaid ${renderError ? 'hidden' : ''}`} />
+      {renderError && (
+        <div className="chat-mermaid-status chat-mermaid-status--error">
+          图表无法渲染，请检查 Mermaid 语法
+          <div className="mt-1 whitespace-pre-wrap font-mono text-xs">{renderError}</div>
+        </div>
+      )}
     </div>
   );
 };
@@ -483,7 +625,7 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(code);
+      await copyTextToClipboard(code);
       setCopied(true);
     } catch (error) {
       console.error('复制失败', error);
@@ -959,6 +1101,133 @@ function isLikelyBinaryFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   const extension = lower.includes('.') ? lower.split('.').pop() ?? '' : '';
   return BINARY_EXTENSIONS.has(extension);
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (!text) {
+    return;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+}
+
+function createTimestampSuffix(): string {
+  const now = new Date();
+  const pad = (value: number) => value.toString().padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(
+    now.getMinutes(),
+  )}${pad(now.getSeconds())}`;
+}
+
+function triggerBlobDownload(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function parseSvgDimension(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const numeric = Number.parseFloat(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function readSvgSize(svgMarkup: string): { width: number; height: number } {
+  try {
+    const parser = new DOMParser();
+    const documentElement = parser.parseFromString(svgMarkup, 'image/svg+xml').documentElement;
+    const width = parseSvgDimension(documentElement.getAttribute('width'));
+    const height = parseSvgDimension(documentElement.getAttribute('height'));
+
+    if (width && height) {
+      return { width, height };
+    }
+
+    const viewBox = documentElement.getAttribute('viewBox');
+    if (viewBox) {
+      const values = viewBox
+        .split(/[\s,]+/)
+        .map((item) => Number.parseFloat(item))
+        .filter((item) => Number.isFinite(item));
+      if (values.length === 4 && values[2] > 0 && values[3] > 0) {
+        return { width: values[2], height: values[3] };
+      }
+    }
+  } catch {
+    // 解析失败兜底尺寸
+  }
+  return { width: 1200, height: 800 };
+}
+
+async function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图像加载失败'));
+    image.src = src;
+  });
+}
+
+async function renderSvgToRasterBlob(svgMarkup: string, format: 'png' | 'jpeg'): Promise<Blob> {
+  const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await loadImageElement(svgUrl);
+    const { width, height } = readSvgSize(svgMarkup);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Canvas 上下文不可用');
+    }
+
+    if (format === 'jpeg') {
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (result) => {
+          if (!result) {
+            reject(new Error('图像导出失败'));
+            return;
+          }
+          resolve(result);
+        },
+        mimeType,
+        format === 'jpeg' ? 0.92 : undefined,
+      );
+    });
+
+    return blob;
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
 }
 
 function isImageFile(fileName: string): boolean {
@@ -1692,6 +1961,33 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       window.removeEventListener('scroll', closeMenu, true);
       window.removeEventListener('keydown', closeByEsc);
     };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const menuEl = contextMenuRef.current;
+    if (!menuEl) {
+      return;
+    }
+    const adjustPosition = () => {
+      const rect = menuEl.getBoundingClientRect();
+      const padding = 8;
+      const { innerWidth, innerHeight } = window;
+      let nextX = contextMenu.x;
+      let nextY = contextMenu.y;
+      if (rect.right > innerWidth - padding) {
+        nextX = Math.max(padding, innerWidth - rect.width - padding);
+      }
+      if (rect.bottom > innerHeight - padding) {
+        nextY = Math.max(padding, innerHeight - rect.height - padding);
+      }
+      if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
+        setContextMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+      }
+    };
+    window.requestAnimationFrame(adjustPosition);
   }, [contextMenu]);
 
   useEffect(() => {
@@ -2589,14 +2885,38 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
         return;
       }
 
-      const uploadPromises = Array.from(files).map(async (file) => {
-        try {
+      const readFileForUpload = async (file: File): Promise<{ content: string; base64Encoded: boolean }> => {
+        const treatAsBinary = isImageFile(file.name) || isLikelyBinaryFile(file.name) || !file.type.startsWith('text/');
+        if (!treatAsBinary) {
           const reader = new FileReader();
-          const content = await new Promise<string>((resolve, reject) => {
+          const text = await new Promise<string>((resolve, reject) => {
             reader.onload = () => resolve(reader.result as string);
             reader.onerror = () => reject(reader.error);
             reader.readAsText(file);
           });
+          return { content: text, base64Encoded: false };
+        }
+
+        const reader = new FileReader();
+        const base64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const arrayBuffer = reader.result as ArrayBuffer;
+            const uint8 = new Uint8Array(arrayBuffer);
+            let binary = '';
+            for (let i = 0; i < uint8.byteLength; i += 1) {
+              binary += String.fromCharCode(uint8[i]);
+            }
+            resolve(btoa(binary));
+          };
+          reader.onerror = () => reject(reader.error);
+          reader.readAsArrayBuffer(file);
+        });
+        return { content: base64, base64Encoded: true };
+      };
+
+      const uploadPromises = Array.from(files).map(async (file) => {
+        try {
+          const { content, base64Encoded } = await readFileForUpload(file);
 
           const fileName = file.name;
           const filePath = targetDirectoryPath ? `${targetDirectoryPath}/${fileName}` : fileName;
@@ -2612,6 +2932,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           await projectFilesystemApi.writeFile(activeProject.id, {
             path: filePath,
             content,
+            base64Encoded,
           });
 
           return { success: true, fileName };

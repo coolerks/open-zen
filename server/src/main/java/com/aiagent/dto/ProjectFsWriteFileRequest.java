@@ -10,6 +10,10 @@ public class ProjectFsWriteFileRequest {
     private String path;
 
     private String content;
+    /**
+     * 当为 true 时，content 视为 Base64 编码的二进制数据。
+     */
+    private Boolean base64Encoded;
 
     /**
      * 客户端读取到的文件版本，用于写入前冲突检测。

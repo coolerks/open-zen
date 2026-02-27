@@ -168,7 +168,13 @@ public class ProjectFilesystemService {
         Path tempPath = null;
         try {
             tempPath = Files.createTempFile(parentPath, ".openzen-write-", ".tmp");
-            Files.writeString(tempPath, content, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+            byte[] binaryBytes = null;
+            if (Boolean.TRUE.equals(request.getBase64Encoded())) {
+                binaryBytes = Base64.getDecoder().decode(content);
+                Files.write(tempPath, binaryBytes, StandardOpenOption.TRUNCATE_EXISTING);
+            } else {
+                Files.writeString(tempPath, content, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+            }
             try {
                 Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException ex) {
@@ -178,7 +184,11 @@ public class ProjectFilesystemService {
             String relativePath = toRelativePath(rootPath, filePath);
             response.setPath(relativePath);
             response.setContent(content);
-            response.setSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+            if (Boolean.TRUE.equals(request.getBase64Encoded())) {
+                response.setSize((long) (binaryBytes == null ? 0 : binaryBytes.length));
+            } else {
+                response.setSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+            }
             response.setRevision(resolveFileRevision(filePath));
             projectFilesystemWatchService.markSelfWrite(projectId, rootPath, relativePath, request.getClientId());
             return response;

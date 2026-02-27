@@ -17,6 +17,7 @@ type WriteFileRequest = {
   content: string;
   expectedRevision?: string | null;
   clientId?: string;
+  base64Encoded?: boolean;
 };
 
 type MoveEntryRequest = {
