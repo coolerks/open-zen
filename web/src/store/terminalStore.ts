@@ -28,7 +28,12 @@ type TerminalState = {
 const TERMINAL_HEIGHT_STORAGE_KEY = 'terminal.height';
 const TERMINAL_FONT_FAMILY_STORAGE_KEY = 'terminal.fontFamily';
 const TERMINAL_MIN_HEIGHT = 100;
-const TERMINAL_MAX_HEIGHT = 800;
+
+// Dynamic max height calculation
+function getMaxHeight(): number {
+  return Math.floor(window.innerHeight * 0.7); // Max 70% of window height
+}
+
 const TERMINAL_DEFAULT_HEIGHT = Math.floor(window.innerHeight / 3);
 
 const DEFAULT_FONT_FAMILY = 'JetBrainsMonoNL Nerd Font, Menlo, Monaco, "Courier New", monospace';
@@ -40,7 +45,7 @@ function readStoredHeight(): number {
   const parsed = Number.parseInt(raw, 10);
   if (Number.isNaN(parsed)) return TERMINAL_DEFAULT_HEIGHT;
 
-  return Math.max(TERMINAL_MIN_HEIGHT, Math.min(TERMINAL_MAX_HEIGHT, parsed));
+  return Math.max(TERMINAL_MIN_HEIGHT, Math.min(getMaxHeight(), parsed));
 }
 
 function readStoredFontFamily(): string {
@@ -82,7 +87,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   setHeight: (height: number) => {
-    const clampedHeight = Math.max(TERMINAL_MIN_HEIGHT, Math.min(TERMINAL_MAX_HEIGHT, height));
+    const clampedHeight = Math.max(TERMINAL_MIN_HEIGHT, Math.min(getMaxHeight(), height));
     set({ height: clampedHeight });
     window.localStorage.setItem(TERMINAL_HEIGHT_STORAGE_KEY, String(clampedHeight));
   },

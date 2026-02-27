@@ -19,7 +19,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(terminalWebSocketHandler, "/api/terminal/{terminalId}")
+        registry.addHandler(terminalWebSocketHandler, "/api/terminal/**")
                 .setAllowedOrigins("*");
     }
 }

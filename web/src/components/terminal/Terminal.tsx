@@ -340,7 +340,7 @@ export function Terminal() {
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-0 left-0 right-0 z-10 flex flex-col border-t border-[rgb(209,209,209)] bg-white dark:border-[#2f2f2f] dark:bg-[#1e1e1e]"
+      className="flex shrink-0 flex-col border-t border-[rgb(209,209,209)] bg-white dark:border-[#2f2f2f] dark:bg-[#1e1e1e]"
       style={{ height: `${height}px` }}
     >
       {/* Resize handle */}
