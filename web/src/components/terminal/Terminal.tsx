@@ -152,6 +152,8 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
       allowTransparency: false,
       scrollback: 10000,
       convertEol: true,
+      // Enable proper terminal features for vim and other applications
+      allowProposedApi: true,
     });
 
     const fitAddon = new FitAddon();
@@ -292,9 +294,9 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
     return () => window.removeEventListener('resize', handleWindowResize);
   }, []);
 
-  // Fit terminal when switching tabs
+  // Fit terminal when switching tabs or when terminal is opened
   useEffect(() => {
-    if (activeTabId) {
+    if (activeTabId && isOpen) {
       const instance = terminalInstancesRef.current.get(activeTabId);
       if (instance) {
         setTimeout(() => {
@@ -306,7 +308,7 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
         }, 50);
       }
     }
-  }, [activeTabId]);
+  }, [activeTabId, isOpen]);
 
   // Handle creating new terminal tab
   const handleAddTab = () => {
@@ -334,10 +336,10 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
 
     return (
       <div
-        key={tabId}
+        key={`${tabId}-${isOpen}`}
         className={`h-full ${activeTabId === tabId ? 'block' : 'hidden'}`}
         ref={(element) => {
-          if (element && activeTabId === tabId && !terminalInstancesRef.current.has(tabId)) {
+          if (element && !terminalInstancesRef.current.has(tabId)) {
             createTerminal(tabId, element, tab.cwd);
           }
         }}
