@@ -125,6 +125,26 @@ public class ProjectFilesystemService {
         }
     }
 
+    public DownloadedFile downloadFile(String projectId, String rawRelativePath) {
+        Path rootPath = resolveProjectRootPath(projectId);
+        Path filePath = resolvePathInsideProject(rootPath, rawRelativePath);
+        if (!Files.exists(filePath) || Files.isDirectory(filePath)) {
+            throw new RuntimeException(FILE_NOT_FOUND_MESSAGE);
+        }
+
+        try {
+            byte[] bytes = Files.readAllBytes(filePath);
+            String contentType = Files.probeContentType(filePath);
+            if (contentType == null || contentType.isBlank()) {
+                contentType = "application/octet-stream";
+            }
+            String fileName = filePath.getFileName() == null ? "download" : filePath.getFileName().toString();
+            return new DownloadedFile(fileName, contentType, bytes);
+        } catch (IOException ex) {
+            throw new RuntimeException("读取文件失败，请检查权限后重试。");
+        }
+    }
+
     public ProjectFsFileResponse writeFile(String projectId, ProjectFsWriteFileRequest request) {
         Path rootPath = resolveProjectRootPath(projectId);
         Path filePath = resolvePathInsideProject(rootPath, request.getPath());
@@ -388,5 +408,8 @@ public class ProjectFilesystemService {
         } catch (IOException ex) {
             throw new RuntimeException("读取文件版本失败，请稍后重试。");
         }
+    }
+
+    public record DownloadedFile(String fileName, String contentType, byte[] bytes) {
     }
 }

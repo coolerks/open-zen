@@ -2667,16 +2667,21 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       }
 
       try {
-        const fileUrl = `/api/projects/${encodeURIComponent(activeProjectId)}/filesystem/file?path=${encodeURIComponent(filePath)}`;
-
-        // Create a temporary anchor element to trigger download
+        const fileUrl = `/api/projects/${encodeURIComponent(activeProjectId)}/filesystem/file/download?path=${encodeURIComponent(filePath)}`;
+        const response = await fetch(fileUrl);
+        if (!response.ok) {
+          throw new Error('下载文件失败');
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = fileUrl;
+        a.href = objectUrl;
         a.download = fileName;
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        URL.revokeObjectURL(objectUrl);
       } catch (error: any) {
         setTreeError(error?.message ?? '下载文件失败');
       }
@@ -2755,7 +2760,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           const data = await projectFilesystemApi.readFileWithOptions(
             activeProjectId,
             filePath,
-            options?.allowLargeFile === true,
+            true,
           );
           // The backend returns file content, we'll use it as base64 for images
           tab = {

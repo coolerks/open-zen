@@ -13,9 +13,14 @@ import com.aiagent.service.ProjectFilesystemService;
 import com.aiagent.service.ProjectFilesystemWatchService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.nio.charset.StandardCharsets;
 
 @RestController
 @RequestMapping("/api/projects/{projectId}/filesystem")
@@ -42,6 +47,19 @@ public class ProjectFilesystemController {
                                                      @RequestParam String path,
                                                      @RequestParam(defaultValue = "false") boolean allowLargeFile) {
         return ApiResult.ok(projectFilesystemService.readFile(projectId, path, allowLargeFile));
+    }
+
+    @GetMapping("/file/download")
+    public ResponseEntity<byte[]> downloadFile(@PathVariable String projectId,
+                                               @RequestParam String path) {
+        ProjectFilesystemService.DownloadedFile file = projectFilesystemService.downloadFile(projectId, path);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(file.fileName(), StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .contentType(MediaType.parseMediaType(file.contentType()))
+                .body(file.bytes());
     }
 
     @PutMapping("/file")
