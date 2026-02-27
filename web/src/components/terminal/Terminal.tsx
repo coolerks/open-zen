@@ -302,6 +302,7 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
         setTimeout(() => {
           try {
             instance.fitAddon.fit();
+            instance.xterm.focus();
           } catch (error) {
             // Ignore
           }
@@ -336,7 +337,7 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
 
     return (
       <div
-        key={`${tabId}-${isOpen}`}
+        key={tabId}
         className={`h-full ${activeTabId === tabId ? 'block' : 'hidden'}`}
         ref={(element) => {
           if (element && !terminalInstancesRef.current.has(tabId)) {
@@ -353,13 +354,13 @@ export function Terminal({ defaultCwd = '.' }: TerminalProps) {
     setShowFontSettings(false);
   };
 
-  if (!isOpen) return null;
-
   return (
     <div
       ref={containerRef}
-      className="relative flex shrink-0 flex-col border-t border-[rgb(209,209,209)] bg-white dark:border-[#2f2f2f] dark:bg-[#1e1e1e]"
-      style={{ height: `${height}px` }}
+      className={`relative flex shrink-0 flex-col border-t border-[rgb(209,209,209)] bg-white dark:border-[#2f2f2f] dark:bg-[#1e1e1e] ${
+        isOpen ? '' : 'hidden'
+      }`}
+      style={{ height: isOpen ? `${height}px` : 0 }}
     >
       {/* Resize handle */}
       <div
