@@ -491,18 +491,28 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
   };
 
   return (
-    <div className="group/code relative my-4">
-      <div className="flex items-center justify-between rounded-t-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-        <span>{displayLanguage}</span>
-        <button
-          onClick={handleCopy}
-          className="rounded px-2 py-1 text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
-          type="button"
-        >
-          {copied ? '已复制' : '复制'}
-        </button>
+    <div className="chat-code-block">
+      <div className="chat-code-toolbar">
+        <span className="chat-code-language">{displayLanguage}</span>
+        <div className="flex items-center gap-1">
+          {copied ? (
+            <span className="chat-toolbar-feedback">已复制</span>
+          ) : (
+            <button
+              type="button"
+              className="chat-toolbar-icon-button"
+              onClick={handleCopy}
+              title="复制代码"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5.5 2.5h-3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                <rect x="6.5" y="1.5" width="8" height="8" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
-      <pre className="!mt-0 overflow-auto rounded-b-lg border border-t-0 border-slate-200 bg-slate-900 p-4 text-sm dark:border-slate-700">
+      <pre>
         <code className="hljs" dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
       </pre>
     </div>
@@ -4272,7 +4282,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           {isPreviewMode ? (
             <div className="h-full min-h-0 flex-1 overflow-auto bg-white dark:bg-[#1e1e1e]">
               <div className="mx-auto max-w-4xl px-8 py-6">
-                <div className="prose prose-slate dark:prose-invert max-w-none">
+                <div className="chat-markdown text-sm leading-7 text-slate-800 dark:text-slate-100">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm, remarkMath]}
                     rehypePlugins={[rehypeKatex, rehypeHighlightMarks]}

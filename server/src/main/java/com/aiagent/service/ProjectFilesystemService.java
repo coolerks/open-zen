@@ -22,8 +22,10 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -99,7 +101,22 @@ public class ProjectFilesystemService {
             byte[] bytes = Files.readAllBytes(filePath);
             ProjectFsFileResponse response = new ProjectFsFileResponse();
             response.setPath(toRelativePath(rootPath, filePath));
-            response.setContent(new String(bytes, StandardCharsets.UTF_8));
+
+            // Check if file is binary (image file) by extension
+            String fileName = filePath.getFileName().toString().toLowerCase(Locale.ROOT);
+            boolean isBinaryImage = fileName.endsWith(".png") || fileName.endsWith(".jpg") ||
+                                   fileName.endsWith(".jpeg") || fileName.endsWith(".gif") ||
+                                   fileName.endsWith(".webp") || fileName.endsWith(".bmp") ||
+                                   fileName.endsWith(".ico");
+
+            if (isBinaryImage) {
+                // For binary image files, encode as base64
+                response.setContent(Base64.getEncoder().encodeToString(bytes));
+            } else {
+                // For text files, use UTF-8
+                response.setContent(new String(bytes, StandardCharsets.UTF_8));
+            }
+
             response.setSize((long) bytes.length);
             response.setRevision(resolveFileRevision(filePath));
             return response;
