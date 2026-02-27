@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import 'highlight.js/styles/github-dark.css';
 import ignore, { type Ignore } from 'ignore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
@@ -14,7 +15,7 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectFsWatchEvent, ProjectItem } from '../types';
-import { ArrowLeft, Columns2, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Moon, RefreshCw, Search, Sun } from 'lucide-react';
+import { ArrowLeft, Columns2, Download, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Maximize2, Minimize2, Moon, RefreshCw, Search, Sun, ZoomIn, ZoomOut } from 'lucide-react';
 
 type ExplorerEntry = {
   name: string;
@@ -135,6 +136,378 @@ const PROJECT_LARGE_FILE_OPEN_LIMIT_BYTES = 1024 * 1024;
 const PROJECT_LOADING_HINT_DELAY_MS = 1000;
 const PROJECT_WATCH_INTEREST_DEBOUNCE_MS = 120;
 const PROJECT_WATCH_TREE_REFRESH_DEBOUNCE_MS = 120;
+
+// Markdown rendering helpers and components
+type HighlightResult = {
+  value: string;
+  language?: string;
+};
+
+type HighlightJsApi = {
+  getLanguage: (languageName: string) => unknown;
+  highlight: (code: string, options: { language: string; ignoreIllegals?: boolean }) => HighlightResult;
+  highlightAuto: (code: string) => HighlightResult;
+};
+
+let highlightJsLoader: Promise<HighlightJsApi> | null = null;
+
+async function getHighlightJsApi(): Promise<HighlightJsApi> {
+  if (!highlightJsLoader) {
+    highlightJsLoader = import('highlight.js/lib/common').then((module) => module.default as unknown as HighlightJsApi);
+  }
+  return highlightJsLoader;
+}
+
+const CODE_LANGUAGE_ALIAS_MAP: Record<string, string> = {
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  ts: 'typescript',
+  'c++': 'cpp',
+  py: 'python',
+  rb: 'ruby',
+  sh: 'bash',
+  shell: 'bash',
+  shellscript: 'bash',
+  yml: 'yaml',
+  md: 'markdown',
+  csharp: 'cs',
+  'c#': 'cs',
+  text: 'plaintext',
+};
+
+const CODE_LANGUAGE_LABEL_MAP: Record<string, string> = {
+  javascript: 'JavaScript',
+  typescript: 'TypeScript',
+  jsx: 'JSX',
+  tsx: 'TSX',
+  python: 'Python',
+  java: 'Java',
+  go: 'Go',
+  rust: 'Rust',
+  cpp: 'C++',
+  c: 'C',
+  cs: 'C#',
+  php: 'PHP',
+  ruby: 'Ruby',
+  bash: 'Bash',
+  sql: 'SQL',
+  html: 'HTML',
+  css: 'CSS',
+  json: 'JSON',
+  yaml: 'YAML',
+  markdown: 'Markdown',
+  plaintext: 'Text',
+};
+
+function normalizeCodeLanguage(rawLanguage: string | null | undefined): string {
+  if (!rawLanguage) {
+    return '';
+  }
+  const normalized = rawLanguage.trim().toLowerCase();
+  return CODE_LANGUAGE_ALIAS_MAP[normalized] ?? normalized;
+}
+
+function toCodeLanguageLabel(language: string): string {
+  if (!language) {
+    return 'Text';
+  }
+  return CODE_LANGUAGE_LABEL_MAP[language] ?? language;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getMarkdownCodeText(raw: unknown): string | null {
+  if (raw == null) {
+    return null;
+  }
+  if (typeof raw === 'string') {
+    return raw.replace(/\n$/, '');
+  }
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => (typeof item === 'string' ? item : String(item ?? '')))
+      .join('')
+      .replace(/\n$/, '');
+  }
+  return String(raw).replace(/\n$/, '');
+}
+
+type HastNode = {
+  type: string;
+  value?: string;
+  tagName?: string;
+  children?: HastNode[];
+  properties?: Record<string, unknown>;
+};
+
+type HighlightSegment = {
+  text: string;
+  highlighted: boolean;
+};
+
+function splitHighlightSegments(text: string): HighlightSegment[] {
+  const pattern = /==([^=\n][\s\S]*?)==/g;
+  const segments: HighlightSegment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null = pattern.exec(text);
+
+  while (match) {
+    const start = match.index;
+    const end = pattern.lastIndex;
+
+    if (start > cursor) {
+      segments.push({ text: text.slice(cursor, start), highlighted: false });
+    }
+
+    const content = match[1];
+    if (content) {
+      segments.push({ text: content, highlighted: true });
+    } else {
+      segments.push({ text: match[0], highlighted: false });
+    }
+
+    cursor = end;
+    match = pattern.exec(text);
+  }
+
+  if (cursor < text.length) {
+    segments.push({ text: text.slice(cursor), highlighted: false });
+  }
+
+  if (segments.length === 0) {
+    segments.push({ text, highlighted: false });
+  }
+  return segments;
+}
+
+function applyHighlightSyntax(node: HastNode, insideLiteral = false): void {
+  if (!node || !Array.isArray(node.children)) {
+    return;
+  }
+
+  const currentInsideLiteral =
+    insideLiteral || (node.type === 'element' && (node.tagName === 'pre' || node.tagName === 'code'));
+  const nextChildren: HastNode[] = [];
+
+  for (const child of node.children) {
+    if (
+      !currentInsideLiteral &&
+      child.type === 'text' &&
+      typeof child.value === 'string' &&
+      child.value.includes('==')
+    ) {
+      const segments = splitHighlightSegments(child.value);
+      const hasHighlighted = segments.some((segment) => segment.highlighted);
+      if (!hasHighlighted) {
+        nextChildren.push(child);
+        continue;
+      }
+
+      for (const segment of segments) {
+        if (!segment.text) {
+          continue;
+        }
+        if (segment.highlighted) {
+          nextChildren.push({
+            type: 'element',
+            tagName: 'mark',
+            properties: {},
+            children: [{ type: 'text', value: segment.text }],
+          });
+        } else {
+          nextChildren.push({ type: 'text', value: segment.text });
+        }
+      }
+      continue;
+    }
+
+    applyHighlightSyntax(child, currentInsideLiteral);
+    nextChildren.push(child);
+  }
+
+  node.children = nextChildren;
+}
+
+function rehypeHighlightMarks() {
+  return (tree: HastNode) => {
+    applyHighlightSyntax(tree);
+  };
+}
+
+const MermaidBlock: React.FC<{ chart: string }> = ({ chart }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const renderSeedRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 9)}`);
+  const renderIndexRef = useRef(0);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [svgMarkup, setSvgMarkup] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const render = async () => {
+      if (!containerRef.current) {
+        return;
+      }
+
+      if (!chart.trim()) {
+        containerRef.current.innerHTML = '';
+        setRenderError(null);
+        setSvgMarkup('');
+        return;
+      }
+
+      try {
+        const mermaidModule = await import('mermaid');
+        const mermaid = mermaidModule.default;
+        const parseErrorHandler = (mermaid as unknown as { setParseErrorHandler?: (handler: (err: any, hash: any) => void) => void })
+          .setParseErrorHandler;
+        parseErrorHandler?.(() => {
+          // Suppress Mermaid global parseError output
+        });
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          suppressErrorRendering: true,
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+        });
+
+        renderIndexRef.current += 1;
+        const elementId = `${renderSeedRef.current}-${renderIndexRef.current}`;
+        const result = await mermaid.render(elementId, chart);
+
+        if (!cancelled) {
+          if (!containerRef.current) {
+            return;
+          }
+          containerRef.current.innerHTML = result.svg;
+          setRenderError(null);
+          setSvgMarkup(result.svg);
+        }
+      } catch (error: unknown) {
+        if (!cancelled) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          setRenderError(errorMessage);
+          setSvgMarkup('');
+          if (containerRef.current) {
+            containerRef.current.innerHTML = '';
+          }
+        }
+      }
+    };
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  if (renderError) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+        <div className="font-semibold">Mermaid 渲染失败</div>
+        <div className="mt-1 whitespace-pre-wrap font-mono text-xs">{renderError}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="my-4 flex justify-center overflow-auto rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+      <div ref={containerRef} />
+    </div>
+  );
+};
+
+const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, code }) => {
+  const [highlightedHtml, setHighlightedHtml] = useState(() => escapeHtml(code));
+  const [resolvedLanguage, setResolvedLanguage] = useState(() => normalizeCodeLanguage(language));
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const highlightCode = async () => {
+      const normalizedLanguage = normalizeCodeLanguage(language);
+
+      try {
+        const highlightJs = await getHighlightJsApi();
+        let html = '';
+        let finalLanguage = normalizedLanguage;
+
+        if (normalizedLanguage && highlightJs.getLanguage(normalizedLanguage)) {
+          html = highlightJs.highlight(code, { language: normalizedLanguage, ignoreIllegals: true }).value;
+        } else {
+          const autoHighlighted = highlightJs.highlightAuto(code);
+          html = autoHighlighted.value;
+          finalLanguage = autoHighlighted.language ?? normalizedLanguage;
+        }
+
+        if (!cancelled) {
+          setHighlightedHtml(html || escapeHtml(code));
+          setResolvedLanguage(finalLanguage);
+        }
+      } catch {
+        if (!cancelled) {
+          setHighlightedHtml(escapeHtml(code));
+          setResolvedLanguage(normalizedLanguage);
+        }
+      }
+    };
+
+    void highlightCode();
+    return () => {
+      cancelled = true;
+    };
+  }, [language, code]);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setCopied(false), 3000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied]);
+
+  const currentLanguage = resolvedLanguage || normalizeCodeLanguage(language) || 'plaintext';
+  const displayLanguage = toCodeLanguageLabel(currentLanguage);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch (error) {
+      console.error('复制失败', error);
+    }
+  };
+
+  return (
+    <div className="group/code relative my-4">
+      <div className="flex items-center justify-between rounded-t-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+        <span>{displayLanguage}</span>
+        <button
+          onClick={handleCopy}
+          className="rounded px-2 py-1 text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+          type="button"
+        >
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <pre className="!mt-0 overflow-auto rounded-b-lg border border-t-0 border-slate-200 bg-slate-900 p-4 text-sm dark:border-slate-700">
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
+      </pre>
+    </div>
+  );
+};
 
 function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
@@ -821,6 +1194,9 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const [treeError, setTreeError] = useState<string | null>(null);
   const [openTabs, setOpenTabs] = useState<Record<string, OpenFileTab>>({});
   const [svgPreviewMode, setSvgPreviewMode] = useState<Record<string, boolean>>({}); // Track SVG preview mode per file path
+  const [markdownPreviewMode, setMarkdownPreviewMode] = useState<Record<string, boolean>>({}); // Track markdown preview mode per file path
+  const [imageZoomLevels, setImageZoomLevels] = useState<Record<string, number>>({}); // Track image zoom levels per file path
+  const [svgZoomLevels, setSvgZoomLevels] = useState<Record<string, number>>({}); // Track SVG zoom levels per file path
   const [groups, setGroups] = useState<Record<EditorGroupId, EditorGroupState>>(() => createEmptyGroups());
   const [activeGroup, setActiveGroup] = useState<EditorGroupId>('left');
   const rightGroupVisible = hasGroupContent(groups.right);
@@ -2274,6 +2650,30 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     [handleUploadExternalFiles, selectedDirectoryPath],
   );
 
+  const handleDownloadFile = useCallback(
+    async (filePath: string, fileName: string) => {
+      if (!activeProjectId) {
+        return;
+      }
+
+      try {
+        const fileUrl = `/api/projects/${encodeURIComponent(activeProjectId)}/filesystem/file?path=${encodeURIComponent(filePath)}`;
+
+        // Create a temporary anchor element to trigger download
+        const a = document.createElement('a');
+        a.href = fileUrl;
+        a.download = fileName;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (error: any) {
+        setTreeError(error?.message ?? '下载文件失败');
+      }
+    },
+    [activeProjectId],
+  );
+
   // Add paste event listener
   useEffect(() => {
     const handlePasteEvent = (event: ClipboardEvent) => handlePaste(event);
@@ -3107,6 +3507,13 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           },
         },
         {
+          key: 'download',
+          label: '下载',
+          onSelect: () => {
+            void handleDownloadFile(node.path, node.name);
+          },
+        },
+        {
           key: 'compare-selected',
           label: '对比所选文件',
           disabled: !canCompare,
@@ -3151,6 +3558,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       groups.right.tabs,
       handleCreateExplorerEntry,
       handleDeleteExplorerEntry,
+      handleDownloadFile,
       handleRenameExplorerEntry,
       handleToggleDirectory,
       openContextMenuAt,
@@ -3617,11 +4025,24 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     // Handle SVG files with preview/edit toggle
     if (isSvgFile(activeTab.name)) {
       const isPreviewMode = svgPreviewMode[activeTab.path] ?? true; // Default to preview mode
+      const zoomLevel = svgZoomLevels[activeTab.path] ?? 100;
+
+      const handleZoomIn = () => {
+        setSvgZoomLevels(prev => ({ ...prev, [activeTab.path]: Math.min((prev[activeTab.path] ?? 100) + 25, 400) }));
+      };
+
+      const handleZoomOut = () => {
+        setSvgZoomLevels(prev => ({ ...prev, [activeTab.path]: Math.max((prev[activeTab.path] ?? 100) - 25, 25) }));
+      };
+
+      const handleResetZoom = () => {
+        setSvgZoomLevels(prev => ({ ...prev, [activeTab.path]: 100 }));
+      };
 
       return (
         <div className="flex h-full flex-col">
-          {/* Toggle button */}
-          <div className="flex h-10 shrink-0 items-center border-b border-[rgb(209,209,209)] bg-[#f7f7f8] px-3 dark:border-[#2f2f2f] dark:bg-[#1e1e1e]">
+          {/* Toggle and zoom controls */}
+          <div className="flex h-10 shrink-0 items-center justify-between border-b border-[rgb(209,209,209)] bg-[#f7f7f8] px-3 dark:border-[#2f2f2f] dark:bg-[#1e1e1e]">
             <button
               type="button"
               onClick={() => setSvgPreviewMode(prev => ({ ...prev, [activeTab.path]: !isPreviewMode }))}
@@ -3629,6 +4050,36 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             >
               {isPreviewMode ? '编辑' : '预览'}
             </button>
+
+            {isPreviewMode && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleZoomOut}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                  title="缩小"
+                >
+                  <ZoomOut className="h-4 w-4" />
+                </button>
+                <span className="text-xs text-[rgb(13,13,13)] dark:text-slate-300">{zoomLevel}%</span>
+                <button
+                  type="button"
+                  onClick={handleZoomIn}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                  title="放大"
+                >
+                  <ZoomIn className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetZoom}
+                  className="rounded-md border border-[rgb(209,209,209)] bg-white px-2 py-1 text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:border-[#3a3a3a] dark:bg-[#2a2a2a] dark:text-slate-100 dark:hover:bg-[#333333]"
+                  title="重置"
+                >
+                  重置
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Content area */}
@@ -3636,7 +4087,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             {isPreviewMode ? (
               <div className="h-full overflow-auto bg-[#f5f5f5] dark:bg-[#1e1e1e] flex items-center justify-center p-8">
                 <div
-                  className="max-w-full max-h-full"
+                  className="transition-transform origin-center"
+                  style={{ transform: `scale(${zoomLevel / 100})` }}
                   dangerouslySetInnerHTML={{ __html: activeTab.content }}
                 />
               </div>
@@ -3677,36 +4129,170 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
 
     // Handle image preview (non-SVG images)
     if (isImageFile(activeTab.name) && !isSvgFile(activeTab.name)) {
-      // Create a blob URL from the content
       const imageUrl = `/api/projects/${encodeURIComponent(activeProjectId ?? '')}/filesystem/file?path=${encodeURIComponent(activeTab.path)}`;
+      const zoomLevel = imageZoomLevels[activeTab.path] ?? 100;
+
+      const handleZoomIn = () => {
+        setImageZoomLevels(prev => ({ ...prev, [activeTab.path]: Math.min((prev[activeTab.path] ?? 100) + 25, 400) }));
+      };
+
+      const handleZoomOut = () => {
+        setImageZoomLevels(prev => ({ ...prev, [activeTab.path]: Math.max((prev[activeTab.path] ?? 100) - 25, 25) }));
+      };
+
+      const handleResetZoom = () => {
+        setImageZoomLevels(prev => ({ ...prev, [activeTab.path]: 100 }));
+      };
+
       return (
-        <div className="h-full overflow-auto bg-[#f5f5f5] dark:bg-[#1e1e1e] flex items-center justify-center p-8">
-          <div className="max-w-full max-h-full">
+        <div className="flex h-full flex-col">
+          {/* Zoom controls */}
+          <div className="flex h-10 shrink-0 items-center justify-end border-b border-[rgb(209,209,209)] bg-[#f7f7f8] px-3 dark:border-[#2f2f2f] dark:bg-[#1e1e1e]">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleZoomOut}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                title="缩小"
+              >
+                <ZoomOut className="h-4 w-4" />
+              </button>
+              <span className="text-xs text-[rgb(13,13,13)] dark:text-slate-300">{zoomLevel}%</span>
+              <button
+                type="button"
+                onClick={handleZoomIn}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                title="放大"
+              >
+                <ZoomIn className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleResetZoom}
+                className="rounded-md border border-[rgb(209,209,209)] bg-white px-2 py-1 text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:border-[#3a3a3a] dark:bg-[#2a2a2a] dark:text-slate-100 dark:hover:bg-[#333333]"
+                title="重置"
+              >
+                重置
+              </button>
+            </div>
+          </div>
+
+          {/* Image content */}
+          <div className="h-full min-h-0 flex-1 overflow-auto bg-[#f5f5f5] dark:bg-[#1e1e1e] flex items-center justify-center p-8">
             <img
               src={imageUrl}
               alt={activeTab.name}
-              className="max-w-full max-h-full object-contain"
-              style={{ imageRendering: 'auto' }}
+              className="transition-transform origin-center"
+              style={{ transform: `scale(${zoomLevel / 100})`, maxWidth: 'none', maxHeight: 'none' }}
             />
           </div>
         </div>
       );
     }
 
-    // Handle markdown preview
+    // Handle markdown preview/edit
     if (isMarkdownFile(activeTab.name)) {
+      const isPreviewMode = markdownPreviewMode[activeTab.path] ?? true;
+
+      const markdownComponents = useMemo(() => {
+        return {
+          pre: ({ children, ...props }: any) => {
+            const firstChild = Array.isArray(children) ? children[0] : children;
+            const className = firstChild?.props?.className ?? '';
+            const language = normalizeCodeLanguage(/language-([^\s]+)/i.exec(className)?.[1] ?? '');
+            const code = getMarkdownCodeText(firstChild?.props?.children);
+
+            if (code == null) {
+              return <pre {...props}>{children}</pre>;
+            }
+
+            if (language === 'mermaid') {
+              return <MermaidBlock chart={code} />;
+            }
+
+            return <CodeBlock language={language} code={code} />;
+          },
+        };
+      }, []);
+
       return (
-        <div className="h-full overflow-auto bg-white dark:bg-[#1e1e1e]">
-          <div className="mx-auto max-w-4xl px-8 py-6">
-            <div className="prose prose-slate dark:prose-invert max-w-none">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
+        <div className="flex h-full flex-col">
+          {/* Toggle bar */}
+          <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-700 dark:bg-[#252526]">
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setMarkdownPreviewMode((prev) => ({ ...prev, [activeTab.path]: true }));
+                }}
+                className={`rounded px-3 py-1 text-sm transition-colors ${
+                  isPreviewMode
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
+                }`}
+                type="button"
               >
-                {activeTab.content}
-              </ReactMarkdown>
+                预览
+              </button>
+              <button
+                onClick={() => {
+                  setMarkdownPreviewMode((prev) => ({ ...prev, [activeTab.path]: false }));
+                }}
+                className={`rounded px-3 py-1 text-sm transition-colors ${
+                  !isPreviewMode
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
+                }`}
+                type="button"
+              >
+                编辑
+              </button>
             </div>
           </div>
+
+          {/* Content */}
+          {isPreviewMode ? (
+            <div className="h-full min-h-0 flex-1 overflow-auto bg-white dark:bg-[#1e1e1e]">
+              <div className="mx-auto max-w-4xl px-8 py-6">
+                <div className="prose prose-slate dark:prose-invert max-w-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex, rehypeHighlightMarks]}
+                    components={markdownComponents}
+                  >
+                    {activeTab.content}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Editor
+              height="100%"
+              language="markdown"
+              value={activeTab.content}
+              theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+              onChange={(value) => {
+                handleEditorContentChange(activeTab.path, value ?? '');
+              }}
+              onMount={(editor) => {
+                editorInstanceRef.current[groupId] = editor;
+                editor.onDidFocusEditorText(() => {
+                  setActiveGroup(groupId);
+                });
+                editor.onDidDispose(() => {
+                  if (editorInstanceRef.current[groupId] === editor) {
+                    editorInstanceRef.current[groupId] = null;
+                  }
+                });
+              }}
+              options={{
+                minimap: { enabled: true },
+                fontSize: 13,
+                wordWrap: 'on',
+                automaticLayout: true,
+                scrollBeyondLastLine: false,
+              }}
+            />
+          )}
         </div>
       );
     }
