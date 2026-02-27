@@ -820,6 +820,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   const [gitignoreMatcher, setGitignoreMatcher] = useState<Ignore | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [openTabs, setOpenTabs] = useState<Record<string, OpenFileTab>>({});
+  const [svgPreviewMode, setSvgPreviewMode] = useState<Record<string, boolean>>({}); // Track SVG preview mode per file path
   const [groups, setGroups] = useState<Record<EditorGroupId, EditorGroupState>>(() => createEmptyGroups());
   const [activeGroup, setActiveGroup] = useState<EditorGroupId>('left');
   const rightGroupVisible = hasGroupContent(groups.right);
@@ -2340,15 +2341,21 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       try {
         let tab: OpenFileTab;
         if (isImageFile(nextName) && !isSvgFile(nextName)) {
-          // For images (except SVG which can be displayed as text), we just need the path for preview
+          // For images, fetch the file and create a data URL
+          const data = await projectFilesystemApi.readFileWithOptions(
+            activeProjectId,
+            filePath,
+            options?.allowLargeFile === true,
+          );
+          // The backend returns file content, we'll use it as base64 for images
           tab = {
             path: filePath,
             name: nextName,
-            content: '', // No content needed for image preview
+            content: data.content, // Store the content for creating data URL later
             language: 'plaintext',
             loadError: null,
-            revision: null,
-            size: 0,
+            revision: data.revision ?? null,
+            size: data.size ?? 0,
           };
         } else if (isLikelyBinaryFile(nextName)) {
           tab = {
@@ -3607,8 +3614,70 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       return <div className="h-full overflow-y-auto p-4 text-sm text-rose-500">{activeTab.loadError}</div>;
     }
 
-    // Handle image preview (except SVG which can be viewed as code)
+    // Handle SVG files with preview/edit toggle
+    if (isSvgFile(activeTab.name)) {
+      const isPreviewMode = svgPreviewMode[activeTab.path] ?? true; // Default to preview mode
+
+      return (
+        <div className="flex h-full flex-col">
+          {/* Toggle button */}
+          <div className="flex h-10 shrink-0 items-center border-b border-[rgb(209,209,209)] bg-[#f7f7f8] px-3 dark:border-[#2f2f2f] dark:bg-[#1e1e1e]">
+            <button
+              type="button"
+              onClick={() => setSvgPreviewMode(prev => ({ ...prev, [activeTab.path]: !isPreviewMode }))}
+              className="rounded-md border border-[rgb(209,209,209)] bg-white px-3 py-1 text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:border-[#3a3a3a] dark:bg-[#2a2a2a] dark:text-slate-100 dark:hover:bg-[#333333]"
+            >
+              {isPreviewMode ? '编辑' : '预览'}
+            </button>
+          </div>
+
+          {/* Content area */}
+          <div className="min-h-0 flex-1">
+            {isPreviewMode ? (
+              <div className="h-full overflow-auto bg-[#f5f5f5] dark:bg-[#1e1e1e] flex items-center justify-center p-8">
+                <div
+                  className="max-w-full max-h-full"
+                  dangerouslySetInnerHTML={{ __html: activeTab.content }}
+                />
+              </div>
+            ) : (
+              <Editor
+                height="100%"
+                language="xml"
+                value={activeTab.content}
+                theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+                onChange={(value) => {
+                  handleEditorContentChange(group.activeTabPath, value ?? '');
+                }}
+                onMount={(editor) => {
+                  editorInstanceRef.current[groupId] = editor;
+                  editor.onDidFocusEditorText(() => {
+                    setActiveGroup(groupId);
+                  });
+                  editor.onDidDispose(() => {
+                    if (editorInstanceRef.current[groupId] === editor) {
+                      editorInstanceRef.current[groupId] = null;
+                    }
+                  });
+                }}
+                options={{
+                  readOnly: false,
+                  minimap: { enabled: true },
+                  fontSize: 13,
+                  wordWrap: 'on',
+                  automaticLayout: true,
+                  scrollBeyondLastLine: false,
+                }}
+              />
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Handle image preview (non-SVG images)
     if (isImageFile(activeTab.name) && !isSvgFile(activeTab.name)) {
+      // Create a blob URL from the content
       const imageUrl = `/api/projects/${encodeURIComponent(activeProjectId ?? '')}/filesystem/file?path=${encodeURIComponent(activeTab.path)}`;
       return (
         <div className="h-full overflow-auto bg-[#f5f5f5] dark:bg-[#1e1e1e] flex items-center justify-center p-8">
