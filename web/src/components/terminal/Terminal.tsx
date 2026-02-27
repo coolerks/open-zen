@@ -99,7 +99,11 @@ export function Terminal() {
   // Create WebSocket connection
   const createWebSocket = (tabId: string, cwd: string) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/terminal/${tabId}?cwd=${encodeURIComponent(cwd)}`;
+    // Use window.location.host which includes port for both dev and prod
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/terminal/${tabId}?cwd=${encodeURIComponent(cwd)}`;
+
+    console.log(`Connecting to WebSocket: ${wsUrl}`);
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -110,6 +114,7 @@ export function Terminal() {
 
       ws.onerror = (error) => {
         console.error(`Terminal ${tabId} WebSocket error:`, error);
+        console.error(`WebSocket URL was: ${wsUrl}`);
       };
 
       ws.onclose = () => {
@@ -119,6 +124,7 @@ export function Terminal() {
       return ws;
     } catch (error) {
       console.error(`Failed to create WebSocket for terminal ${tabId}:`, error);
+      console.error(`WebSocket URL was: ${wsUrl}`);
       return null;
     }
   };
