@@ -36,6 +36,10 @@ target/
 *.war
 *.ear
 dependency-reduced-pom.xml
+.settings/
+.classpath
+.project
+.factorypath
 
 ############################
 # Node / Frontend (TS / TSX)
