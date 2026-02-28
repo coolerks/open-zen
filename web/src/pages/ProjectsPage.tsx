@@ -10,12 +10,13 @@ import ignore, { type Ignore } from 'ignore';
 import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui/Dialog';
 import { DirectoryPickerDialog } from '../components/project/DirectoryPickerDialog';
+import ProjectChatPanel from '../components/project/ProjectChatPanel';
 import { projectFilesystemApi } from '../api/projectFilesystem';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { resolveMonacoLanguageByFileName, resolveProjectFileIcon, resolveProjectFolderIcon } from '../utils/projectIcons';
 import type { ProjectFsWatchEvent, ProjectItem } from '../types';
-import { ArrowLeft, Columns2, Download, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Maximize2, Minimize2, Moon, RefreshCw, Search, Sun, Terminal as TerminalIcon, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, Columns2, Download, FileCodeCorner, FilePlus2, Files, FileSearchCorner, FolderPlus, FolderRoot, Info, Link, Maximize2, MessageSquare, Minimize2, Moon, RefreshCw, Search, Sun, Terminal as TerminalIcon, ZoomIn, ZoomOut } from 'lucide-react';
 import { Terminal } from '../components/terminal/Terminal';
 import { useTerminalStore } from '../store/terminalStore';
 
@@ -80,7 +81,7 @@ type GlobalCodeSearchResult = {
   searchMode: 'content' | 'filename';
 };
 
-type ProjectSidebarView = 'explorer' | 'search';
+type ProjectSidebarView = 'explorer' | 'search' | 'chat';
 type ProjectSearchMode = 'content' | 'filename';
 
 type ProjectsPageProps = {
@@ -1525,6 +1526,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   });
   const [directoryInfoDialogOpen, setDirectoryInfoDialogOpen] = useState(false);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string | null>(null);
+  const [projectChatSessionListSignal, setProjectChatSessionListSignal] = useState(0);
   const [largeFileConfirmDialog, setLargeFileConfirmDialog] = useState<{
     path: string;
     name: string;
@@ -3607,6 +3609,10 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     [activeSidebarView, explorerCollapsed],
   );
 
+  const handleToggleProjectChatSessionList = useCallback(() => {
+    setProjectChatSessionListSignal((prev) => prev + 1);
+  }, []);
+
   const handleEditorSplitResizeStart = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (!rightGroupVisible) {
       return;
@@ -4948,6 +4954,24 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             )}
             <Search className="w-4 h-4" />
           </button>
+          <button
+            type="button"
+            onClick={() => handleSwitchSidebarView('chat')}
+            className={`relative mt-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${!explorerCollapsed && activeSidebarView === 'chat' && theme === 'dark'
+              ? 'bg-[#2a2a2a] text-slate-100'
+              : !explorerCollapsed && activeSidebarView === 'chat'
+                ? 'border border-[rgb(209,209,209)] bg-white text-[rgb(13,13,13)]'
+                : theme === 'dark'
+                  ? 'text-slate-300 hover:bg-[#2a2a2a]'
+                  : 'text-[rgb(13,13,13)] hover:bg-[rgb(239,239,239)]'
+              }`}
+            title="项目聊天"
+          >
+            {!explorerCollapsed && activeSidebarView === 'chat' && (
+              <span className="absolute left-[-1px] top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r bg-[#2563eb]" />
+            )}
+            <MessageSquare className="w-4 h-4" />
+          </button>
           <div className="flex-1" />
           <button
             type="button"
@@ -5066,6 +5090,16 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                         className="ml-2"
                     />
                 )}
+                {activeSidebarView === 'chat' && (
+                  <button
+                    type="button"
+                    onClick={handleToggleProjectChatSessionList}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                    title="会话列表"
+                  >
+                    <MessageSquare className="h-4 w-4" />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={toggleTheme}
@@ -5078,7 +5112,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             </div>
 
             <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400">
-              {activeSidebarView === 'search' ? '搜索' : '资源管理器'}
+              {activeSidebarView === 'search'
+                ? '搜索'
+                : activeSidebarView === 'chat'
+                  ? '项目聊天'
+                  : '资源管理器'}
             </div>
 
             {activeSidebarView === 'search' && (
@@ -5169,6 +5207,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                     新建项目
                   </Button>
                 </div>
+              ) : activeSidebarView === 'chat' ? (
+                <ProjectChatPanel
+                  projectId={activeProject.id}
+                  sessionListToggleSignal={projectChatSessionListSignal}
+                />
               ) : activeSidebarView === 'search' ? (
                 globalSearchKeyword.trim().length === 0 ? (
                   <p className="px-2 py-2 text-xs text-slate-400 dark:text-slate-500">

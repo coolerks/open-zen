@@ -31,6 +31,14 @@ public class ChatSendRequest {
     private Double temperature;
 
     /**
+     * 单次消息工具调用最大轮次。
+     * 为空时使用服务端默认值。
+     */
+    @Min(value = 1, message = "maxToolRounds 必须大于 0")
+    @Max(value = 500, message = "maxToolRounds 超出允许范围")
+    private Integer maxToolRounds;
+
+    /**
      * 工具调用权限模式：
      * - require_approval：调用前需要用户授权（默认）
      * - auto：允许模型自动调用

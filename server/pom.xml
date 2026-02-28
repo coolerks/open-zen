@@ -100,6 +100,15 @@
         </dependency>
     </dependencies>
 
+    <repositories>
+        <!-- pty4j 的 purejavacomm 不在 Maven Central，需要 JetBrains 仓库 -->
+        <repository>
+            <id>jetbrains-intellij-dependencies</id>
+            <name>JetBrains Intellij Dependencies</name>
+            <url>https://cache-redirector.jetbrains.com/intellij-dependencies</url>
+        </repository>
+    </repositories>
+
     <build>
         <plugins>
             <plugin>

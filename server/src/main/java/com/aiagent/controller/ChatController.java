@@ -106,7 +106,8 @@ public class ChatController {
         return ApiResult.ok(chatService.resolveToolApproval(
                 sessionId,
                 request.getAssistantMessageId(),
-                Boolean.TRUE.equals(request.getApproved())
+                Boolean.TRUE.equals(request.getApproved()),
+                request.getMaxToolRounds()
         ));
     }
 

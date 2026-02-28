@@ -40,7 +40,8 @@ import java.util.*;
 @Slf4j
 public class ChatService {
 
-    private static final int MAX_TOOL_ROUNDS = 5;
+    private static final int DEFAULT_MAX_TOOL_ROUNDS = 100;
+    private static final int MAX_TOOL_ROUNDS_UPPER_BOUND = 500;
     private static final int TITLE_MAX_LENGTH = 100;
     private static final int TITLE_GENERATION_MAX_TOKENS = 4096;
     private static final double TITLE_GENERATION_TEMPERATURE = 0.2d;
@@ -59,6 +60,7 @@ public class ChatService {
     private final ToolRegistry toolRegistry;
     private final EncryptionUtil encryptionUtil;
     private final ObjectMapper objectMapper;
+    private final ProjectService projectService;
 
     public ChatSession createSession(String title) {
         return createSession(title, null, false);
@@ -69,12 +71,38 @@ public class ChatService {
     }
 
     public ChatSession createSession(String title, Long agentId, Boolean temporary) {
-        return createSessionInternal(title, agentId, null, null, null, null, Boolean.TRUE.equals(temporary));
+        return createSessionInternal(
+                title,
+                agentId,
+                null,
+                null,
+                null,
+                null,
+                null,
+                Boolean.TRUE.equals(temporary)
+        );
+    }
+
+    public ChatSession createProjectSession(String projectId, String title, Long agentId, Boolean temporary) {
+        String normalizedProjectId = normalizeProjectId(projectId);
+        // 通过项目服务做一次存在性校验，避免写入无效 project_id。
+        projectService.getById(normalizedProjectId);
+        return createSessionInternal(
+                title,
+                agentId,
+                null,
+                null,
+                null,
+                null,
+                normalizedProjectId,
+                Boolean.TRUE.equals(temporary)
+        );
     }
 
     public List<ChatSession> listSessions() {
         return sessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSession>()
+                        .isNull(ChatSession::getProjectId)
                         .and(wrapper -> wrapper
                                 .isNull(ChatSession::getIsTemporary)
                                 .or()
@@ -82,11 +110,35 @@ public class ChatService {
                         .orderByDesc(ChatSession::getUpdatedAt));
     }
 
+    public List<ChatSession> listProjectSessions(String projectId) {
+        String normalizedProjectId = normalizeProjectId(projectId);
+        projectService.getById(normalizedProjectId);
+        return sessionMapper.selectList(
+                new LambdaQueryWrapper<ChatSession>()
+                        .eq(ChatSession::getProjectId, normalizedProjectId)
+                        .and(wrapper -> wrapper
+                                .isNull(ChatSession::getIsTemporary)
+                                .or()
+                                .eq(ChatSession::getIsTemporary, false))
+                        .orderByDesc(ChatSession::getUpdatedAt)
+                        .orderByDesc(ChatSession::getId)
+        );
+    }
+
     /**
      * 返回系统内置可用工具定义，供前端做会话级工具选择。
      */
     public List<ChatToolDefinitionResponse> listToolDefinitions() {
+        return listToolDefinitions(false);
+    }
+
+    public List<ChatToolDefinitionResponse> listProjectToolDefinitions() {
+        return listToolDefinitions(true);
+    }
+
+    private List<ChatToolDefinitionResponse> listToolDefinitions(boolean projectChat) {
         return toolRegistry.getAllTools().stream()
+                .filter(tool -> projectChat || !tool.projectOnly())
                 .map(tool -> {
                     ChatToolDefinitionResponse item = new ChatToolDefinitionResponse();
                     item.setName(tool.getName());
@@ -113,6 +165,7 @@ public class ChatService {
 
         List<ChatSession> titleMatchedSessions = sessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSession>()
+                        .isNull(ChatSession::getProjectId)
                         .and(wrapper -> wrapper
                                 .isNull(ChatSession::getIsTemporary)
                                 .or()
@@ -177,6 +230,9 @@ public class ChatService {
             if (session == null || Boolean.TRUE.equals(session.getIsTemporary())) {
                 continue;
             }
+            if (session.getProjectId() != null && !session.getProjectId().isBlank()) {
+                continue;
+            }
 
             String snippet = buildSearchSnippet(message.getContent(), normalizedKeyword);
             ChatSessionSearchResultResponse existing = resultMap.get(sessionId);
@@ -218,6 +274,24 @@ public class ChatService {
     }
 
     public ChatSession getSession(Long id) {
+        ChatSession session = getSessionInternal(id);
+        if (isProjectSession(session)) {
+            throw new RuntimeException("该会话属于项目聊天，请使用项目聊天接口访问。");
+        }
+        return session;
+    }
+
+    public ChatSession getProjectSession(String projectId, Long id) {
+        String normalizedProjectId = normalizeProjectId(projectId);
+        projectService.getById(normalizedProjectId);
+        ChatSession session = getSessionInternal(id);
+        if (!normalizedProjectId.equals(normalizeNullableProjectId(session.getProjectId()))) {
+            throw new RuntimeException("会话不属于当前项目: " + id);
+        }
+        return session;
+    }
+
+    private ChatSession getSessionInternal(Long id) {
         ChatSession session = sessionMapper.selectById(id);
         if (session == null) {
             throw new RuntimeException("会话不存在: " + id);
@@ -242,6 +316,13 @@ public class ChatService {
     }
 
     public void deleteSession(Long id) {
+        getSession(id);
+        messageMapper.delete(new LambdaQueryWrapper<ChatMessage>().eq(ChatMessage::getSessionId, id));
+        sessionMapper.deleteById(id);
+    }
+
+    public void deleteProjectSession(String projectId, Long id) {
+        getProjectSession(projectId, id);
         messageMapper.delete(new LambdaQueryWrapper<ChatMessage>().eq(ChatMessage::getSessionId, id));
         sessionMapper.deleteById(id);
     }
@@ -257,6 +338,7 @@ public class ChatService {
                 sourceSession.getEnabledToolNames(),
                 sourceSession.getId(),
                 null,
+                sourceSession.getProjectId(),
                 false
         );
         copyMessages(sourceSession.getId(), copiedSession.getId(), null);
@@ -287,6 +369,7 @@ public class ChatService {
                 sourceSession.getEnabledToolNames(),
                 sourceSession.getId(),
                 messageId,
+                sourceSession.getProjectId(),
                 false
         );
         copyMessages(sourceSession.getId(), branchSession.getId(), messageId);
@@ -295,7 +378,15 @@ public class ChatService {
 
     public void updateSession(Long id, ChatSessionUpdateRequest request) {
         ChatSession session = getSession(id);
+        updateSessionInternal(session, request, false);
+    }
 
+    public void updateProjectSession(String projectId, Long id, ChatSessionUpdateRequest request) {
+        ChatSession session = getProjectSession(projectId, id);
+        updateSessionInternal(session, request, true);
+    }
+
+    private void updateSessionInternal(ChatSession session, ChatSessionUpdateRequest request, boolean projectChat) {
         if (request.getTitle() != null) {
             session.setTitle(normalizeTitle(request.getTitle(), "新会话"));
         }
@@ -315,7 +406,7 @@ public class ChatService {
             }
         }
         if (request.getEnabledToolNames() != null) {
-            List<String> normalizedToolNames = sanitizeToolNames(request.getEnabledToolNames());
+            List<String> normalizedToolNames = sanitizeToolNames(request.getEnabledToolNames(), projectChat);
             session.setEnabledToolNames(serializeToolNames(normalizedToolNames));
         }
 
@@ -334,7 +425,21 @@ public class ChatService {
      * 该流程独立于聊天发送接口，失败时降级为首条问题截断标题，不影响主对话链路。
      */
     public ChatSession autoGenerateSessionTitle(Long sessionId, Long modelId, String firstQuestion) {
-        ChatSession session = getSession(sessionId);
+        return autoGenerateSessionTitleInternal(null, sessionId, modelId, firstQuestion);
+    }
+
+    public ChatSession autoGenerateProjectSessionTitle(String projectId,
+                                                       Long sessionId,
+                                                       Long modelId,
+                                                       String firstQuestion) {
+        return autoGenerateSessionTitleInternal(normalizeProjectId(projectId), sessionId, modelId, firstQuestion);
+    }
+
+    private ChatSession autoGenerateSessionTitleInternal(String expectedProjectId,
+                                                         Long sessionId,
+                                                         Long modelId,
+                                                         String firstQuestion) {
+        ChatSession session = resolveScopedSession(sessionId, expectedProjectId);
         if (!isDefaultSessionTitle(session.getTitle())) {
             return session;
         }
@@ -367,11 +472,20 @@ public class ChatService {
         session.setTitle(finalTitle);
         session.setUpdatedAt(LocalDateTime.now());
         sessionMapper.updateById(session);
-        return getSession(sessionId);
+        return resolveScopedSession(sessionId, expectedProjectId);
     }
 
     public List<ChatMessage> getMessages(Long sessionId) {
         getSession(sessionId);
+        return listMessagesInternal(sessionId);
+    }
+
+    public List<ChatMessage> getProjectMessages(String projectId, Long sessionId) {
+        getProjectSession(projectId, sessionId);
+        return listMessagesInternal(sessionId);
+    }
+
+    private List<ChatMessage> listMessagesInternal(Long sessionId) {
         return messageMapper.selectList(
                 new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getSessionId, sessionId)
@@ -385,12 +499,22 @@ public class ChatService {
      */
     public ChatSessionContextStatsResponse getSessionContextStats(Long sessionId, Long modelId) {
         ChatSession session = getSession(sessionId);
+        return buildSessionContextStats(session, modelId);
+    }
+
+    public ChatSessionContextStatsResponse getProjectSessionContextStats(String projectId, Long sessionId, Long modelId) {
+        ChatSession session = getProjectSession(projectId, sessionId);
+        return buildSessionContextStats(session, modelId);
+    }
+
+    private ChatSessionContextStatsResponse buildSessionContextStats(ChatSession session, Long modelId) {
         Long resolvedModelId = modelId != null
                 ? modelId
                 : (session.getModelId() != null ? session.getModelId() : aiModelService.resolvePreferredEnabledModelId());
 
         AiModel currentModel = resolvedModelId != null ? aiModelService.getEntityById(resolvedModelId) : null;
-        List<ChatMessage> messages = getMessages(sessionId);
+        Long sessionId = session.getId();
+        List<ChatMessage> messages = listMessagesInternal(sessionId);
 
         int contextUsedTokens = estimateContextTokens(messages);
         long contextWindowTokens = resolveContextWindowTokens(currentModel);
@@ -495,22 +619,39 @@ public class ChatService {
      * 非流式发送，保留工具调用闭环能力。
      */
     public ChatMessage sendMessage(ChatSendRequest request) {
+        return sendMessageInternal(request, null);
+    }
+
+    public ChatMessage sendProjectMessage(String projectId, ChatSendRequest request) {
+        return sendMessageInternal(request, normalizeProjectId(projectId));
+    }
+
+    private ChatMessage sendMessageInternal(ChatSendRequest request, String expectedProjectId) {
         boolean memoryEnabled = resolveMemoryEnabled(request.getMemoryEnabled());
-        SendContext context = prepareSendContext(request, true, memoryEnabled);
+        SendContext context = prepareSendContext(request, true, memoryEnabled, expectedProjectId);
         ToolPermissionMode permissionMode = resolveToolPermissionMode(request.getToolPermissionMode());
-        return runCompletionWithTools(request.getSessionId(), context, permissionMode).message();
+        int maxToolRounds = resolveMaxToolRounds(request.getMaxToolRounds());
+        return runCompletionWithTools(request.getSessionId(), context, permissionMode, maxToolRounds, null).message();
     }
 
     /**
      * SSE 流式发送，返回增量消息与推理片段。
      */
     public SseEmitter streamMessage(ChatSendRequest request) {
+        return streamMessageInternal(request, null);
+    }
+
+    public SseEmitter streamProjectMessage(String projectId, ChatSendRequest request) {
+        return streamMessageInternal(request, normalizeProjectId(projectId));
+    }
+
+    private SseEmitter streamMessageInternal(ChatSendRequest request, String expectedProjectId) {
         SseEmitter emitter = new SseEmitter(0L);
 
         Thread.startVirtualThread(() -> {
             try {
                 boolean memoryEnabled = resolveMemoryEnabled(request.getMemoryEnabled());
-                SendContext context = prepareSendContext(request, true, memoryEnabled);
+                SendContext context = prepareSendContext(request, true, memoryEnabled, expectedProjectId);
                 boolean hasAvailableTools = context.tools() != null && !context.tools().isEmpty();
 
                 sendEvent(emitter, "start", Map.of(
@@ -525,18 +666,31 @@ public class ChatService {
                 // 工具模式下走非流式工具闭环，确保工具可真正执行；再通过 SSE 回传最终内容。
                 if (hasAvailableTools) {
                     ToolPermissionMode permissionMode = resolveToolPermissionMode(request.getToolPermissionMode());
-                    ToolLoopResult loopResult = runCompletionWithTools(request.getSessionId(), context, permissionMode);
-                    ChatMessage assistantMessage = loopResult.message();
-                    String reasoningText = normalizeContent(assistantMessage.getReasoningContent());
-                    if (reasoningText != null) {
-                        sendEvent(emitter, "reasoning", Map.of("reasoning", reasoningText));
-                    }
-                    String contentText = normalizeContent(assistantMessage.getContent());
-                    if (contentText != null) {
-                        sendEvent(emitter, "delta", Map.of("content", contentText));
-                    }
+                    int maxToolRounds = resolveMaxToolRounds(request.getMaxToolRounds());
+                    ToolLoopDeltaListener streamToolListener = new ToolLoopDeltaListener() {
+                        @Override
+                        public void onDelta(ToolLoopDelta delta) {
+                            emitToolDeltaEvent(emitter, delta);
+                        }
 
-                    ChatSessionContextStatsResponse contextStats = getSessionContextStats(request.getSessionId(), context.model().getId());
+                        @Override
+                        public void onToolEvent(ToolLoopToolEvent event) {
+                            emitToolLoopEvent(emitter, event);
+                        }
+                    };
+                    ToolLoopResult loopResult = runCompletionWithTools(
+                            request.getSessionId(),
+                            context,
+                            permissionMode,
+                            maxToolRounds,
+                            streamToolListener
+                    );
+                    ChatMessage assistantMessage = loopResult.message();
+
+                    ChatSessionContextStatsResponse contextStats = buildSessionContextStats(
+                            context.session(),
+                            context.model().getId()
+                    );
                     Map<String, Object> donePayload = new HashMap<>();
                     donePayload.put("messageId", assistantMessage.getId());
                     donePayload.put("sessionId", request.getSessionId());
@@ -550,7 +704,7 @@ public class ChatService {
                     donePayload.put("costUsd", assistantMessage.getCostUsd());
                     donePayload.put("sessionCostUsd", contextStats.getSessionCostUsd());
                     donePayload.put("toolApprovalRequired", loopResult.toolApprovalRequired());
-                    donePayload.put("title", getSession(request.getSessionId()).getTitle());
+                    donePayload.put("title", context.session().getTitle());
                     sendEvent(emitter, "done", donePayload);
                     emitter.complete();
                     return;
@@ -635,7 +789,10 @@ public class ChatService {
                 messageMapper.insert(assistantMessage);
 
                 touchSession(context.session(), context.model().getId());
-                ChatSessionContextStatsResponse contextStats = getSessionContextStats(request.getSessionId(), context.model().getId());
+                ChatSessionContextStatsResponse contextStats = buildSessionContextStats(
+                        context.session(),
+                        context.model().getId()
+                );
 
                 Map<String, Object> donePayload = new HashMap<>();
                 donePayload.put("messageId", assistantMessage.getId());
@@ -649,7 +806,7 @@ public class ChatService {
                 donePayload.put("cacheWriteTokens", assistantMessage.getCacheWriteTokens());
                 donePayload.put("costUsd", assistantMessage.getCostUsd());
                 donePayload.put("sessionCostUsd", contextStats.getSessionCostUsd());
-                donePayload.put("title", getSession(request.getSessionId()).getTitle());
+                donePayload.put("title", context.session().getTitle());
                 sendEvent(emitter, "done", donePayload);
 
                 emitter.complete();
@@ -674,34 +831,49 @@ public class ChatService {
      */
     private ToolLoopResult runCompletionWithTools(Long sessionId,
                                                   SendContext context,
-                                                  ToolPermissionMode permissionMode) {
+                                                  ToolPermissionMode permissionMode,
+                                                  int maxToolRounds,
+                                                  ToolLoopDeltaListener deltaListener) {
         List<ChatMessage> history = context.history();
+        int effectiveMaxToolRounds = resolveMaxToolRounds(maxToolRounds);
+        for (int round = 0; round < effectiveMaxToolRounds; round++) {
+            ChatCompletionResponse.Message responseMessage;
+            ChatCompletionResponse.Usage usage;
+            long requestDurationMs;
 
-        ChatCompletionResponse lastResponse = null;
-        for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            ChatCompletionRequest completionRequest = buildRequest(
-                    context.model().getModelKey(),
-                    history,
-                    context.defaultParams(),
-                    context.tools(),
-                    context.systemPrompt()
-            );
-            completionRequest.setStream(false);
+            if (deltaListener != null) {
+                StreamingToolRoundResult streamingRound = streamToolRoundWithTools(context, history, deltaListener);
+                responseMessage = streamingRound.message();
+                usage = streamingRound.usage();
+                requestDurationMs = streamingRound.requestDurationMs();
+            } else {
+                ChatCompletionRequest completionRequest = buildRequest(
+                        context.model().getModelKey(),
+                        history,
+                        context.defaultParams(),
+                        context.tools(),
+                        context.systemPrompt()
+                );
+                completionRequest.setStream(false);
 
-            long requestStartAt = System.currentTimeMillis();
-            lastResponse = openRouterClient.chatCompletion(
-                    context.provider().getBaseUrl(),
-                    context.apiKey(),
-                    completionRequest
-            );
-            long requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
+                long requestStartAt = System.currentTimeMillis();
+                ChatCompletionResponse completionResponse = openRouterClient.chatCompletion(
+                        context.provider().getBaseUrl(),
+                        context.apiKey(),
+                        completionRequest
+                );
+                requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
+                if (completionResponse.getChoices() == null || completionResponse.getChoices().isEmpty()) {
+                    throw new RuntimeException("OpenRouter 返回空响应");
+                }
 
-            if (lastResponse.getChoices() == null || lastResponse.getChoices().isEmpty()) {
-                throw new RuntimeException("OpenRouter 返回空响应");
+                ChatCompletionResponse.Choice choice = completionResponse.getChoices().get(0);
+                responseMessage = choice.getMessage();
+                usage = completionResponse.getUsage();
+                String reasoningText = extractReasoning(responseMessage);
+                emitToolLoopDelta(deltaListener, responseMessage != null ? responseMessage.getContent() : null, reasoningText);
             }
 
-            ChatCompletionResponse.Choice choice = lastResponse.getChoices().get(0);
-            ChatCompletionResponse.Message responseMessage = choice.getMessage();
             String reasoningText = extractReasoning(responseMessage);
             boolean hasToolCalls = responseMessage != null
                     && responseMessage.getToolCalls() != null
@@ -718,7 +890,7 @@ public class ChatService {
                 assistantToolMessage.setModelId(context.model().getId());
                 assistantToolMessage.setModelName(context.model().getDisplayName());
                 applyAgentSnapshot(assistantToolMessage, context.agent());
-                applyUsageSnapshot(assistantToolMessage, lastResponse.getUsage(), context.model());
+                applyUsageSnapshot(assistantToolMessage, usage, context.model());
                 assistantToolMessage.setCreatedAt(LocalDateTime.now());
                 try {
                     assistantToolMessage.setToolCalls(
@@ -728,7 +900,10 @@ public class ChatService {
                 }
                 messageMapper.insert(assistantToolMessage);
 
-                ToolExecutionContext toolExecutionContext = new ToolExecutionContext(sessionId);
+                ToolExecutionContext toolExecutionContext = new ToolExecutionContext(
+                        sessionId,
+                        normalizeNullableProjectId(context.session().getProjectId())
+                );
                 List<ChatCompletionResponse.ToolCall> pendingApprovalCalls = new ArrayList<>();
 
                 for (ChatCompletionResponse.ToolCall toolCall : toolCalls) {
@@ -736,16 +911,19 @@ public class ChatService {
                             ? normalizeContent(toolCall.getFunction().getName())
                             : null;
                     ToolDefinition toolDefinition = resolveEnabledToolDefinition(context.availableTools(), toolName);
+                    emitToolLoopEvent(deltaListener, buildToolRequestEvent(toolCall, toolName, round + 1));
                     boolean requiresApproval = toolDefinition != null
                             && permissionMode == ToolPermissionMode.REQUIRE_APPROVAL
                             && !toolDefinition.bypassUserApproval();
 
                     if (requiresApproval) {
                         pendingApprovalCalls.add(toolCall);
+                        emitToolLoopEvent(deltaListener, buildToolApprovalRequiredEvent(toolCall, toolName, round + 1));
                         continue;
                     }
 
                     String toolResult = executeToolCall(toolCall, context.availableTools(), toolExecutionContext);
+                    emitToolLoopEvent(deltaListener, buildToolResultEvent(toolCall, toolName, toolResult, round + 1));
                     ChatMessage toolMessage = new ChatMessage();
                     toolMessage.setSessionId(sessionId);
                     toolMessage.setRole("tool");
@@ -764,7 +942,7 @@ public class ChatService {
                 }
 
                 CompressionResult compressionResult = compressHistoryIfNeeded(
-                        getMessages(sessionId),
+                        listMessagesInternal(sessionId),
                         context.model(),
                         context.defaultParams()
                 );
@@ -781,7 +959,7 @@ public class ChatService {
             assistantMessage.setModelId(context.model().getId());
             assistantMessage.setModelName(context.model().getDisplayName());
             applyAgentSnapshot(assistantMessage, context.agent());
-            applyUsageSnapshot(assistantMessage, lastResponse.getUsage(), context.model());
+            applyUsageSnapshot(assistantMessage, usage, context.model());
             assistantMessage.setCreatedAt(LocalDateTime.now());
             messageMapper.insert(assistantMessage);
 
@@ -792,12 +970,13 @@ public class ChatService {
         ChatMessage fallbackMessage = new ChatMessage();
         fallbackMessage.setSessionId(sessionId);
         fallbackMessage.setRole("assistant");
-        fallbackMessage.setContent("工具调用轮次超限，已停止处理。");
+        fallbackMessage.setContent("工具调用轮次超限（上限 " + effectiveMaxToolRounds + " 轮），已停止处理。");
         fallbackMessage.setModelId(context.model().getId());
         fallbackMessage.setModelName(context.model().getDisplayName());
         applyAgentSnapshot(fallbackMessage, context.agent());
         fallbackMessage.setCreatedAt(LocalDateTime.now());
         messageMapper.insert(fallbackMessage);
+        emitToolLoopDelta(deltaListener, fallbackMessage.getContent(), null);
 
         touchSession(context.session(), context.model().getId());
         return new ToolLoopResult(fallbackMessage, false);
@@ -808,6 +987,126 @@ public class ChatService {
      * 用户允许后执行工具并继续会话；拒绝后将拒绝结果回填为 tool 消息再继续会话。
      */
     public ChatMessage resolveToolApproval(Long sessionId, Long assistantMessageId, boolean approved) {
+        return resolveToolApproval(sessionId, assistantMessageId, approved, null);
+    }
+
+    public ChatMessage resolveToolApproval(Long sessionId,
+                                           Long assistantMessageId,
+                                           boolean approved,
+                                           Integer maxToolRounds) {
+        return resolveToolApprovalInternal(
+                null,
+                sessionId,
+                assistantMessageId,
+                approved,
+                maxToolRounds,
+                null
+        ).message();
+    }
+
+    public ChatMessage resolveProjectToolApproval(String projectId,
+                                                  Long sessionId,
+                                                  Long assistantMessageId,
+                                                  boolean approved) {
+        return resolveProjectToolApproval(projectId, sessionId, assistantMessageId, approved, null);
+    }
+
+    public ChatMessage resolveProjectToolApproval(String projectId,
+                                                  Long sessionId,
+                                                  Long assistantMessageId,
+                                                  boolean approved,
+                                                  Integer maxToolRounds) {
+        return resolveToolApprovalInternal(
+                normalizeProjectId(projectId),
+                sessionId,
+                assistantMessageId,
+                approved,
+                maxToolRounds,
+                null
+        ).message();
+    }
+
+    public SseEmitter streamProjectToolApproval(String projectId,
+                                                Long sessionId,
+                                                Long assistantMessageId,
+                                                boolean approved,
+                                                Integer maxToolRounds) {
+        String normalizedProjectId = normalizeProjectId(projectId);
+        SseEmitter emitter = new SseEmitter(0L);
+
+        Thread.startVirtualThread(() -> {
+            try {
+                sendEvent(emitter, "start", Map.of(
+                        "sessionId", sessionId,
+                        "assistantMessageId", assistantMessageId,
+                        "approved", approved
+                ));
+
+                ToolLoopDeltaListener deltaListener = new ToolLoopDeltaListener() {
+                    @Override
+                    public void onDelta(ToolLoopDelta delta) {
+                        emitToolDeltaEvent(emitter, delta);
+                    }
+
+                    @Override
+                    public void onToolEvent(ToolLoopToolEvent event) {
+                        emitToolLoopEvent(emitter, event);
+                    }
+                };
+
+                ToolLoopResult loopResult = resolveToolApprovalInternal(
+                        normalizedProjectId,
+                        sessionId,
+                        assistantMessageId,
+                        approved,
+                        maxToolRounds,
+                        deltaListener
+                );
+
+                ChatMessage assistantMessage = loopResult.message();
+                ChatSession session = resolveScopedSession(sessionId, normalizedProjectId);
+                ChatSessionContextStatsResponse contextStats = buildSessionContextStats(
+                        session,
+                        assistantMessage.getModelId()
+                );
+
+                Map<String, Object> donePayload = new HashMap<>();
+                donePayload.put("messageId", assistantMessage.getId());
+                donePayload.put("sessionId", sessionId);
+                donePayload.put("modelId", assistantMessage.getModelId());
+                donePayload.put("modelName", assistantMessage.getModelName());
+                donePayload.put("tokenUsage", assistantMessage.getTokenUsage());
+                donePayload.put("promptTokens", assistantMessage.getPromptTokens());
+                donePayload.put("completionTokens", assistantMessage.getCompletionTokens());
+                donePayload.put("cacheReadTokens", assistantMessage.getCacheReadTokens());
+                donePayload.put("cacheWriteTokens", assistantMessage.getCacheWriteTokens());
+                donePayload.put("costUsd", assistantMessage.getCostUsd());
+                donePayload.put("sessionCostUsd", contextStats.getSessionCostUsd());
+                donePayload.put("toolApprovalRequired", loopResult.toolApprovalRequired());
+                donePayload.put("title", session.getTitle());
+                sendEvent(emitter, "done", donePayload);
+
+                emitter.complete();
+            } catch (Exception e) {
+                log.error("流式工具授权续跑失败", e);
+                try {
+                    sendEvent(emitter, "error", Map.of("message", e.getMessage()));
+                } catch (IOException ignored) {
+                }
+                emitter.completeWithError(e);
+            }
+        });
+
+        return emitter;
+    }
+
+    private ToolLoopResult resolveToolApprovalInternal(String expectedProjectId,
+                                                       Long sessionId,
+                                                       Long assistantMessageId,
+                                                       boolean approved,
+                                                       Integer maxToolRounds,
+                                                       ToolLoopDeltaListener deltaListener) {
+        ChatSession scopedSession = resolveScopedSession(sessionId, expectedProjectId);
         ChatMessage assistantToolMessage = messageMapper.selectById(assistantMessageId);
         if (assistantToolMessage == null
                 || !Objects.equals(assistantToolMessage.getSessionId(), sessionId)
@@ -829,12 +1128,30 @@ public class ChatService {
             throw new RuntimeException("该工具调用已处理");
         }
 
-        SendContext context = prepareContinuationContext(sessionId, assistantToolMessage.getModelId(), true, memoryEnabled);
-        appendToolDecisionMessages(sessionId, context, unresolvedToolCalls, approved);
+        SendContext context = prepareContinuationContext(
+                sessionId,
+                assistantToolMessage.getModelId(),
+                true,
+                memoryEnabled,
+                scopedSession.getProjectId()
+        );
+        appendToolDecisionMessages(sessionId, context, unresolvedToolCalls, approved, deltaListener);
 
-        SendContext resumedContext = prepareContinuationContext(sessionId, context.model().getId(), true, memoryEnabled);
-        ToolLoopResult loopResult = runCompletionWithTools(sessionId, resumedContext, ToolPermissionMode.REQUIRE_APPROVAL);
-        return loopResult.message();
+        SendContext resumedContext = prepareContinuationContext(
+                sessionId,
+                context.model().getId(),
+                true,
+                memoryEnabled,
+                scopedSession.getProjectId()
+        );
+        ToolLoopResult loopResult = runCompletionWithTools(
+                sessionId,
+                resumedContext,
+                ToolPermissionMode.REQUIRE_APPROVAL,
+                resolveMaxToolRounds(maxToolRounds),
+                deltaListener
+        );
+        return loopResult;
     }
 
     private List<ChatCompletionResponse.ToolCall> parseStoredToolCalls(String rawToolCalls) {
@@ -891,8 +1208,12 @@ public class ChatService {
     private void appendToolDecisionMessages(Long sessionId,
                                             SendContext context,
                                             List<ChatCompletionResponse.ToolCall> toolCalls,
-                                            boolean approved) {
-        ToolExecutionContext toolExecutionContext = new ToolExecutionContext(sessionId);
+                                            boolean approved,
+                                            ToolLoopDeltaListener deltaListener) {
+        ToolExecutionContext toolExecutionContext = new ToolExecutionContext(
+                sessionId,
+                normalizeNullableProjectId(context.session().getProjectId())
+        );
         for (ChatCompletionResponse.ToolCall toolCall : toolCalls) {
             String toolName = toolCall != null && toolCall.getFunction() != null
                     ? normalizeContent(toolCall.getFunction().getName())
@@ -911,10 +1232,17 @@ public class ChatService {
             applyAgentSnapshot(toolMessage, context.agent());
             toolMessage.setCreatedAt(LocalDateTime.now());
             messageMapper.insert(toolMessage);
+            emitToolLoopEvent(
+                    deltaListener,
+                    buildToolResultEvent(toolCall, toolName, toolResult, 0)
+            );
         }
     }
 
-    private SendContext prepareSendContext(ChatSendRequest request, boolean includeTools, boolean memoryEnabled) {
+    private SendContext prepareSendContext(ChatSendRequest request,
+                                           boolean includeTools,
+                                           boolean memoryEnabled,
+                                           String expectedProjectId) {
         AiModel model = aiModelService.getEntityById(request.getModelId());
         if (!Boolean.TRUE.equals(model.getEnabled())) {
             throw new RuntimeException("模型未启用: " + model.getDisplayName());
@@ -930,14 +1258,15 @@ public class ChatService {
             throw new RuntimeException("当前模型不支持图片输入");
         }
 
-        ChatSession session = getSession(request.getSessionId());
+        ChatSession session = resolveScopedSession(request.getSessionId(), expectedProjectId);
         updateSessionModelOnly(session.getId(), model.getId());
         session.setModelId(model.getId());
         session.setUpdatedAt(LocalDateTime.now());
+        boolean projectChat = isProjectSession(session);
 
         List<String> configuredToolNames = parseToolNames(session.getEnabledToolNames());
         if (request.getEnabledToolNames() != null) {
-            configuredToolNames = sanitizeToolNames(request.getEnabledToolNames());
+            configuredToolNames = sanitizeToolNames(request.getEnabledToolNames(), projectChat);
             String serializedToolNames = serializeToolNames(configuredToolNames);
             session.setEnabledToolNames(serializedToolNames);
             updateSessionToolNamesOnly(session.getId(), serializedToolNames);
@@ -975,11 +1304,17 @@ public class ChatService {
             }
             defaultParams.put("max_tokens", resolvedMaxTokens);
         }
-        List<ChatMessage> history = getMessages(request.getSessionId());
+        List<ChatMessage> history = listMessagesInternal(request.getSessionId());
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
-        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled, configuredToolNames);
+        List<ToolDefinition> availableTools = resolveAvailableTools(
+                includeTools,
+                model,
+                memoryEnabled,
+                configuredToolNames,
+                projectChat
+        );
         List<ChatCompletionRequest.Tool> tools = availableTools.isEmpty()
                 ? null
                 : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
@@ -1004,12 +1339,15 @@ public class ChatService {
     private List<ToolDefinition> resolveAvailableTools(boolean includeTools,
                                                        AiModel model,
                                                        boolean memoryEnabled,
-                                                       List<String> configuredToolNames) {
+                                                       List<String> configuredToolNames,
+                                                       boolean projectChat) {
         if (!includeTools || !Boolean.TRUE.equals(model.getSupportsTools())) {
             return List.of();
         }
 
-        List<ToolDefinition> allTools = toolRegistry.getAllTools();
+        List<ToolDefinition> allTools = toolRegistry.getAllTools().stream()
+                .filter(tool -> projectChat || !tool.projectOnly())
+                .toList();
         if (allTools.isEmpty()) {
             return List.of();
         }
@@ -1034,8 +1372,10 @@ public class ChatService {
     private SendContext prepareContinuationContext(Long sessionId,
                                                    Long preferredModelId,
                                                    boolean includeTools,
-                                                   boolean memoryEnabled) {
-        ChatSession session = getSession(sessionId);
+                                                   boolean memoryEnabled,
+                                                   String expectedProjectId) {
+        ChatSession session = resolveScopedSession(sessionId, expectedProjectId);
+        boolean projectChat = isProjectSession(session);
 
         Long resolvedModelId = preferredModelId != null ? preferredModelId : session.getModelId();
         if (resolvedModelId == null) {
@@ -1066,12 +1406,18 @@ public class ChatService {
             defaultParams.put("max_tokens", model.getMaxCompletionTokens());
         }
 
-        List<ChatMessage> history = getMessages(sessionId);
+        List<ChatMessage> history = listMessagesInternal(sessionId);
         CompressionResult compressionResult = compressHistoryIfNeeded(history, model, defaultParams);
         history = compressionResult.history();
 
         List<String> configuredToolNames = parseToolNames(session.getEnabledToolNames());
-        List<ToolDefinition> availableTools = resolveAvailableTools(includeTools, model, memoryEnabled, configuredToolNames);
+        List<ToolDefinition> availableTools = resolveAvailableTools(
+                includeTools,
+                model,
+                memoryEnabled,
+                configuredToolNames,
+                projectChat
+        );
         List<ChatCompletionRequest.Tool> tools = availableTools.isEmpty()
                 ? null
                 : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
@@ -1173,6 +1519,7 @@ public class ChatService {
                                               String enabledToolNames,
                                               Long parentSessionId,
                                               Long parentMessageId,
+                                              String projectId,
                                               boolean temporary) {
         Long finalAgentId;
         if (agentId == null) {
@@ -1191,6 +1538,7 @@ public class ChatService {
         session.setTitle(normalizeTitle(title, "新会话"));
         session.setModelId(finalModelId);
         session.setAgentId(finalAgentId);
+        session.setProjectId(normalizeNullableProjectId(projectId));
         session.setEnabledToolNames(enabledToolNames);
         session.setParentSessionId(parentSessionId);
         session.setParentMessageId(parentMessageId);
@@ -1624,6 +1972,156 @@ public class ChatService {
         emitter.send(SseEmitter.event().name(event).data(data));
     }
 
+    /**
+     * 在工具闭环场景中执行单轮流式请求：
+     * - 增量片段实时回调给前端；
+     * - 将流式分片聚合为完整 assistant 响应（含 tool_calls）。
+     */
+    private StreamingToolRoundResult streamToolRoundWithTools(SendContext context,
+                                                              List<ChatMessage> history,
+                                                              ToolLoopDeltaListener deltaListener) {
+        ChatCompletionRequest completionRequest = buildRequest(
+                context.model().getModelKey(),
+                history,
+                context.defaultParams(),
+                context.tools(),
+                context.systemPrompt()
+        );
+        completionRequest.setStream(true);
+
+        StringBuilder contentBuilder = new StringBuilder();
+        StringBuilder reasoningBuilder = new StringBuilder();
+        Map<Integer, StreamToolCallAccumulator> toolCallAccumulatorMap = new LinkedHashMap<>();
+        ChatCompletionResponse.Usage[] usageHolder = new ChatCompletionResponse.Usage[] {null};
+
+        long requestStartAt = System.currentTimeMillis();
+        openRouterClient.streamChatCompletion(
+                context.provider().getBaseUrl(),
+                context.apiKey(),
+                completionRequest,
+                new OpenRouterClient.StreamChunkHandler() {
+                    @Override
+                    public void onChunk(ChatCompletionStreamChunk chunk) {
+                        if (chunk == null) {
+                            return;
+                        }
+                        if (chunk.getUsage() != null) {
+                            usageHolder[0] = chunk.getUsage();
+                        }
+                        if (chunk.getChoices() == null || chunk.getChoices().isEmpty()) {
+                            return;
+                        }
+
+                        ChatCompletionStreamChunk.Choice choice = chunk.getChoices().get(0);
+                        ChatCompletionStreamChunk.Delta delta = choice.getDelta();
+                        if (delta == null) {
+                            return;
+                        }
+
+                        String contentPiece = delta.getContent();
+                        String reasoningPiece = delta.getReasoning();
+                        if (contentPiece != null && !contentPiece.isEmpty()) {
+                            contentBuilder.append(contentPiece);
+                        }
+                        if (reasoningPiece != null && !reasoningPiece.isEmpty()) {
+                            reasoningBuilder.append(reasoningPiece);
+                        }
+                        if ((contentPiece != null && !contentPiece.isEmpty())
+                                || (reasoningPiece != null && !reasoningPiece.isEmpty())) {
+                            deltaListener.onDelta(new ToolLoopDelta(contentPiece, reasoningPiece));
+                        }
+                        mergeStreamToolCalls(toolCallAccumulatorMap, delta.getToolCalls());
+                    }
+                }
+        );
+        long requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
+
+        ChatCompletionResponse.Message message = new ChatCompletionResponse.Message();
+        message.setRole("assistant");
+        message.setContent(normalizeContent(contentBuilder.toString()));
+        message.setReasoning(normalizeContent(reasoningBuilder.toString()));
+        List<ChatCompletionResponse.ToolCall> mergedToolCalls = buildMergedToolCalls(toolCallAccumulatorMap);
+        if (!mergedToolCalls.isEmpty()) {
+            message.setToolCalls(mergedToolCalls);
+        }
+
+        return new StreamingToolRoundResult(message, usageHolder[0], requestDurationMs);
+    }
+
+    /**
+     * 聚合流式 tool_calls 分片（包含原子保存场景下的多段 arguments）。
+     */
+    private void mergeStreamToolCalls(Map<Integer, StreamToolCallAccumulator> accumulatorMap,
+                                      List<ChatCompletionResponse.ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < toolCalls.size(); i++) {
+            ChatCompletionResponse.ToolCall chunkToolCall = toolCalls.get(i);
+            if (chunkToolCall == null) {
+                continue;
+            }
+            int toolIndex = chunkToolCall.getIndex() != null ? chunkToolCall.getIndex() : i;
+            StreamToolCallAccumulator accumulator = accumulatorMap.computeIfAbsent(
+                    toolIndex,
+                    key -> new StreamToolCallAccumulator()
+            );
+
+            if (chunkToolCall.getId() != null && !chunkToolCall.getId().isBlank()) {
+                accumulator.id = chunkToolCall.getId();
+            }
+            if (chunkToolCall.getType() != null && !chunkToolCall.getType().isBlank()) {
+                accumulator.type = chunkToolCall.getType();
+            }
+            if (chunkToolCall.getFunction() == null) {
+                continue;
+            }
+            if (chunkToolCall.getFunction().getName() != null && !chunkToolCall.getFunction().getName().isBlank()) {
+                accumulator.name = chunkToolCall.getFunction().getName();
+            }
+            if (chunkToolCall.getFunction().getArguments() != null) {
+                accumulator.argumentsBuilder.append(chunkToolCall.getFunction().getArguments());
+            }
+        }
+    }
+
+    private List<ChatCompletionResponse.ToolCall> buildMergedToolCalls(
+            Map<Integer, StreamToolCallAccumulator> accumulatorMap) {
+        if (accumulatorMap.isEmpty()) {
+            return List.of();
+        }
+
+        List<ChatCompletionResponse.ToolCall> merged = new ArrayList<>();
+        List<Integer> sortedIndexes = new ArrayList<>(accumulatorMap.keySet());
+        sortedIndexes.sort(Integer::compareTo);
+
+        for (Integer index : sortedIndexes) {
+            StreamToolCallAccumulator accumulator = accumulatorMap.get(index);
+            if (accumulator == null) {
+                continue;
+            }
+            String mergedName = normalizeContent(accumulator.name);
+            String mergedArguments = accumulator.argumentsBuilder.length() > 0
+                    ? accumulator.argumentsBuilder.toString()
+                    : null;
+            if (mergedName == null && (mergedArguments == null || mergedArguments.isBlank())) {
+                continue;
+            }
+
+            ChatCompletionResponse.FunctionCall functionCall = new ChatCompletionResponse.FunctionCall();
+            functionCall.setName(mergedName);
+            functionCall.setArguments(mergedArguments);
+
+            ChatCompletionResponse.ToolCall toolCall = new ChatCompletionResponse.ToolCall();
+            toolCall.setIndex(index);
+            toolCall.setId(normalizeContent(accumulator.id));
+            toolCall.setType(normalizeContent(accumulator.type));
+            toolCall.setFunction(functionCall);
+            merged.add(toolCall);
+        }
+        return merged;
+    }
+
     private String executeToolCall(ChatCompletionResponse.ToolCall toolCall,
                                    List<ToolDefinition> availableTools,
                                    ToolExecutionContext executionContext) {
@@ -1684,6 +2182,46 @@ public class ChatService {
             return defaultTitle;
         }
         return title.trim();
+    }
+
+    private String normalizeProjectId(String projectId) {
+        if (projectId == null || projectId.trim().isEmpty()) {
+            throw new RuntimeException("项目ID不能为空");
+        }
+        return projectId.trim();
+    }
+
+    private String normalizeNullableProjectId(String projectId) {
+        if (projectId == null) {
+            return null;
+        }
+        String normalized = projectId.trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private boolean isProjectSession(ChatSession session) {
+        return normalizeNullableProjectId(session.getProjectId()) != null;
+    }
+
+    /**
+     * 统一会话作用域校验：
+     * - expectedProjectId 为空：仅允许普通聊天会话；
+     * - expectedProjectId 非空：仅允许访问同项目会话。
+     */
+    private ChatSession resolveScopedSession(Long sessionId, String expectedProjectId) {
+        ChatSession session = getSessionInternal(sessionId);
+        String normalizedSessionProjectId = normalizeNullableProjectId(session.getProjectId());
+        String normalizedExpectedProjectId = normalizeNullableProjectId(expectedProjectId);
+        if (normalizedExpectedProjectId == null) {
+            if (normalizedSessionProjectId != null) {
+                throw new RuntimeException("该会话属于项目聊天，请使用项目聊天接口访问。");
+            }
+            return session;
+        }
+        if (!normalizedExpectedProjectId.equals(normalizedSessionProjectId)) {
+            throw new RuntimeException("会话不属于当前项目: " + sessionId);
+        }
+        return session;
     }
 
     /**
@@ -1763,6 +2301,90 @@ public class ChatService {
                 : ToolPermissionMode.REQUIRE_APPROVAL;
     }
 
+    /**
+     * 解析单次消息的工具调用轮次上限。
+     * 为空时使用默认值，并限制在服务端安全边界内。
+     */
+    private int resolveMaxToolRounds(Integer requestMaxToolRounds) {
+        if (requestMaxToolRounds == null) {
+            return DEFAULT_MAX_TOOL_ROUNDS;
+        }
+        return Math.max(1, Math.min(MAX_TOOL_ROUNDS_UPPER_BOUND, requestMaxToolRounds));
+    }
+
+    private void emitToolLoopDelta(ToolLoopDeltaListener listener, String content, String reasoning) {
+        if (listener == null) {
+            return;
+        }
+        String normalizedContent = normalizeContent(content);
+        String normalizedReasoning = normalizeContent(reasoning);
+        if (normalizedContent == null && normalizedReasoning == null) {
+            return;
+        }
+        listener.onDelta(new ToolLoopDelta(normalizedContent, normalizedReasoning));
+    }
+
+    private void emitToolDeltaEvent(SseEmitter emitter, ToolLoopDelta delta) {
+        try {
+            if (delta.reasoning() != null) {
+                sendEvent(emitter, "reasoning", Map.of("reasoning", delta.reasoning()));
+            }
+            if (delta.content() != null) {
+                sendEvent(emitter, "delta", Map.of("content", delta.content()));
+            }
+        } catch (IOException ioException) {
+            throw new RuntimeException(ioException);
+        }
+    }
+
+    private void emitToolLoopEvent(SseEmitter emitter, ToolLoopToolEvent event) {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("type", event.type());
+            payload.put("round", event.round());
+            payload.put("toolCallId", event.toolCallId());
+            payload.put("name", event.toolName());
+            payload.put("arguments", event.argumentsText());
+            payload.put("result", event.resultText());
+            sendEvent(emitter, "tool", payload);
+        } catch (IOException ioException) {
+            throw new RuntimeException(ioException);
+        }
+    }
+
+    private void emitToolLoopEvent(ToolLoopDeltaListener listener, ToolLoopToolEvent event) {
+        if (listener == null || event == null) {
+            return;
+        }
+        listener.onToolEvent(event);
+    }
+
+    private ToolLoopToolEvent buildToolRequestEvent(ChatCompletionResponse.ToolCall toolCall,
+                                                    String toolName,
+                                                    int round) {
+        String callId = toolCall != null ? normalizeContent(toolCall.getId()) : null;
+        String arguments = null;
+        if (toolCall != null && toolCall.getFunction() != null) {
+            arguments = normalizeContent(toolCall.getFunction().getArguments());
+        }
+        return new ToolLoopToolEvent("request", round, callId, toolName, arguments, null);
+    }
+
+    private ToolLoopToolEvent buildToolApprovalRequiredEvent(ChatCompletionResponse.ToolCall toolCall,
+                                                             String toolName,
+                                                             int round) {
+        String callId = toolCall != null ? normalizeContent(toolCall.getId()) : null;
+        return new ToolLoopToolEvent("approval_required", round, callId, toolName, null, null);
+    }
+
+    private ToolLoopToolEvent buildToolResultEvent(ChatCompletionResponse.ToolCall toolCall,
+                                                   String toolName,
+                                                   String result,
+                                                   int round) {
+        String callId = toolCall != null ? normalizeContent(toolCall.getId()) : null;
+        return new ToolLoopToolEvent("result", round, callId, toolName, null, normalizeContent(result));
+    }
+
     private boolean resolveMemoryEnabled(Boolean rawEnabled) {
         return Boolean.TRUE.equals(rawEnabled);
     }
@@ -1828,7 +2450,7 @@ public class ChatService {
         try {
             List<String> parsed = objectMapper.readValue(rawToolNamesJson, new TypeReference<List<String>>() {
             });
-            return sanitizeToolNames(parsed);
+            return sanitizeToolNamesNoScope(parsed);
         } catch (JsonProcessingException e) {
             log.warn("会话工具白名单解析失败: {}", rawToolNamesJson, e);
             return null;
@@ -1838,7 +2460,26 @@ public class ChatService {
     /**
      * 规范化工具名称列表：去空、去重、仅保留系统内存在的工具。
      */
-    private List<String> sanitizeToolNames(List<String> toolNames) {
+    private List<String> sanitizeToolNames(List<String> toolNames, boolean projectChat) {
+        if (toolNames == null) {
+            return List.of();
+        }
+        return toolNames.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(name -> !name.isBlank())
+                .filter(name -> {
+                    ToolDefinition tool = toolRegistry.getTool(name);
+                    if (tool == null) {
+                        return false;
+                    }
+                    return projectChat || !tool.projectOnly();
+                })
+                .distinct()
+                .toList();
+    }
+
+    private List<String> sanitizeToolNamesNoScope(List<String> toolNames) {
         if (toolNames == null) {
             return List.of();
         }
@@ -1920,6 +2561,47 @@ public class ChatService {
     }
 
     private record ToolLoopResult(ChatMessage message, boolean toolApprovalRequired) {
+    }
+
+    /**
+     * 单轮流式工具请求聚合结果。
+     */
+    private record StreamingToolRoundResult(ChatCompletionResponse.Message message,
+                                            ChatCompletionResponse.Usage usage,
+                                            long requestDurationMs) {
+    }
+
+    /**
+     * 聚合流式 tool_call 分片的可变结构。
+     */
+    private static final class StreamToolCallAccumulator {
+        private String id;
+        private String type;
+        private String name;
+        private final StringBuilder argumentsBuilder = new StringBuilder();
+    }
+
+    private interface ToolLoopDeltaListener {
+        void onDelta(ToolLoopDelta delta);
+
+        default void onToolEvent(ToolLoopToolEvent event) {
+            // 默认空实现，允许调用方按需处理工具事件。
+        }
+    }
+
+    private record ToolLoopDelta(String content, String reasoning) {
+    }
+
+    /**
+     * 工具执行流式事件。
+     * type: request / approval_required / result
+     */
+    private record ToolLoopToolEvent(String type,
+                                     int round,
+                                     String toolCallId,
+                                     String toolName,
+                                     String argumentsText,
+                                     String resultText) {
     }
 
     private enum ToolPermissionMode {

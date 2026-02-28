@@ -277,6 +277,7 @@ export interface ChatSendRequest {
   images?: string[];
   maxTokens?: number;
   temperature?: number;
+  maxToolRounds?: number;
   toolPermissionMode?: 'require_approval' | 'auto';
   memoryEnabled?: boolean;
   enabledToolNames?: string[] | null;

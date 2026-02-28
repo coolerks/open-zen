@@ -45,6 +45,14 @@ public interface ToolDefinition {
         return false;
     }
 
+    /**
+     * 是否仅允许在“项目聊天”中使用。
+     * 普通聊天会自动过滤此类工具。
+     */
+    default boolean projectOnly() {
+        return false;
+    }
+
     /** 转换为 OpenAI/OpenRouter 兼容工具结构 */
     default ChatCompletionRequest.Tool toRequestTool() {
         ChatCompletionRequest.Tool tool = new ChatCompletionRequest.Tool();

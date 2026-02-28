@@ -56,6 +56,8 @@ public class ChatCompletionResponse {
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ToolCall {
+        // 流式返回时会携带 index，用于同一轮多工具调用的分片聚合。
+        private Integer index;
         private String id;
         private String type;
         private FunctionCall function;

@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS chat_session (
     title              VARCHAR(200)  NOT NULL DEFAULT '新会话',
     model_id           BIGINT,
     agent_id           BIGINT,
+    project_id         VARCHAR(64),
     enabled_tool_names CLOB,
     parent_session_id  BIGINT,
     parent_message_id  BIGINT,
@@ -170,6 +171,7 @@ CREATE TABLE IF NOT EXISTS chat_session (
     CONSTRAINT fk_session_agent FOREIGN KEY (agent_id) REFERENCES custom_agent(id)
 );
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS agent_id BIGINT;
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS project_id VARCHAR(64);
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS enabled_tool_names CLOB;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS parent_session_id BIGINT;
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS parent_message_id BIGINT;
@@ -179,6 +181,7 @@ COMMENT ON COLUMN chat_session.id IS '主键 ID';
 COMMENT ON COLUMN chat_session.title IS '会话标题';
 COMMENT ON COLUMN chat_session.model_id IS '会话最近一次使用模型 ID';
 COMMENT ON COLUMN chat_session.agent_id IS '关联智能体 ID';
+COMMENT ON COLUMN chat_session.project_id IS '所属项目 ID，空表示普通聊天会话';
 COMMENT ON COLUMN chat_session.enabled_tool_names IS '会话允许调用的工具名称列表 JSON，空表示不限制';
 COMMENT ON COLUMN chat_session.parent_session_id IS '父会话 ID（复制或分支来源）';
 COMMENT ON COLUMN chat_session.parent_message_id IS '分支起点消息 ID';
@@ -186,6 +189,7 @@ COMMENT ON COLUMN chat_session.is_temporary IS '是否临时会话：true 表示
 COMMENT ON COLUMN chat_session.created_at IS '创建时间';
 COMMENT ON COLUMN chat_session.updated_at IS '更新时间';
 CREATE INDEX IF NOT EXISTS idx_session_updated_at ON chat_session(updated_at);
+CREATE INDEX IF NOT EXISTS idx_session_project ON chat_session(project_id);
 CREATE INDEX IF NOT EXISTS idx_session_parent ON chat_session(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_session_temporary ON chat_session(is_temporary);
 
