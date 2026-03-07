@@ -50,6 +50,16 @@ public class ChatService {
     private static final int DEFAULT_RESERVED_OUTPUT_TOKENS = 4096;
     private static final int MIN_PROMPT_BUDGET_TOKENS = 1024;
     private static final int ESTIMATED_IMAGE_TOKENS = 600;
+    private static final int MAX_PROJECT_TOOL_PLAN_CONTINUE_ROUNDS = 2;
+    private static final int MAX_PROJECT_PSEUDO_TOOL_RECOVERY_SNIPPET_LENGTH = 240;
+    private static final String PROJECT_CHAT_SYSTEM_PROMPT = """
+            你当前处于项目聊天模式，是一个面向代码库的代理。
+            当任务依赖项目目录、文件内容、搜索结果或终端执行结果时，必须继续调用项目工具，直到拿到足够证据后再输出最终结论。
+            不要在尚未完成时，只输出“接下来我将……”“现在让我……”“我需要先查看……”这类计划性句子后就停止。
+            如果还需要继续读取、搜索、统计、列出、分析、执行命令或修改文件，请直接继续发起下一次工具调用，而不是结束回答。
+            严禁输出 <tool_call>、</tool_call>、XML/JSON 包装的伪工具调用文本，也不要伪造工具结果。
+            如果你想调用工具，必须使用真实工具调用能力；如果工具结果还不够，就继续调用工具。
+            """;
 
     private final ChatSessionMapper sessionMapper;
     private final ChatMessageMapper messageMapper;
@@ -813,8 +823,9 @@ public class ChatService {
             } catch (Exception e) {
                 log.error("流式发送失败", e);
                 try {
-                    sendEvent(emitter, "error", Map.of("message", e.getMessage()));
-                } catch (IOException ignored) {
+                    String errorMessage = e.getMessage() != null ? e.getMessage() : "流式发送异常";
+                    sendEvent(emitter, "error", Map.of("message", errorMessage));
+                } catch (Exception ignored) {
                 }
                 emitter.completeWithError(e);
             }
@@ -836,6 +847,8 @@ public class ChatService {
                                                   ToolLoopDeltaListener deltaListener) {
         List<ChatMessage> history = context.history();
         int effectiveMaxToolRounds = resolveMaxToolRounds(maxToolRounds);
+        boolean hasCompletedToolRound = false;
+        int consecutiveProjectPlanRounds = 0;
         for (int round = 0; round < effectiveMaxToolRounds; round++) {
             ChatCompletionResponse.Message responseMessage;
             ChatCompletionResponse.Usage usage;
@@ -941,6 +954,8 @@ public class ChatService {
                     return new ToolLoopResult(assistantToolMessage, true);
                 }
 
+                hasCompletedToolRound = true;
+                consecutiveProjectPlanRounds = 0;
                 CompressionResult compressionResult = compressHistoryIfNeeded(
                         listMessagesInternal(sessionId),
                         context.model(),
@@ -950,10 +965,42 @@ public class ChatService {
                 continue;
             }
 
+            String assistantContent = normalizeContent(responseMessage != null ? responseMessage.getContent() : null);
+            if (shouldRecoverProjectPseudoToolOutput(
+                    isProjectSession(context.session()),
+                    !context.availableTools().isEmpty(),
+                    assistantContent,
+                    round,
+                    effectiveMaxToolRounds
+            )) {
+                log.warn("项目聊天检测到伪工具调用文本，忽略本轮回答并继续推进工具循环: {}", abbreviateProjectPseudoToolOutput(assistantContent));
+                history = appendProjectPseudoToolRecoveryInstruction(history, assistantContent);
+                continue;
+            }
+            if (shouldContinueProjectToolLoop(
+                    isProjectSession(context.session()),
+                    !context.availableTools().isEmpty(),
+                    assistantContent,
+                    hasCompletedToolRound,
+                    consecutiveProjectPlanRounds,
+                    round,
+                    effectiveMaxToolRounds
+            )) {
+                // 这里不落库，只把“计划性过渡文本”加入本轮上下文，避免项目聊天被这类过渡句提前截断。
+                ChatMessage virtualAssistantMessage = new ChatMessage();
+                virtualAssistantMessage.setRole("assistant");
+                virtualAssistantMessage.setContent(assistantContent);
+                virtualAssistantMessage.setReasoningContent(reasoningText);
+                history = new ArrayList<>(history);
+                history.add(virtualAssistantMessage);
+                consecutiveProjectPlanRounds++;
+                continue;
+            }
+
             ChatMessage assistantMessage = new ChatMessage();
             assistantMessage.setSessionId(sessionId);
             assistantMessage.setRole("assistant");
-            assistantMessage.setContent(normalizeContent(responseMessage != null ? responseMessage.getContent() : null));
+            assistantMessage.setContent(assistantContent);
             assistantMessage.setReasoningContent(reasoningText);
             assistantMessage.setReasoningDurationMs(resolveReasoningDurationMs(reasoningText, requestDurationMs));
             assistantMessage.setModelId(context.model().getId());
@@ -965,6 +1012,19 @@ public class ChatService {
 
             touchSession(context.session(), context.model().getId());
             return new ToolLoopResult(assistantMessage, false);
+        }
+
+        // 达到工具轮次上限后，补一次“禁用工具”的收尾回答，避免体验上戛然而止。
+        ChatMessage finalizedMessage = finalizeAfterToolRoundLimit(
+                sessionId,
+                context,
+                history,
+                effectiveMaxToolRounds,
+                deltaListener
+        );
+        if (finalizedMessage != null) {
+            touchSession(context.session(), context.model().getId());
+            return new ToolLoopResult(finalizedMessage, false);
         }
 
         ChatMessage fallbackMessage = new ChatMessage();
@@ -980,6 +1040,180 @@ public class ChatService {
 
         touchSession(context.session(), context.model().getId());
         return new ToolLoopResult(fallbackMessage, false);
+    }
+
+    /**
+     * 当工具轮次达到上限时，尝试发起一轮“禁用工具”的最终回答。
+     * 这样即便模型在前几轮持续调用工具，也能尽量给出可读的收尾结论。
+     */
+    private ChatMessage finalizeAfterToolRoundLimit(Long sessionId,
+                                                    SendContext context,
+                                                    List<ChatMessage> history,
+                                                    int toolRoundLimit,
+                                                    ToolLoopDeltaListener deltaListener) {
+        try {
+            List<ChatMessage> finalHistory = new ArrayList<>(history);
+            ChatMessage constraintMessage = new ChatMessage();
+            constraintMessage.setRole("user");
+            constraintMessage.setContent(
+                    "工具调用已达到本次上限（" + toolRoundLimit + " 轮）。请不要继续调用工具，基于已有结果直接输出最终回答。"
+            );
+            finalHistory.add(constraintMessage);
+
+            StreamingToolRoundResult finalRound = completeRoundWithoutTools(context, finalHistory, deltaListener);
+            ChatCompletionResponse.Message responseMessage = finalRound.message();
+            String finalContent = normalizeContent(responseMessage != null ? responseMessage.getContent() : null);
+            if (finalContent == null) {
+                String latestAssistantContent = extractLatestAssistantContent(finalHistory);
+                if (latestAssistantContent != null) {
+                    finalContent = latestAssistantContent
+                            + "\n\n（工具调用已达到本次上限 " + toolRoundLimit + " 轮，可调高“工具轮次上限”后继续。）";
+                } else {
+                    finalContent = "工具调用已达到本次上限 " + toolRoundLimit + " 轮。请调高“工具轮次上限”后重试。";
+                }
+            }
+
+            String reasoningText = extractReasoning(responseMessage);
+            ChatMessage finalAssistantMessage = new ChatMessage();
+            finalAssistantMessage.setSessionId(sessionId);
+            finalAssistantMessage.setRole("assistant");
+            finalAssistantMessage.setContent(finalContent);
+            finalAssistantMessage.setReasoningContent(reasoningText);
+            finalAssistantMessage.setReasoningDurationMs(
+                    resolveReasoningDurationMs(reasoningText, finalRound.requestDurationMs())
+            );
+            finalAssistantMessage.setModelId(context.model().getId());
+            finalAssistantMessage.setModelName(context.model().getDisplayName());
+            applyAgentSnapshot(finalAssistantMessage, context.agent());
+            applyUsageSnapshot(finalAssistantMessage, finalRound.usage(), context.model());
+            finalAssistantMessage.setCreatedAt(LocalDateTime.now());
+            messageMapper.insert(finalAssistantMessage);
+            return finalAssistantMessage;
+        } catch (Exception ex) {
+            log.warn("工具轮次上限后的收尾回答失败: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 读取最近一条 assistant 正文，作为工具轮次触顶时的兜底上下文。
+     */
+    private String extractLatestAssistantContent(List<ChatMessage> history) {
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        for (int i = history.size() - 1; i >= 0; i--) {
+            ChatMessage message = history.get(i);
+            if (message == null || !"assistant".equals(message.getRole())) {
+                continue;
+            }
+            String content = normalizeContent(message.getContent());
+            if (content != null) {
+                return content;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 执行一轮不带工具的补充回答请求。
+     * - 流式场景：继续向前端发送 delta/reasoning；
+     * - 非流式场景：返回完整消息与 usage。
+     */
+    private StreamingToolRoundResult completeRoundWithoutTools(SendContext context,
+                                                               List<ChatMessage> history,
+                                                               ToolLoopDeltaListener deltaListener) {
+        if (deltaListener != null) {
+            return streamRoundWithoutTools(context, history, deltaListener);
+        }
+
+        ChatCompletionRequest completionRequest = buildRequest(
+                context.model().getModelKey(),
+                history,
+                context.defaultParams(),
+                null,
+                context.systemPrompt()
+        );
+        completionRequest.setStream(false);
+
+        long requestStartAt = System.currentTimeMillis();
+        ChatCompletionResponse completionResponse = openRouterClient.chatCompletion(
+                context.provider().getBaseUrl(),
+                context.apiKey(),
+                completionRequest
+        );
+        long requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
+        if (completionResponse.getChoices() == null || completionResponse.getChoices().isEmpty()) {
+            throw new RuntimeException("OpenRouter 返回空响应");
+        }
+        ChatCompletionResponse.Choice choice = completionResponse.getChoices().get(0);
+        ChatCompletionResponse.Message responseMessage = choice.getMessage();
+        String reasoningText = extractReasoning(responseMessage);
+        emitToolLoopDelta(deltaListener, responseMessage != null ? responseMessage.getContent() : null, reasoningText);
+        return new StreamingToolRoundResult(responseMessage, completionResponse.getUsage(), requestDurationMs);
+    }
+
+    /**
+     * 流式执行一轮不带工具的回答请求。
+     */
+    private StreamingToolRoundResult streamRoundWithoutTools(SendContext context,
+                                                             List<ChatMessage> history,
+                                                             ToolLoopDeltaListener deltaListener) {
+        ChatCompletionRequest completionRequest = buildRequest(
+                context.model().getModelKey(),
+                history,
+                context.defaultParams(),
+                null,
+                context.systemPrompt()
+        );
+        completionRequest.setStream(true);
+
+        StringBuilder contentBuilder = new StringBuilder();
+        StringBuilder reasoningBuilder = new StringBuilder();
+        ChatCompletionResponse.Usage[] usageHolder = new ChatCompletionResponse.Usage[] {null};
+
+        long requestStartAt = System.currentTimeMillis();
+        openRouterClient.streamChatCompletion(
+                context.provider().getBaseUrl(),
+                context.apiKey(),
+                completionRequest,
+                chunk -> {
+                    if (chunk == null) {
+                        return;
+                    }
+                    if (chunk.getUsage() != null) {
+                        usageHolder[0] = chunk.getUsage();
+                    }
+                    if (chunk.getChoices() == null || chunk.getChoices().isEmpty()) {
+                        return;
+                    }
+                    ChatCompletionStreamChunk.Choice choice = chunk.getChoices().get(0);
+                    ChatCompletionStreamChunk.Delta delta = choice.getDelta();
+                    if (delta == null) {
+                        return;
+                    }
+
+                    String contentPiece = delta.getContent();
+                    String reasoningPiece = delta.getReasoning();
+                    if (contentPiece != null && !contentPiece.isEmpty()) {
+                        contentBuilder.append(contentPiece);
+                    }
+                    if (reasoningPiece != null && !reasoningPiece.isEmpty()) {
+                        reasoningBuilder.append(reasoningPiece);
+                    }
+                    if ((contentPiece != null && !contentPiece.isEmpty())
+                            || (reasoningPiece != null && !reasoningPiece.isEmpty())) {
+                        deltaListener.onDelta(new ToolLoopDelta(contentPiece, reasoningPiece));
+                    }
+                }
+        );
+        long requestDurationMs = Math.max(0, System.currentTimeMillis() - requestStartAt);
+
+        ChatCompletionResponse.Message message = new ChatCompletionResponse.Message();
+        message.setRole("assistant");
+        message.setContent(normalizeContent(contentBuilder.toString()));
+        message.setReasoning(normalizeContent(reasoningBuilder.toString()));
+        return new StreamingToolRoundResult(message, usageHolder[0], requestDurationMs);
     }
 
     /**
@@ -1090,8 +1324,9 @@ public class ChatService {
             } catch (Exception e) {
                 log.error("流式工具授权续跑失败", e);
                 try {
-                    sendEvent(emitter, "error", Map.of("message", e.getMessage()));
-                } catch (IOException ignored) {
+                    String errorMessage = e.getMessage() != null ? e.getMessage() : "工具授权处理异常";
+                    sendEvent(emitter, "error", Map.of("message", errorMessage));
+                } catch (Exception ignored) {
                 }
                 emitter.completeWithError(e);
             }
@@ -1320,7 +1555,7 @@ public class ChatService {
                 : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
 
         String apiKey = encryptionUtil.decrypt(provider.getApiKey());
-        String systemPrompt = loadSystemPrompt(agent);
+        String systemPrompt = buildSystemPrompt(agent, projectChat);
         return new SendContext(
                 session,
                 model,
@@ -1423,7 +1658,7 @@ public class ChatService {
                 : availableTools.stream().map(ToolDefinition::toRequestTool).toList();
 
         String apiKey = encryptionUtil.decrypt(provider.getApiKey());
-        String systemPrompt = loadSystemPrompt(agent);
+        String systemPrompt = buildSystemPrompt(agent, projectChat);
         return new SendContext(
                 session,
                 model,
@@ -1743,11 +1978,141 @@ public class ChatService {
         return singleLine;
     }
 
-    private String loadSystemPrompt(CustomAgent agent) {
-        if (!Boolean.TRUE.equals(agent.getEnabled())) {
-            return null;
+    String buildSystemPrompt(CustomAgent agent, boolean projectChat) {
+        String agentPrompt = null;
+        if (Boolean.TRUE.equals(agent.getEnabled())) {
+            agentPrompt = normalizeContent(agent.getSystemPrompt());
         }
-        return normalizeContent(agent.getSystemPrompt());
+        if (!projectChat) {
+            return agentPrompt;
+        }
+        if (agentPrompt == null || agentPrompt.isBlank()) {
+            return PROJECT_CHAT_SYSTEM_PROMPT;
+        }
+        return agentPrompt + "\n\n" + PROJECT_CHAT_SYSTEM_PROMPT;
+    }
+
+    /**
+     * 项目聊天里，有些模型会在拿到工具结果后先输出一句“接下来我来读取/统计/分析”，
+     * 但不会立刻继续发起下一次工具调用。这里把这类过渡句视为中间态，继续推进下一轮。
+     */
+    boolean shouldContinueProjectToolLoop(boolean projectSession,
+                                          boolean hasAvailableTools,
+                                          String assistantContent,
+                                          boolean hasCompletedToolRound,
+                                          int consecutiveProjectPlanRounds,
+                                          int currentRound,
+                                          int effectiveMaxToolRounds) {
+        if (!projectSession) {
+            return false;
+        }
+        if (!hasCompletedToolRound || !hasAvailableTools) {
+            return false;
+        }
+        if (assistantContent == null || assistantContent.isBlank()) {
+            return false;
+        }
+        if (currentRound + 1 >= effectiveMaxToolRounds) {
+            return false;
+        }
+        if (consecutiveProjectPlanRounds >= MAX_PROJECT_TOOL_PLAN_CONTINUE_ROUNDS) {
+            return false;
+        }
+        return looksLikeProjectToolTransitionText(assistantContent);
+    }
+
+    boolean shouldRecoverProjectPseudoToolOutput(boolean projectSession,
+                                                 boolean hasAvailableTools,
+                                                 String assistantContent,
+                                                 int currentRound,
+                                                 int effectiveMaxToolRounds) {
+        if (!projectSession || !hasAvailableTools) {
+            return false;
+        }
+        if (assistantContent == null || assistantContent.isBlank()) {
+            return false;
+        }
+        if (currentRound + 1 >= effectiveMaxToolRounds) {
+            return false;
+        }
+        return looksLikeProjectPseudoToolOutput(assistantContent);
+    }
+
+    private boolean looksLikeProjectToolTransitionText(String assistantContent) {
+        String normalized = assistantContent
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (normalized.isEmpty() || normalized.length() > 180) {
+            return false;
+        }
+
+        List<String> planningKeywords = List.of(
+                "现在让我", "接下来", "下面我", "我先", "首先让我", "让我先", "下一步",
+                "我将", "继续", "now let me", "next i will", "i will", "let me"
+        );
+        List<String> actionKeywords = List.of(
+                "读取", "查看", "搜索", "统计", "分析", "列出", "检查", "扫描",
+                "遍历", "打开", "查找", "计算", "汇总", "read", "inspect",
+                "search", "scan", "list", "count", "analyze", "check"
+        );
+        boolean hasPlanningKeyword = planningKeywords.stream()
+                .anyMatch(keyword -> normalized.toLowerCase(Locale.ROOT).contains(keyword.toLowerCase(Locale.ROOT)));
+        if (!hasPlanningKeyword) {
+            return false;
+        }
+        return actionKeywords.stream()
+                .anyMatch(keyword -> normalized.toLowerCase(Locale.ROOT).contains(keyword.toLowerCase(Locale.ROOT)));
+    }
+
+    private boolean looksLikeProjectPseudoToolOutput(String assistantContent) {
+        String normalized = assistantContent.trim();
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        String lowerCase = normalized.toLowerCase(Locale.ROOT);
+        if (lowerCase.contains("<tool_call>") || lowerCase.contains("</tool_call>")) {
+            return true;
+        }
+        if (lowerCase.contains("<function_call>") || lowerCase.contains("</function_call>")) {
+            return true;
+        }
+        if ((lowerCase.contains("\"tool_name\"") || lowerCase.contains("\"tool_call\""))
+                && (lowerCase.contains("\"arguments\"") || lowerCase.contains("\"params\""))) {
+            return true;
+        }
+        return false;
+    }
+
+    private List<ChatMessage> appendProjectPseudoToolRecoveryInstruction(List<ChatMessage> history, String assistantContent) {
+        List<ChatMessage> nextHistory = new ArrayList<>(history);
+        ChatMessage retryInstruction = new ChatMessage();
+        retryInstruction.setRole("user");
+        retryInstruction.setContent("""
+                你上一轮输出了文本形式的伪工具调用/伪工具结果，而不是真实工具调用，这一轮无效：
+                %s
+
+                请基于已有上下文继续，直接发起真实工具调用。
+                不要输出 <tool_call>、</tool_call>、XML/JSON 包装的伪工具调用文本，也不要伪造工具结果。
+                """.formatted(abbreviateProjectPseudoToolOutput(assistantContent)));
+        nextHistory.add(retryInstruction);
+        return nextHistory;
+    }
+
+    private String abbreviateProjectPseudoToolOutput(String assistantContent) {
+        if (assistantContent == null) {
+            return "";
+        }
+        String normalized = assistantContent
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (normalized.length() <= MAX_PROJECT_PSEUDO_TOOL_RECOVERY_SNIPPET_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_PROJECT_PSEUDO_TOOL_RECOVERY_SNIPPET_LENGTH) + "…";
     }
 
     private CustomAgent resolveSessionAgent(Long agentId) {

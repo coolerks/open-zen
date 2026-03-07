@@ -1,5 +1,6 @@
 package com.aiagent.dto.openrouter;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
@@ -11,6 +12,7 @@ import java.util.List;
  * 字段结构与 OpenOpen Zen Completions 兼容。
  */
 @Data
+@JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ChatCompletionRequest {
 
@@ -34,6 +36,7 @@ public class ChatCompletionRequest {
     private Object toolChoice;  // 工具选择策略："auto" | "none" | 指定函数对象
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class Message {
         private String role;       // system / user / assistant / tool
@@ -47,6 +50,7 @@ public class ChatCompletionRequest {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class Tool {
         private String type = "function";
@@ -54,6 +58,7 @@ public class ChatCompletionRequest {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class FunctionDef {
         private String name;
@@ -62,6 +67,7 @@ public class ChatCompletionRequest {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class ToolCall {
         private String id;
@@ -70,6 +76,7 @@ public class ChatCompletionRequest {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class FunctionCall {
         private String name;

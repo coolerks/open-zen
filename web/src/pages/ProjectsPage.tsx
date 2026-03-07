@@ -3609,9 +3609,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
     [activeSidebarView, explorerCollapsed],
   );
 
-  const handleToggleProjectChatSessionList = useCallback(() => {
-    setProjectChatSessionListSignal((prev) => prev + 1);
-  }, []);
+
 
   const handleEditorSplitResizeStart = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (!rightGroupVisible) {
@@ -5090,16 +5088,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                         className="ml-2"
                     />
                 )}
-                {activeSidebarView === 'chat' && (
-                  <button
-                    type="button"
-                    onClick={handleToggleProjectChatSessionList}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
-                    title="会话列表"
-                  >
-                    <MessageSquare className="h-4 w-4" />
-                  </button>
-                )}
+
                 <button
                   type="button"
                   onClick={toggleTheme}
@@ -5111,13 +5100,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               </div>
             </div>
 
-            <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400">
-              {activeSidebarView === 'search'
-                ? '搜索'
-                : activeSidebarView === 'chat'
-                  ? '项目聊天'
-                  : '资源管理器'}
-            </div>
+            {activeSidebarView !== 'chat' && (
+              <div className="px-3 py-1 text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400">
+                {activeSidebarView === 'search' ? '搜索' : '资源管理器'}
+              </div>
+            )}
 
             {activeSidebarView === 'search' && (
               <div className="px-2 py-2">

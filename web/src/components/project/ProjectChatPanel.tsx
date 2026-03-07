@@ -6,6 +6,8 @@ import rehypeKatex from 'rehype-katex';
 import { modelApi } from '../../api/model';
 import { projectChatApi } from '../../api/projectChat';
 import type { AiModel, ChatMessage, ChatSession, ChatToolDefinition } from '../../types';
+import { Plus, Settings, Send, Square, ChevronDown, ChevronRight, MessageSquare, Check, X, Loader2, List, MoreHorizontal, Wrench } from 'lucide-react';
+
 
 type ToolPermissionMode = 'require_approval' | 'auto';
 
@@ -252,6 +254,100 @@ type StreamToolPayload = {
   result?: string | null;
 };
 
+function ToolInvocationCard({ invocation }: { invocation: ToolInvocation }) {
+  const [expanded, setExpanded] = useState(true);
+  const isDone = Boolean(invocation.resultText);
+
+  return (
+    <div className="mb-2 overflow-hidden rounded-lg border border-[rgb(229,229,229)] dark:border-[#333333] bg-[rgb(249,249,249)] dark:bg-[#1a1a1a]">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 hover:bg-[rgb(239,239,239)] dark:hover:bg-[#222222] transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+        )}
+        <Wrench className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+        <span className="flex-1 truncate text-left text-xs font-medium text-[rgb(13,13,13)] dark:text-slate-300">
+          {invocation.name}
+        </span>
+        {isDone ? (
+          <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+        ) : (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400 shrink-0" />
+        )}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-[rgb(229,229,229)] dark:border-[#333333] bg-white dark:bg-[#141414] p-3">
+          {invocation.argumentsText && (
+            <div className="mb-2">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Arguments
+              </div>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-[rgb(249,249,249)] dark:bg-[#1a1a1a] p-2 text-[11px] font-mono text-slate-700 dark:text-slate-300">
+                {invocation.argumentsText}
+              </pre>
+            </div>
+          )}
+          {invocation.resultText && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Result
+              </div>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-[rgb(249,249,249)] dark:bg-[#1a1a1a] p-2 text-[11px] font-mono text-slate-700 dark:text-slate-300">
+                {invocation.resultText}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsPopover({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handleClick);
+    return () => window.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  return (
+    <div className="relative flex items-center" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={`rounded-md p-1.5 transition-colors ${open ? 'bg-[rgb(239,239,239)] dark:bg-[#2a2a2a] text-[rgb(13,13,13)] dark:text-slate-100' : 'text-slate-500 hover:bg-[rgb(239,239,239)] dark:hover:bg-[#2a2a2a] hover:text-[rgb(13,13,13)] dark:hover:text-slate-100'}`}
+        title="工具设置"
+      >
+        <Settings className="h-4 w-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 z-50 w-64 rounded-xl border border-[rgb(209,209,209)] bg-white p-3 shadow-xl dark:border-[#3a3a3a] dark:bg-[#1f1f1f]">
+          <div className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">
+            工具设置
+          </div>
+          <div className="flex flex-col gap-3">
+            {children}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
   projectId,
   sessionListToggleSignal = 0,
@@ -284,10 +380,31 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
   const currentSessionIdRef = useRef<number | null>(null);
   const sessionPopoverRef = useRef<HTMLDivElement>(null);
   const lastSessionListToggleSignalRef = useRef(sessionListToggleSignal);
+  const autoScrollRef = useRef(true);
+  const scrollRafRef = useRef<number | null>(null);
+  const pendingForceScrollRef = useRef(false);
 
   const currentSession = useMemo(
     () => sessions.find((item) => item.id === currentSessionId) ?? null,
     [currentSessionId, sessions],
+  );
+
+  const handleToolPermissionModeChange = useCallback(
+    (nextMode: ToolPermissionMode) => {
+      setToolPermissionMode(nextMode);
+      window.localStorage.setItem(`project.chat.tool.permission.${projectId}`, nextMode);
+    },
+    [projectId],
+  );
+
+  const handleToolRoundsChange = useCallback(
+    (rawValue: string) => {
+      const sanitizedValue = rawValue.replace(/[^\d]/g, '');
+      const normalizedValue = String(resolveToolRounds(sanitizedValue || String(DEFAULT_TOOL_ROUNDS)));
+      setToolRoundsInput(normalizedValue);
+      window.localStorage.setItem(`project.chat.tool.rounds.${projectId}`, normalizedValue);
+    },
+    [projectId],
   );
   const displayMessages = useMemo(() => buildDisplayMessages(messages), [messages]);
 
@@ -304,6 +421,31 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
     [displayMessages, toolApprovalStatusMap],
   );
   const hasPendingToolApproval = pendingApprovalMessageIds.length > 0;
+
+  const scrollToBottomIfNeeded = useCallback((force: boolean = false) => {
+    if (!force && !autoScrollRef.current) {
+      return;
+    }
+    if (force) {
+      pendingForceScrollRef.current = true;
+    }
+    if (scrollRafRef.current != null) {
+      return;
+    }
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      const container = messageListRef.current;
+      const forceNow = pendingForceScrollRef.current;
+      pendingForceScrollRef.current = false;
+      if (!container) {
+        scrollRafRef.current = null;
+        return;
+      }
+      if (forceNow || autoScrollRef.current) {
+        container.scrollTop = container.scrollHeight;
+      }
+      scrollRafRef.current = null;
+    });
+  }, []);
 
   useEffect(() => {
     if (sessionListToggleSignal === lastSessionListToggleSignalRef.current) {
@@ -433,17 +575,9 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
   }, [projectId]);
 
   useEffect(() => {
-    window.localStorage.setItem(`project.chat.tool.permission.${projectId}`, toolPermissionMode);
-  }, [projectId, toolPermissionMode]);
-
-  useEffect(() => {
     const raw = window.localStorage.getItem(`project.chat.tool.rounds.${projectId}`);
     setToolRoundsInput(raw ? String(resolveToolRounds(raw)) : String(DEFAULT_TOOL_ROUNDS));
   }, [projectId]);
-
-  useEffect(() => {
-    window.localStorage.setItem(`project.chat.tool.rounds.${projectId}`, String(resolveToolRounds(toolRoundsInput)));
-  }, [projectId, toolRoundsInput]);
 
   useEffect(() => {
     let cancelled = false;
@@ -471,6 +605,7 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
     setSessions([]);
     setCurrentSessionId(null);
     currentSessionIdRef.current = null;
+    autoScrollRef.current = true;
     setMessages([]);
     setInput('');
     setSessionListOpen(false);
@@ -490,6 +625,11 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
     void loadInitialSessions();
     return () => {
       cancelled = true;
+      if (scrollRafRef.current != null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+      pendingForceScrollRef.current = false;
       if (streamAbortRef.current) {
         streamAbortRef.current.abort();
         streamAbortRef.current = null;
@@ -498,11 +638,31 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
   }, [projectId, refreshSessions]);
 
   useEffect(() => {
-    if (!messageListRef.current) {
+    const container = messageListRef.current;
+    if (!container) {
       return;
     }
-    messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
-  }, [displayMessages, messagesLoading, sending]);
+    const updateAutoScrollState = () => {
+      const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      autoScrollRef.current = distanceToBottom <= 24;
+    };
+    updateAutoScrollState();
+    container.addEventListener('scroll', updateAutoScrollState, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', updateAutoScrollState);
+    };
+  }, []);
+
+  useEffect(() => {
+    scrollToBottomIfNeeded(false);
+  }, [
+    displayMessages,
+    messagesLoading,
+    sending,
+    streamingToolApprovalRequired,
+    streamingToolInvocations,
+    scrollToBottomIfNeeded,
+  ]);
 
   useEffect(() => {
     const textarea = textAreaRef.current;
@@ -519,6 +679,7 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
       if (sending) {
         return;
       }
+      autoScrollRef.current = true;
       setCurrentSessionId(sessionId);
       setSessionListOpen(false);
       setToolApprovalStatusMap({});
@@ -532,7 +693,13 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
     if (sending) {
       return;
     }
+    // 如果当前会话没有发送过任何消息，不创建新会话，直接复用当前空会话
+    if (currentSessionId != null && messages.length === 0) {
+      setSessionListOpen(false);
+      return;
+    }
     try {
+      autoScrollRef.current = true;
       const created = await projectChatApi.createSession(projectId, { title: '新会话' });
       setSessions((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
       setCurrentSessionId(created.id);
@@ -544,7 +711,7 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
     } catch (createError: any) {
       setError(createError?.message ?? '新建会话失败');
     }
-  }, [projectId, sending]);
+  }, [projectId, sending, currentSessionId, messages.length]);
 
   const handleStreamToolEvent = useCallback((payload: StreamToolPayload) => {
     const eventType = (payload.type ?? '').trim();
@@ -693,6 +860,7 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
       } catch (approvalError: any) {
         if (approvalError?.name !== 'AbortError') {
           setError(approvalError?.message ?? '处理工具授权失败');
+          await refreshMessages(currentSessionId);
         }
         setMessages((prev) => prev.filter((item) => item.id !== tempAssistantId));
       } finally {
@@ -739,6 +907,7 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
       await refreshSessions(currentSessionId);
     } catch (approvalError: any) {
       setError(approvalError?.message ?? '处理批量工具授权失败');
+      await refreshMessages(currentSessionId);
     } finally {
       setApprovingAllTools(false);
     }
@@ -882,8 +1051,10 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
     } catch (sendError: any) {
       if (sendError?.name !== 'AbortError') {
         setError(sendError?.message ?? '发送失败');
+        // 流中断时后端可能已保存了部分消息（如工具调用结果），刷新以展示真实状态。
+        await refreshMessages(sendingSessionId);
       }
-      setMessages((prev) => prev.filter((item) => item.id !== tempAssistantId));
+      setMessages((prev) => prev.filter((item) => item.id !== tempAssistantId && item.id !== tempUserId));
     } finally {
       setSending(false);
       setStreamingAssistantId(null);
@@ -921,107 +1092,114 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
   }, []);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="relative border-b border-[rgb(209,209,209)] px-2 py-2 dark:border-[#303030]">
-        <div className="flex items-center gap-1.5">
-          <select
-            value={selectedModelId ?? ''}
-            onChange={(event) => {
-              const nextId = Number(event.target.value);
-              if (Number.isFinite(nextId)) {
-                setSelectedModelId(nextId);
-              }
-            }}
-            className="min-w-0 flex-1 rounded-md border border-[rgb(209,209,209)] bg-white px-2 py-1 text-xs text-[rgb(13,13,13)] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-100"
-          >
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.displayName}
-              </option>
-            ))}
-          </select>
+    <div className="flex h-full min-h-0 flex-col bg-[rgb(249,249,249)] dark:bg-[#1e1e1e]">
+      {/* 1. Header Area */}
+      <div className="flex items-center gap-2 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-[rgb(13,13,13)] dark:text-slate-100 truncate">
+            {currentSession?.title || '项目聊天'}
+          </h2>
+        </div>
+        <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => {
-              void handleCreateSession();
-            }}
-            className="shrink-0 rounded-md border border-[rgb(209,209,209)] px-2 py-1 text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:border-[#3a3a3a] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
-            title="新建项目会话"
+            onClick={() => setSessionListOpen(prev => !prev)}
+            className={`rounded-md p-1.5 transition-colors ${
+              sessionListOpen
+                ? 'bg-[rgb(239,239,239)] text-[rgb(13,13,13)] dark:bg-[#2a2a2a] dark:text-slate-100'
+                : 'text-slate-500 hover:bg-[rgb(239,239,239)] hover:text-[rgb(13,13,13)] dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100'
+            }`}
+            title="历史会话"
           >
-            新建
+            <MessageSquare className="h-4 w-4" />
+          </button>
+          <SettingsPopover>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-500">工具权限模式</label>
+                <select
+                  value={toolPermissionMode}
+                  onChange={(event) => handleToolPermissionModeChange(event.target.value as ToolPermissionMode)}
+                  className="w-full rounded-md border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-2 py-1.5 text-xs text-[rgb(13,13,13)] outline-none dark:border-[#3a3a3a] dark:bg-[#252525] dark:text-slate-100"
+                >
+                  <option value="require_approval">需授权 (Require Approval)</option>
+                  <option value="auto">自动调用 (Auto)</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                  工具轮次上限 (默认 100)
+                </label>
+                <input
+                  value={toolRoundsInput}
+                  onChange={(event) => handleToolRoundsChange(event.target.value)}
+                  className="w-full rounded-md border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-2 py-1.5 text-xs text-[rgb(13,13,13)] outline-none dark:border-[#3a3a3a] dark:bg-[#252525] dark:text-slate-100"
+                />
+              </div>
+              <div className="text-[10px] text-slate-500">
+                已启用工具: {enabledToolNames.length} / {tools.length}
+              </div>
+            </div>
+          </SettingsPopover>
+          <button
+            type="button"
+            onClick={() => void handleCreateSession()}
+            className="rounded-md p-1.5 text-slate-500 hover:bg-[rgb(239,239,239)] hover:text-[rgb(13,13,13)] transition-colors dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+            title="新建会话"
+          >
+            <Plus className="h-4 w-4" />
           </button>
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-          <span>
-            项目工具已启用：{enabledToolNames.length}/{tools.length}
-          </span>
-          <label className="inline-flex items-center gap-1">
-            <span>权限</span>
-            <select
-              value={toolPermissionMode}
-              onChange={(event) => setToolPermissionMode(event.target.value as ToolPermissionMode)}
-              className="rounded border border-[rgb(209,209,209)] bg-white px-1 py-0.5 text-[11px] text-[rgb(13,13,13)] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-100"
-            >
-              <option value="require_approval">需授权</option>
-              <option value="auto">自动调用</option>
-            </select>
-          </label>
-          <label className="inline-flex items-center gap-1">
-            <span>工具轮次上限</span>
-            <input
-              value={toolRoundsInput}
-              onChange={(event) => {
-                const nextValue = event.target.value.replace(/[^\d]/g, '');
-                setToolRoundsInput(nextValue || String(DEFAULT_TOOL_ROUNDS));
-              }}
-              className="w-14 rounded border border-[rgb(209,209,209)] bg-white px-1 py-0.5 text-right text-[11px] text-[rgb(13,13,13)] outline-none dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-slate-100"
-              title="单次消息工具调用最大轮次（默认 100）"
-            />
-          </label>
-          {autoTitleGenerating && <span>正在生成标题...</span>}
-        </div>
-
-        {sessionListOpen && (
-          <div
-            ref={sessionPopoverRef}
-            className="absolute right-2 top-[70px] z-30 w-[280px] rounded-lg border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-[#3a3a3a] dark:bg-[#1f1f1f]"
-          >
-            <div className="px-1.5 py-1 text-[11px] font-semibold text-slate-500 dark:text-slate-400">会话列表</div>
-            <div className="max-h-64 overflow-y-auto">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  type="button"
-                  onClick={() => {
-                    void handleSwitchSession(session.id);
-                  }}
-                  className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors ${
-                    currentSessionId === session.id
-                      ? 'bg-[rgb(234,234,234)] text-[rgb(13,13,13)] dark:bg-[#2f2f2f] dark:text-slate-100'
-                      : 'text-slate-600 hover:bg-[rgb(239,239,239)] dark:text-slate-300 dark:hover:bg-[#2a2a2a]'
-                  }`}
-                  title={session.title}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{session.title || `会话 ${session.id}`}</span>
-                    <span className="mt-0.5 block text-[10px] text-slate-400 dark:text-slate-500">
-                      {formatSessionTime(session.updatedAt)}
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
-      <div ref={messageListRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+
+      
+
+      {/* Session List Popover */}
+      {sessionListOpen && (
+        <div
+          ref={sessionPopoverRef}
+          className="absolute right-2 top-10 z-30 w-64 rounded-xl border border-[rgb(209,209,209)] bg-white p-1.5 shadow-xl dark:border-[#3a3a3a] dark:bg-[#1f1f1f]"
+        >
+          <div className="mb-1 px-2 py-1 text-xs font-semibold text-slate-500 dark:text-slate-400">历史会话</div>
+          <div className="max-h-64 overflow-y-auto space-y-0.5">
+            {sessions.map((session) => (
+              <button
+                key={session.id}
+                type="button"
+                onClick={() => void handleSwitchSession(session.id)}
+                className={`group flex w-full flex-col items-start justify-center rounded-lg px-3 py-2 text-left transition-colors ${
+                  currentSessionId === session.id
+                    ? 'bg-[rgb(239,239,239)] dark:bg-[#2a2a2a]'
+                    : 'hover:bg-[rgb(245,245,245)] dark:hover:bg-[#252525]'
+                }`}
+                title={session.title}
+              >
+                <span className={`w-full truncate text-xs font-medium ${currentSessionId === session.id ? 'text-[rgb(13,13,13)] dark:text-slate-100' : 'text-slate-600 dark:text-slate-300'}`}>
+                  {session.title || `会话 ${session.id}`}
+                </span>
+                <span className="mt-0.5 text-[10px] text-slate-400">
+                  {formatSessionTime(session.updatedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 2. Message Area */}
+      <div ref={messageListRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {loading || messagesLoading ? (
-          <p className="py-4 text-center text-xs text-slate-400 dark:text-slate-500">加载中...</p>
+          <div className="flex h-full items-center justify-center">
+            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+          </div>
         ) : displayMessages.length === 0 ? (
-          <p className="py-4 text-center text-xs text-slate-400 dark:text-slate-500">输入需求开始项目聊天</p>
+          <div className="flex h-full flex-col items-center justify-center text-slate-400">
+            <MessageSquare className="mb-2 h-8 w-8 opacity-20" />
+            <p className="text-xs">开始新的对话</p>
+          </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-6">
             {displayMessages.map((item) => {
               const { message, toolInvocations, requiresApproval, approvalMessageId } = item;
               const isUser = message.role === 'user';
@@ -1042,114 +1220,98 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
                 !hasAssistantText &&
                 effectiveToolInvocations.length > 0 &&
                 !(sending && isStreamingAssistant);
+
               return (
-                <div key={`project-chat-message-${message.id}`} className="space-y-2">
-                  {!hideEmptyAssistantBubble && (
-                    <div
-                      className={`rounded-xl px-3 py-2 text-sm ${
-                        isUser
-                          ? 'ml-8 bg-[rgb(236,236,236)] text-[rgb(13,13,13)] dark:bg-[#2f2f2f] dark:text-slate-100'
-                          : 'mr-8 bg-[rgb(249,249,249)] text-[rgb(13,13,13)] dark:bg-[#262626] dark:text-slate-100'
-                      }`}
-                    >
-                      {message.reasoningContent?.trim() && (
-                        <details className="mb-2 rounded-lg border border-[rgb(209,209,209)] bg-white/60 px-2 py-1 text-xs dark:border-[#3a3a3a] dark:bg-[#1f1f1f]">
-                          <summary className="cursor-pointer select-none text-slate-500 dark:text-slate-400">推理过程</summary>
-                          <div className="mt-1 whitespace-pre-wrap break-words">{message.reasoningContent}</div>
-                        </details>
+                <div key={`project-chat-message-${message.id}`} className="flex flex-col">
+                  {isUser ? (
+                    <div className="ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-[rgb(229,229,229)] px-4 py-2.5 text-[13px] text-[rgb(13,13,13)] dark:bg-[#333333] dark:text-slate-100">
+                      <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                    </div>
+                  ) : (
+                    <div className="w-full">
+                      {!hideEmptyAssistantBubble && (
+                        <div className="text-[13px] text-[rgb(13,13,13)] dark:text-slate-100 mb-2">
+                          {message.reasoningContent?.trim() && (
+                            <details className="mb-3 rounded-lg border border-[rgb(229,229,229)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-[#333333] dark:bg-[#1a1a1a]">
+                              <summary className="cursor-pointer select-none font-medium text-slate-500">
+                                思考过程
+                              </summary>
+                              <div className="mt-2 whitespace-pre-wrap break-words text-slate-600 dark:text-slate-400">
+                                {message.reasoningContent}
+                              </div>
+                            </details>
+                          )}
+                          {message.content?.trim() ? (
+                            <div className="chat-markdown">
+                              <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                {message.content}
+                              </ReactMarkdown>
+                            </div>
+                          ) : sending && !isUser ? (
+                            <div className="flex h-6 items-center">
+                              <div className="h-3 w-3 animate-pulse rounded-full bg-slate-400"></div>
+                            </div>
+                          ) : null}
+                        </div>
                       )}
-                      {message.content?.trim() ? (
-                        <div className="chat-markdown">
-                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                            {message.content}
-                          </ReactMarkdown>
+
+                      {effectiveToolInvocations.length > 0 && (
+                        <div className="mt-2 max-w-full">
+                          {effectiveToolInvocations.map((invocation) => (
+                            <ToolInvocationCard key={invocation.id} invocation={invocation} />
+                          ))}
+                          
+                          {effectiveRequiresApproval && approvalMessageId == null && (
+                            <div className="mt-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/50 dark:bg-amber-900/10 dark:text-amber-400">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              等待工具授权...
+                            </div>
+                          )}
+
+                          {effectiveRequiresApproval && approvalMessageId != null && approvalStatus == null && (
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={waitingApproval}
+                                onClick={() => void handleApproveToolCall(approvalMessageId, true)}
+                                className="flex items-center gap-1.5 rounded-full bg-[rgb(13,13,13)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-black disabled:opacity-50 dark:bg-slate-100 dark:text-black dark:hover:bg-white"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                                {waitingApproval ? '处理中...' : '允许'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={waitingApproval || pendingApprovalMessageIds.length <= 1}
+                                onClick={() => void handleApproveAllToolCalls()}
+                                className="flex items-center gap-1.5 rounded-full border border-[rgb(209,209,209)] bg-white px-4 py-1.5 text-xs font-medium text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(245,245,245)] disabled:opacity-50 dark:border-[#3a3a3a] dark:bg-[#252525] dark:text-slate-200 dark:hover:bg-[#2a2a2a]"
+                              >
+                                <List className="h-3.5 w-3.5" />
+                                {approvingAllTools ? '处理中...' : '全部允许'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={waitingApproval}
+                                onClick={() => void handleApproveToolCall(approvalMessageId, false)}
+                                className="flex items-center gap-1.5 rounded-full border border-[rgb(209,209,209)] bg-white px-4 py-1.5 text-xs font-medium text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50 dark:border-[#3a3a3a] dark:bg-[#252525] dark:text-rose-400 dark:hover:bg-rose-950/30"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                                {waitingApproval ? '处理中...' : '拒绝'}
+                              </button>
+                            </div>
+                          )}
+                          {approvalStatus === 'approved' && (
+                            <div className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-500">
+                              ✓ 已允许
+                            </div>
+                          )}
+                          {approvalStatus === 'rejected' && (
+                            <div className="mt-1 text-[10px] text-rose-600 dark:text-rose-500">
+                              ✗ 已拒绝
+                            </div>
+                          )}
                         </div>
-                      ) : sending && !isUser ? (
-                        <div className="flex h-6 items-center">
-                          <span className="chat-loading-dot" aria-label="加载中" />
-                        </div>
-                      ) : (
-                        <p className="text-slate-400 dark:text-slate-500">(空消息)</p>
                       )}
                     </div>
-                  )}
-
-                  {effectiveToolInvocations.length > 0 && (
-                    <details
-                      open={approvalStatus == null && effectiveRequiresApproval}
-                      className="mr-8 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-2 py-2 dark:border-[#3a3a3a] dark:bg-[#252525]"
-                    >
-                      <summary className="cursor-pointer select-none text-xs font-medium text-slate-500 dark:text-slate-400">
-                        工具调用 {effectiveToolInvocations.length} 次
-                        {approvalStatus === 'approved' && (
-                          <span className="ml-2 text-emerald-600 dark:text-emerald-400">已允许</span>
-                        )}
-                        {approvalStatus === 'rejected' && (
-                          <span className="ml-2 text-rose-600 dark:text-rose-400">已拒绝</span>
-                        )}
-                        {approvalStatus == null && isStreamingAssistant && streamingToolApprovalRequired && (
-                          <span className="ml-2 text-amber-600 dark:text-amber-400">等待授权</span>
-                        )}
-                      </summary>
-                      <div className="mt-1.5 space-y-1.5">
-                        {effectiveToolInvocations.map((invocation) => (
-                          <div key={invocation.id} className="rounded-lg bg-white/60 px-2 py-1.5 dark:bg-[#1e1e1e]">
-                            <p className="text-xs font-semibold text-[rgb(13,13,13)] dark:text-slate-100">{invocation.name}</p>
-                            {invocation.argumentsText && (
-                              <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words text-[11px] text-slate-600 dark:text-slate-300">
-                                参数: {invocation.argumentsText}
-                              </pre>
-                            )}
-                            {invocation.resultText && (
-                              <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words text-[11px] text-slate-600 dark:text-slate-300">
-                                结果: {invocation.resultText}
-                              </pre>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-
-                      {effectiveRequiresApproval && approvalMessageId == null && (
-                        <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
-                          正在生成授权卡片，请稍候...
-                        </div>
-                      )}
-
-                      {effectiveRequiresApproval && approvalMessageId != null && approvalStatus == null && (
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={waitingApproval}
-                            onClick={() => {
-                              void handleApproveToolCall(approvalMessageId, true);
-                            }}
-                            className="rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-200"
-                          >
-                            {waitingApproval ? '处理中...' : '允许'}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={waitingApproval || pendingApprovalMessageIds.length <= 1}
-                            onClick={() => {
-                              void handleApproveAllToolCalls();
-                            }}
-                            className="rounded-md border border-sky-300 bg-sky-50 px-2 py-1 text-[11px] text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-700 dark:bg-sky-900/20 dark:text-sky-200"
-                          >
-                            {approvingAllTools ? '处理中...' : '同意全部'}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={waitingApproval}
-                            onClick={() => {
-                              void handleApproveToolCall(approvalMessageId, false);
-                            }}
-                            className="rounded-md border border-rose-300 bg-rose-50 px-2 py-1 text-[11px] text-rose-700 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-200"
-                          >
-                            {waitingApproval ? '处理中...' : '拒绝'}
-                          </button>
-                        </div>
-                      )}
-                    </details>
                   )}
                 </div>
               );
@@ -1158,68 +1320,90 @@ export const ProjectChatPanel: React.FC<ProjectChatPanelProps> = ({
         )}
       </div>
 
-      <div className="border-t border-[rgb(209,209,209)] p-2 dark:border-[#303030]">
-        {error && (
-          <p className="mb-2 rounded-md bg-rose-50 px-2 py-1 text-xs text-rose-600 dark:bg-rose-900/20 dark:text-rose-300">
-            {error}
-          </p>
-        )}
-        {hasPendingToolApproval && (
-          <div className="mb-2 flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
-            <span>当前有待处理工具授权，请先允许或拒绝。</span>
-            <button
-              type="button"
-              disabled={approvingAllTools}
-              onClick={() => {
-                void handleApproveAllToolCalls();
-              }}
-              className="rounded border border-amber-400 px-1.5 py-0.5 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-600 dark:hover:bg-amber-900/40"
-            >
-              {approvingAllTools ? '处理中...' : '同意全部'}
-            </button>
-          </div>
-        )}
-        <div className="rounded-xl border border-[rgb(209,209,209)] bg-white px-2 py-2 dark:border-[#3a3a3a] dark:bg-[#202020]">
-          <textarea
-            ref={textAreaRef}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              const nativeEvent = event.nativeEvent as KeyboardEvent & { keyCode?: number };
-              if (nativeEvent.isComposing || nativeEvent.keyCode === 229) {
-                return;
-              }
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void handleSend();
-              }
-            }}
-            rows={1}
-            placeholder="在项目内提问，支持工具调用（Enter 发送）"
-            className="max-h-40 min-h-[22px] w-full resize-none bg-transparent text-sm text-[rgb(13,13,13)] outline-none placeholder:text-[rgb(143,143,143)] dark:text-slate-100"
-          />
-          <div className="mt-2 flex items-center justify-end gap-1.5">
-            {sending ? (
+      {/* 3. Input Area */}
+      <div className="shrink-0 px-3 pb-4 pt-1">
+        <div className="mx-auto w-full max-w-3xl">
+          {error && (
+            <div className="mb-2 flex items-center gap-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-950/30 dark:text-rose-400">
+              <X className="h-3.5 w-3.5 shrink-0" />
+              <span className="flex-1 whitespace-pre-wrap break-words">{error}</span>
+            </div>
+          )}
+          {hasPendingToolApproval && !error && (
+            <div className="mb-2 flex items-center justify-between rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
+              <span className="flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                需确认工具调用
+              </span>
               <button
                 type="button"
-                onClick={handleStop}
-                className="rounded-lg border border-[rgb(209,209,209)] px-2 py-1 text-xs text-[rgb(13,13,13)] transition-colors hover:bg-[rgb(239,239,239)] dark:border-[#3a3a3a] dark:text-slate-100 dark:hover:bg-[#2a2a2a]"
+                disabled={approvingAllTools}
+                onClick={() => void handleApproveAllToolCalls()}
+                className="shrink-0 font-medium hover:underline disabled:opacity-50"
               >
-                停止
+                {approvingAllTools ? '处理中...' : '全部允许'}
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
+            </div>
+          )}
+          
+          <div className="relative flex flex-col rounded-2xl border border-[rgb(220,220,220)] bg-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] focus-within:border-[rgb(180,180,180)] transition-colors dark:border-[#3a3a3a] dark:bg-[#202020] dark:shadow-[0_2px_8px_rgba(0,0,0,0.3)] dark:focus-within:border-[#555]">
+            <textarea
+              ref={textAreaRef}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                const nativeEvent = event.nativeEvent as KeyboardEvent & { keyCode?: number };
+                if (nativeEvent.isComposing || nativeEvent.keyCode === 229) return;
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
                   void handleSend();
+                }
+              }}
+              rows={1}
+              placeholder="提问或描述需求..."
+              className="max-h-48 min-h-[44px] w-full resize-none bg-transparent py-3 px-4 text-[13px] text-[rgb(13,13,13)] outline-none placeholder:text-slate-400 dark:text-slate-100"
+            />
+            
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <select
+                value={selectedModelId ?? ''}
+                onChange={(event) => {
+                  const nextId = Number(event.target.value);
+                  if (Number.isFinite(nextId)) {
+                    setSelectedModelId(nextId);
+                  }
                 }}
-                disabled={!input.trim() || selectedModelId == null || currentSessionId == null || hasPendingToolApproval}
-                title={hasPendingToolApproval ? '请先处理待确认工具调用' : '发送'}
-                className="rounded-lg bg-[rgb(13,13,13)] px-3 py-1 text-xs text-white transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-100 dark:text-black dark:hover:bg-white"
+                className="max-w-[60%] truncate appearance-none bg-transparent py-0.5 text-[11px] text-slate-500 outline-none cursor-pointer hover:text-[rgb(13,13,13)] transition-colors dark:text-slate-400 dark:hover:text-slate-200"
               >
-                发送
-              </button>
-            )}
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.displayName}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1">
+                {sending ? (
+                  <button
+                    type="button"
+                    onClick={handleStop}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition-colors hover:bg-slate-200 dark:bg-[#333333] dark:text-slate-300 dark:hover:bg-[#444444]"
+                    title="停止生成"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleSend()}
+                    disabled={!input.trim() || selectedModelId == null || currentSessionId == null || hasPendingToolApproval}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg bg-[rgb(13,13,13)] text-white transition-colors hover:bg-black disabled:opacity-30 dark:bg-slate-100 dark:text-black dark:hover:bg-white"
+                    title={hasPendingToolApproval ? '请先处理待确认工具调用' : '发送'}
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
