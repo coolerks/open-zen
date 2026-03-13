@@ -629,6 +629,7 @@ type EmbeddedToolInvocation = {
   name: string;
   argumentsText: string | null;
   resultText: string | null;
+  assistantMessageId: number | null;
 };
 
 type DisplayChatMessage = {
@@ -747,19 +748,23 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
     | null = null;
 
   const resolveToolApprovalState = (
-    baseMessage: ChatMessage,
     embeddedTools: EmbeddedToolInvocation[],
   ): { requiresToolApproval: boolean; approvalMessageId: number | null } => {
-    const hasPendingResult = embeddedTools.some((item) => !item.resultText);
-    if (!hasPendingResult) {
+    const unresolvedInvocations = embeddedTools.filter((item) => !item.resultText);
+    if (unresolvedInvocations.length === 0) {
       return { requiresToolApproval: false, approvalMessageId: null };
     }
-    if (baseMessage.id <= 0) {
+    const approvalMessageId =
+      [...unresolvedInvocations]
+        .reverse()
+        .map((item) => item.assistantMessageId)
+        .find((id): id is number => id != null && id > 0) ?? null;
+    if (approvalMessageId == null) {
       return { requiresToolApproval: false, approvalMessageId: null };
     }
     return {
       requiresToolApproval: true,
-      approvalMessageId: baseMessage.id,
+      approvalMessageId,
     };
   };
 
@@ -813,7 +818,7 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
       embeddedTools: pending.invocations,
       mergedMessageIds: pending.mergedMessageIds,
       preToolContent,
-      ...resolveToolApprovalState(syntheticMessage, pending.invocations),
+      ...resolveToolApprovalState(pending.invocations),
     });
     pending = null;
   };
@@ -844,6 +849,7 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
             name: toolCall.name,
             argumentsText: toolCall.argumentsText,
             resultText: null,
+            assistantMessageId: message.id > 0 ? message.id : null,
           });
         });
         continue;
@@ -872,7 +878,7 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
           embeddedTools: pending.invocations,
           mergedMessageIds: mergedIds,
           preToolContent,
-          ...resolveToolApprovalState(mergedMessage, pending.invocations),
+          ...resolveToolApprovalState(pending.invocations),
         });
         pending = null;
         continue;
@@ -902,6 +908,7 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
             name: '工具',
             argumentsText: null,
             resultText,
+            assistantMessageId: null,
           });
         }
       } else {
@@ -914,6 +921,7 @@ function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
             name: '工具',
             argumentsText: null,
             resultText,
+            assistantMessageId: null,
           });
         }
       }
@@ -6782,10 +6790,12 @@ const ChatPage: React.FC = () => {
                 <div ref={messagesContentRef} className={`mx-auto w-full ${chatCanvasWidthClass} space-y-7 pb-3`}>
                   {displayMessages.map(({ message, embeddedTools, mergedMessageIds, preToolContent, requiresToolApproval, approvalMessageId }) => {
                     const explicitToolApprovalStatus =
-                      mergedMessageIds
-                        .map((id) => toolApprovalStatusMap[id])
-                        .find((status): status is 'approved' | 'rejected' => status === 'approved' || status === 'rejected') ??
-                      null;
+                      (approvalMessageId != null
+                        ? toolApprovalStatusMap[approvalMessageId] ?? null
+                        : mergedMessageIds
+                          .map((id) => toolApprovalStatusMap[id])
+                          .find((status): status is 'approved' | 'rejected' => status === 'approved' || status === 'rejected') ??
+                          null);
                     const hasRejectedResult = embeddedTools.some((tool) =>
                       (tool.resultText ?? '').includes('用户拒绝执行工具'),
                     );
