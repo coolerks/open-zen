@@ -338,6 +338,214 @@ function formatReasoningDuration(durationMs: number | null | undefined): string 
   return `${minutes}分钟${seconds}秒`;
 }
 
+function normalizeReasoningDisplayText(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:[-*•]+|\d+[.)、])\s*/, '')
+    .trim();
+}
+
+function splitReasoningMixedLine(value: string): string[] {
+  const normalized = normalizeReasoningDisplayText(value);
+  if (!normalized) {
+    return [];
+  }
+  const parts = normalized
+    .split(/(?<=[\u4e00-\u9fa5）】])\s+(?=[\u4e00-\u9fa5“《])/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (parts.length >= 2 && parts.every((item) => item.length >= 6)) {
+    return parts;
+  }
+  return [normalized];
+}
+
+function splitReasoningIntoSteps(reasoning: string): string[] {
+  const explicitLines = reasoning
+    .split(/\r?\n+/)
+    .flatMap(splitReasoningMixedLine)
+    .filter(Boolean);
+  if (explicitLines.length > 1) {
+    return explicitLines;
+  }
+
+  const normalized = normalizeReasoningDisplayText(reasoning);
+  if (!normalized) {
+    return [];
+  }
+
+  const sentences = (normalized.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (sentences.length >= 2 && sentences.length <= 8) {
+    return sentences;
+  }
+
+  return [normalized];
+}
+
+function extractReasoningPreview(reasoning: string): string {
+  const steps = splitReasoningIntoSteps(reasoning);
+  if (steps.length === 0) {
+    return '正在整理思路';
+  }
+  return steps[steps.length - 1];
+}
+
+function splitReasoningStepDisplay(step: string): { lead: string | null; body: string } {
+  const normalized = normalizeReasoningDisplayText(step);
+  if (!normalized) {
+    return { lead: null, body: '' };
+  }
+
+  const splitAt = (index: number) => {
+    const lead = normalized.slice(0, index + 1).trim();
+    const body = normalized.slice(index + 1).trim();
+    if (!lead || !body) {
+      return { lead: null, body: normalized };
+    }
+    return { lead, body };
+  };
+
+  const colonIndex = normalized.search(/[：:]/);
+  if (colonIndex >= 4 && colonIndex <= 18) {
+    return splitAt(colonIndex);
+  }
+
+  const commaIndex = normalized.search(/[，,]/);
+  if (commaIndex >= 8 && commaIndex <= 22) {
+    return splitAt(commaIndex);
+  }
+
+  const sentenceIndex = normalized.search(/[。！？!?]/);
+  if (sentenceIndex >= 10 && sentenceIndex <= 26) {
+    return splitAt(sentenceIndex);
+  }
+
+  return { lead: null, body: normalized };
+}
+
+function trimReasoningTitle(value: string): string {
+  return normalizeReasoningDisplayText(value).replace(/[：:，,。！？!?；;]+$/g, '').trim();
+}
+
+function isReasoningLeadLine(value: string): boolean {
+  const normalized = normalizeReasoningDisplayText(value);
+  if (!normalized) {
+    return false;
+  }
+  if (/[：:]$/.test(normalized)) {
+    return true;
+  }
+  if (/[，,]$/.test(normalized) && normalized.length <= 34) {
+    return true;
+  }
+  return !/[。！？!?；;]$/.test(normalized) && normalized.length <= 20;
+}
+
+function shouldRenderReasoningBodyAsList(body: string[]): boolean {
+  return body.length >= 3 && body.every((line) => line.length <= 36 && !/[。！？!?；;]$/.test(line));
+}
+
+function buildReasoningTimelineEntries(reasoning: string): ReasoningTimelineEntry[] {
+  const steps = splitReasoningIntoSteps(reasoning);
+  const entries: Array<Omit<ReasoningTimelineEntry, 'renderAsList'>> = [];
+
+  for (let index = 0; index < steps.length; index += 1) {
+    const current = normalizeReasoningDisplayText(steps[index]);
+    if (!current) {
+      continue;
+    }
+
+    if (isReasoningLeadLine(current)) {
+      let title = current;
+      while (index + 1 < steps.length) {
+        const nextLead = normalizeReasoningDisplayText(steps[index + 1]);
+        if (!nextLead || !isReasoningLeadLine(nextLead) || title.length > 28) {
+          break;
+        }
+        title = `${title}${/[：:，,]$/.test(title) ? '' : ' '}${nextLead}`;
+        index += 1;
+        if (/[：:]$/.test(nextLead)) {
+          break;
+        }
+      }
+
+      const body: string[] = [];
+      while (index + 1 < steps.length) {
+        const next = normalizeReasoningDisplayText(steps[index + 1]);
+        if (!next) {
+          index += 1;
+          continue;
+        }
+        if (isReasoningLeadLine(next)) {
+          break;
+        }
+        body.push(next);
+        index += 1;
+        if (body.length >= 4) {
+          break;
+        }
+      }
+
+      const normalizedTitle = trimReasoningTitle(title);
+      if (body.length === 0) {
+        const split = splitReasoningStepDisplay(title);
+        if (split.lead) {
+          entries.push({
+            title: trimReasoningTitle(split.lead),
+            body: split.body ? [split.body] : [],
+          });
+        } else if (normalizedTitle) {
+          entries.push({
+            title: normalizedTitle,
+            body: [],
+          });
+        }
+      } else {
+        entries.push({
+          title: normalizedTitle || title,
+          body,
+        });
+      }
+      continue;
+    }
+
+    const split = splitReasoningStepDisplay(current);
+    if (split.lead) {
+      entries.push({
+        title: trimReasoningTitle(split.lead),
+        body: split.body ? [split.body] : [],
+      });
+      continue;
+    }
+
+    const previousEntry = entries[entries.length - 1];
+    if (
+      previousEntry &&
+      previousEntry.body.length > 0 &&
+      previousEntry.body.length < 2 &&
+      current.length <= 72 &&
+      /[。！？!?；;]$/.test(current)
+    ) {
+      previousEntry.body.push(current);
+      continue;
+    }
+
+    entries.push({
+      title: trimReasoningTitle(current) || current,
+      body: [],
+    });
+  }
+
+  return entries
+    .filter((entry) => entry.title || entry.body.length > 0)
+    .map((entry) => ({
+      ...entry,
+      renderAsList: shouldRenderReasoningBodyAsList(entry.body),
+    }));
+}
+
 function parsePositiveInteger(value: string): number | null {
   const normalized = value.trim();
   if (!normalized) {
@@ -430,6 +638,24 @@ type DisplayChatMessage = {
   preToolContent: string | null;
   requiresToolApproval: boolean;
   approvalMessageId: number | null;
+};
+
+type ReasoningPanelState = {
+  messageId: number;
+  reasoning: string;
+  summary: string;
+  preview: string;
+  durationText: string | null;
+  isInProgress: boolean;
+  assistantName: string;
+  modelName: string | null;
+  createdAt: string;
+};
+
+type ReasoningTimelineEntry = {
+  title: string;
+  body: string[];
+  renderAsList: boolean;
 };
 
 type ParsedToolCall = {
@@ -3151,6 +3377,7 @@ const MessageCardBase: React.FC<{
   onSelectForAction: (payload: SelectionActionPayload | null) => void;
   onAddToAppCenter: (payload: SaveCodeBlockPayload) => void;
   onToolApproval: (assistantMessageId: number, approved: boolean) => void;
+  onOpenReasoningPanel: (payload: ReasoningPanelState) => void;
   savedSourceKeySet: Set<string>;
 }> = ({
   message,
@@ -3170,6 +3397,7 @@ const MessageCardBase: React.FC<{
   onSelectForAction,
   onAddToAppCenter,
   onToolApproval,
+  onOpenReasoningPanel,
   savedSourceKeySet,
 }) => {
   const isUser = message.role === 'user';
@@ -3183,13 +3411,11 @@ const MessageCardBase: React.FC<{
   const hasPreToolContent = hasEmbeddedTools && normalizedPreToolContent.length > 0;
   const shouldHideEmptyContent = !isUser && !isTool && hasEmbeddedTools && !hasContent && !isStreaming;
   const isReasoningInProgress = Boolean(reasoning) && isStreaming && !hasContent;
+  const reasoningDurationText = formatReasoningDuration(message.reasoningDurationMs);
   const reasoningSummary = isReasoningInProgress
     ? '思考中'
-    : (() => {
-        const durationText = formatReasoningDuration(message.reasoningDurationMs);
-        return durationText ? `已思考（用时${durationText}）` : '已思考';
-      })();
-  const [reasoningOpen, setReasoningOpen] = useState(isReasoningInProgress);
+    : (reasoningDurationText ? `已思考 ${reasoningDurationText}` : '已思考');
+  const reasoningPreview = useMemo(() => extractReasoningPreview(reasoning), [reasoning]);
   const [toolsOpen, setToolsOpen] = useState(() => hasEmbeddedTools && requiresToolApproval);
   const [actionsVisible, setActionsVisible] = useState(false);
   const hideActionsTimerRef = useRef<number | null>(null);
@@ -3217,11 +3443,6 @@ const MessageCardBase: React.FC<{
       }
     };
   }, []);
-
-  useEffect(() => {
-    // 思考过程中自动展开，思考结束后自动收起。
-    setReasoningOpen(isReasoningInProgress);
-  }, [isReasoningInProgress, message.id]);
 
   const toolsSummaryText = useMemo(() => {
     if (!hasEmbeddedTools) {
@@ -3327,14 +3548,38 @@ const MessageCardBase: React.FC<{
   const bodyContent = (
     <>
       {reasoning && (
-        <details
-          open={reasoningOpen}
-          onToggle={(event) => setReasoningOpen(event.currentTarget.open)}
-          className="mb-3 rounded-xl border border-[rgb(209,209,209)] bg-[rgb(249,249,249)] px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/70"
-        >
-          <summary className="cursor-pointer select-none text-slate-600 dark:text-slate-300">{reasoningSummary}</summary>
-          <div className="mt-2 whitespace-pre-wrap text-slate-500 dark:text-slate-400">{reasoning}</div>
-        </details>
+        <div className="mb-3">
+          <button
+            type="button"
+            onClick={() => onOpenReasoningPanel({
+              messageId: message.id,
+              reasoning,
+              summary: reasoningSummary,
+              preview: reasoningPreview,
+              durationText: reasoningDurationText,
+              isInProgress: isReasoningInProgress,
+              assistantName: assistantProfile.displayName,
+              modelName: message.modelName,
+              createdAt: message.createdAt,
+            })}
+            className="group flex max-w-[42rem] items-center gap-2 rounded-full px-1 py-1 text-left transition-colors hover:text-slate-700 dark:hover:text-slate-200"
+            aria-label="打开思考过程侧栏"
+          >
+            <span className="min-w-0 flex-1 overflow-hidden">
+              <span className="flex items-center gap-2 overflow-hidden text-[13px] leading-6 text-slate-500 dark:text-slate-400">
+                <span className="shrink-0 font-medium text-slate-500 dark:text-slate-300">{reasoningSummary}</span>
+                {isReasoningInProgress && (
+                  <span className="chat-reasoning-preview chat-reasoning-preview-live">
+                    {reasoningPreview}
+                  </span>
+                )}
+              </span>
+            </span>
+            <ChevronRightIcon
+              className="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200 group-hover:translate-x-0.5"
+            />
+          </button>
+        </div>
       )}
 
       {hasPreToolContent && (
@@ -3534,6 +3779,7 @@ const MessageCard = React.memo(
     prev.onSelectForAction === next.onSelectForAction &&
     prev.onAddToAppCenter === next.onAddToAppCenter &&
     prev.onToolApproval === next.onToolApproval &&
+    prev.onOpenReasoningPanel === next.onOpenReasoningPanel &&
     prev.savedSourceKeySet === next.savedSourceKeySet,
 );
 
@@ -3662,6 +3908,7 @@ const ChatPage: React.FC = () => {
   const [sessionAboutDialog, setSessionAboutDialog] = useState<SessionAboutDialogState>(initialSessionAboutState);
   const [contextStats, setContextStats] = useState<ChatSessionContextStats | null>(null);
   const [contextStatsLoading, setContextStatsLoading] = useState(false);
+  const [reasoningPanel, setReasoningPanel] = useState<ReasoningPanelState | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const saveAppIconInputRef = useRef<HTMLInputElement>(null);
@@ -4030,6 +4277,34 @@ const ChatPage: React.FC = () => {
   }, [messages, streaming]);
 
   const displayMessages = useMemo(() => buildDisplayMessages(messages), [messages]);
+  const activeReasoningPanel = useMemo(() => {
+    if (!reasoningPanel) {
+      return null;
+    }
+    const matchedMessage = displayMessages.find((item) => item.message.id === reasoningPanel.messageId)?.message;
+    if (!matchedMessage?.reasoningContent?.trim()) {
+      return reasoningPanel;
+    }
+    const latestReasoning = matchedMessage.reasoningContent.trim();
+    const latestDurationText = formatReasoningDuration(matchedMessage.reasoningDurationMs);
+    const latestIsInProgress = Boolean(latestReasoning) && activeStreamingMessageId === matchedMessage.id && !(matchedMessage.content?.trim());
+    return {
+      ...reasoningPanel,
+      reasoning: latestReasoning,
+      preview: extractReasoningPreview(latestReasoning),
+      summary: latestIsInProgress
+        ? '思考中'
+        : (latestDurationText ? `已思考 ${latestDurationText}` : '已思考'),
+      durationText: latestDurationText,
+      isInProgress: latestIsInProgress,
+      modelName: matchedMessage.modelName,
+      createdAt: matchedMessage.createdAt,
+    };
+  }, [displayMessages, reasoningPanel, activeStreamingMessageId]);
+  const activeReasoningEntries = useMemo(
+    () => buildReasoningTimelineEntries(activeReasoningPanel?.reasoning ?? ''),
+    [activeReasoningPanel?.reasoning],
+  );
   const hasPendingToolApproval = useMemo(
     () => displayMessages.some((item) => item.requiresToolApproval && item.approvalMessageId != null),
     [displayMessages],
@@ -4611,6 +4886,25 @@ const ChatPage: React.FC = () => {
       setSidebarSettingsOpen(false);
     }
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    setReasoningPanel(null);
+  }, [currentSessionId, location.pathname]);
+
+  useEffect(() => {
+    if (!activeReasoningPanel) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setReasoningPanel(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeReasoningPanel]);
 
   const adjustInputHeight = (target?: HTMLTextAreaElement | null) => {
     const element = target ?? textareaRef.current;
@@ -5981,6 +6275,76 @@ const ChatPage: React.FC = () => {
     </div>
   );
 
+  const chatCanvasWidthClass = activeReasoningPanel
+    ? 'max-w-[740px] xl:max-w-[800px] 2xl:max-w-[860px]'
+    : 'max-w-[860px] xl:max-w-[920px]';
+
+  const reasoningPanelHeader = activeReasoningPanel ? (
+    <div className="chat-activity-panel flex h-[57px] min-w-0 items-center justify-between border-b border-[#ececec] pl-6 pr-4 dark:border-[#2f2f2f]">
+      <p className="truncate text-[15px] font-semibold tracking-[-0.02em] text-[#1f1f1d] dark:text-slate-100">
+        思考
+        {activeReasoningPanel.durationText && (
+          <span className="ml-1.5 font-normal text-[#8a8f98] dark:text-slate-400">· {activeReasoningPanel.durationText}</span>
+        )}
+      </p>
+      <button
+        type="button"
+        onClick={() => setReasoningPanel(null)}
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[#7a7b76] transition-colors hover:bg-[#f3f4f6] hover:text-[#1f1f1d] dark:text-slate-400 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+        title="关闭"
+        aria-label="关闭思考侧栏"
+      >
+        <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5.2 5.2L14.8 14.8M14.8 5.2L5.2 14.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  ) : null;
+
+  const reasoningPanelContent = activeReasoningPanel ? (
+    <div className="chat-activity-panel min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-[400px] px-5 pb-10 pt-4 xl:max-w-[400px] xl:px-2">
+        <div className="min-w-0">
+          <div className="chat-activity-timeline pl-5">
+            {(activeReasoningEntries.length > 0
+              ? activeReasoningEntries
+              : [{ title: trimReasoningTitle(activeReasoningPanel.preview) || activeReasoningPanel.preview, body: [], renderAsList: false }]
+            ).map((entry, index) => (
+              <article key={`${activeReasoningPanel.messageId}-panel-step-${index}`} className="chat-activity-entry relative pb-4 last:pb-0">
+                <div className="space-y-1">
+                  <p className="text-[13px] font-semibold leading-[1.5] tracking-[-0.01em] text-[#2a2b2f] dark:text-slate-100">
+                    {entry.title}
+                  </p>
+
+                  {entry.body.length > 0 && (
+                    entry.renderAsList ? (
+                      <ul className="space-y-1 text-[13px] leading-[1.48] text-[#6a6f79] dark:text-slate-300">
+                        {entry.body.map((line, lineIndex) => (
+                          <li key={`${activeReasoningPanel.messageId}-panel-step-${index}-line-${lineIndex}`} className="flex items-start gap-2">
+                            <span className="mt-[0.48rem] h-[3px] w-[3px] shrink-0 rounded-full bg-[#b6bac2] dark:bg-slate-500" />
+                            <span className="min-w-0">{line}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="space-y-1 text-[13px] leading-[1.48] text-[#6a6f79] dark:text-slate-300">
+                        {entry.body.map((line, lineIndex) => (
+                          <p key={`${activeReasoningPanel.messageId}-panel-step-${index}-line-${lineIndex}`} className="whitespace-pre-wrap">
+                            {line}
+                          </p>
+                        ))}
+                      </div>
+                    )
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="flex h-full min-h-0 bg-[#f7f7f8] text-slate-900 dark:bg-[#212121] dark:text-slate-100">
       {showGlobalSidebar && (
@@ -6240,149 +6604,166 @@ const ChatPage: React.FC = () => {
       </aside>
       )}
 
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-[#212121]">
         {pageMode !== 'projects' && (
-        <div className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white px-5 dark:border-[#2f2f2f] dark:bg-[#212121]">
-          {isChatRoute ? (
-            <ChatModelSelect
-              options={enabledModels.map((model) => ({
-                value: model.id,
-                label: model.displayName,
-                supportsReasoning: Boolean(model.supportsReasoning),
-                supportsVision: Boolean(model.supportsVision),
-                supportsTools: Boolean(model.supportsTools),
-              }))}
-              value={effectiveSelectedModelId}
-              onChange={(value) => void handleModelChange(value)}
-            />
-          ) : (
-            <h1 className="text-lg font-semibold text-[#0d0d0d] dark:text-slate-100">{topBarTitle}</h1>
-          )}
-
-          <div className="ml-auto flex items-center gap-1">
-            {showTemporaryToggle && (
-              <button
-                type="button"
-                onClick={handleToggleTemporaryChat}
-                className={`mr-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
-                  draftTemporary
-                    ? 'bg-[rgb(245,245,245)] text-[#0d0d0d] hover:bg-[rgb(239,239,239)] dark:bg-[#2a2a2a] dark:text-slate-100 dark:hover:bg-[#303030]'
-                    : 'text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-[#2a2a2a]'
-                }`}
-                title={draftTemporary ? '退出临时聊天' : '开启临时聊天'}
-                aria-label={draftTemporary ? '退出临时聊天' : '开启临时聊天'}
-              >
-                {draftTemporary ? (
-                  <TemporaryModeActiveIcon className="h-5 w-5" />
+          <div className="flex min-w-0 shrink-0">
+            <div className="min-w-0 flex-1 border-b border-slate-200 bg-white dark:border-[#2f2f2f] dark:bg-[#212121]">
+              <div className="flex h-14 items-center gap-3 px-5">
+                {isChatRoute ? (
+                  <ChatModelSelect
+                    options={enabledModels.map((model) => ({
+                      value: model.id,
+                      label: model.displayName,
+                      supportsReasoning: Boolean(model.supportsReasoning),
+                      supportsVision: Boolean(model.supportsVision),
+                      supportsTools: Boolean(model.supportsTools),
+                    }))}
+                    value={effectiveSelectedModelId}
+                    onChange={(value) => void handleModelChange(value)}
+                  />
                 ) : (
-                  <TemporaryModeIcon className="h-5 w-5" />
+                  <h1 className="text-lg font-semibold text-[#0d0d0d] dark:text-slate-100">{topBarTitle}</h1>
                 )}
-              </button>
-            )}
 
-            {hasCurrentSession && (
-              <ContextUsageIndicator
-                stats={contextStats}
-                loading={contextStatsLoading}
-                tooltipPlacement="bottom"
-              />
-            )}
+                <div className="ml-auto flex items-center gap-1">
+                  {showTemporaryToggle && (
+                    <button
+                      type="button"
+                      onClick={handleToggleTemporaryChat}
+                      className={`mr-1 inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${
+                        draftTemporary
+                          ? 'bg-[rgb(245,245,245)] text-[#0d0d0d] hover:bg-[rgb(239,239,239)] dark:bg-[#2a2a2a] dark:text-slate-100 dark:hover:bg-[#303030]'
+                          : 'text-[#0d0d0d] hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-[#2a2a2a]'
+                      }`}
+                      title={draftTemporary ? '退出临时聊天' : '开启临时聊天'}
+                      aria-label={draftTemporary ? '退出临时聊天' : '开启临时聊天'}
+                    >
+                      {draftTemporary ? (
+                        <TemporaryModeActiveIcon className="h-5 w-5" />
+                      ) : (
+                        <TemporaryModeIcon className="h-5 w-5" />
+                      )}
+                    </button>
+                  )}
 
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#0d0d0d] transition-colors hover:bg-slate-100 hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
-              title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
-            >
-              {theme === 'light' ? <MoonIcon /> : <SunIcon />}
-            </button>
+                  {hasCurrentSession && (
+                    <ContextUsageIndicator
+                      stats={contextStats}
+                      loading={contextStatsLoading}
+                      tooltipPlacement="bottom"
+                    />
+                  )}
 
-            <div ref={headerMoreRef} className="relative">
-              <button
-                type="button"
-                onClick={() => {
-                  setSidebarSettingsOpen(false);
-                  setHeaderMoreOpen((prev) => !prev);
-                }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#0d0d0d] transition-colors hover:bg-slate-100 hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
-                title="更多"
-              >
-                <MoreIcon />
-              </button>
-
-              {headerMoreOpen && (
-                <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
                   <button
                     type="button"
-                    onClick={() => {
-                      setHeaderMoreOpen(false);
-                      handleExportPdf();
-                    }}
-                    disabled={!canExportCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                    onClick={toggleTheme}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#0d0d0d] transition-colors hover:bg-slate-100 hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+                    title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}
                   >
-                    <ExportPdfIcon />
-                    <span>导出 PDF</span>
+                    {theme === 'light' ? <MoonIcon /> : <SunIcon />}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMoreOpen(false);
-                      handleExportMarkdown();
-                    }}
-                    disabled={!canExportCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
-                  >
-                    <ExportMarkdownIcon />
-                    <span>导出 Markdown</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void handleShareCurrentSession();
-                    }}
-                    disabled={!hasCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
-                  >
-                    <ShareIcon />
-                    <span>{shareCopied ? '链接已复制' : '分享'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!currentSession) {
-                        return;
-                      }
-                      setHeaderMoreOpen(false);
-                      setDeleteSessionTarget(currentSession);
-                    }}
-                    disabled={!hasCurrentSession}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-rose-500 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-rose-900/20"
-                  >
-                    <DeleteIcon />
-                    <span>删除会话</span>
-                  </button>
+
+                  <div ref={headerMoreRef} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSidebarSettingsOpen(false);
+                        setHeaderMoreOpen((prev) => !prev);
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#0d0d0d] transition-colors hover:bg-slate-100 hover:text-[#0d0d0d] dark:text-slate-300 dark:hover:bg-[#2a2a2a] dark:hover:text-slate-100"
+                      title="更多"
+                    >
+                      <MoreIcon />
+                    </button>
+
+                    {headerMoreOpen && (
+                      <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-xl border border-[rgb(209,209,209)] bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-[#2f2f2f]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHeaderMoreOpen(false);
+                            handleExportPdf();
+                          }}
+                          disabled={!canExportCurrentSession}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                        >
+                          <ExportPdfIcon />
+                          <span>导出 PDF</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHeaderMoreOpen(false);
+                            handleExportMarkdown();
+                          }}
+                          disabled={!canExportCurrentSession}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                        >
+                          <ExportMarkdownIcon />
+                          <span>导出 Markdown</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleShareCurrentSession();
+                          }}
+                          disabled={!hasCurrentSession}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-[rgb(245,245,245)] disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-[#242424]"
+                        >
+                          <ShareIcon />
+                          <span>{shareCopied ? '链接已复制' : '分享'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!currentSession) {
+                              return;
+                            }
+                            setHeaderMoreOpen(false);
+                            setDeleteSessionTarget(currentSession);
+                          }}
+                          disabled={!hasCurrentSession}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-rose-500 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-rose-900/20"
+                        >
+                          <DeleteIcon />
+                          <span>删除会话</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
+              </div>
             </div>
-            </div>
+
+            {isChatRoute && activeReasoningPanel && (
+              <div className="hidden min-w-0 shrink-0 border-l border-[#e7e3da] dark:border-[#2d2d2d] lg:block lg:w-[400px] xl:w-[432px] 2xl:w-[468px]">
+                {reasoningPanelHeader}
+              </div>
+            )}
           </div>
         )}
 
         {isChatRoute ? (
-          <>
-            <div
-              ref={messagesContainerRef}
-              onScroll={handleMessagesScroll}
-              onWheel={handleMessagesWheel}
-              className={
-                shouldCenterComposer
-                  ? 'px-4 pt-28'
-                  : 'flex-1 min-h-0 overflow-y-auto px-4 pb-4 pt-6'
-              }
-            >
+          <div
+            className={
+              activeReasoningPanel
+                ? 'min-h-0 min-w-0 flex-1 flex flex-col transition-[grid-template-columns] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] lg:grid lg:grid-cols-[minmax(0,1fr)_400px] xl:grid-cols-[minmax(0,1fr)_432px] 2xl:grid-cols-[minmax(0,1fr)_468px]'
+                : 'min-h-0 min-w-0 flex-1 flex flex-col'
+            }
+          >
+            <div className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
+              <div
+                ref={messagesContainerRef}
+                onScroll={handleMessagesScroll}
+                onWheel={handleMessagesWheel}
+                className={
+                  shouldCenterComposer
+                    ? 'px-4 pt-28'
+                    : 'flex-1 min-h-0 overflow-y-auto px-4 pb-4 pt-6'
+                }
+              >
               {!currentSessionId ? (
-                <div className={`mx-auto max-w-2xl text-center ${isTemporaryDraft ? 'text-[#0d0d0d]' : 'text-[#0d0d0d] dark:text-slate-100'} ${shouldCenterComposer ? 'mt-6' : 'mt-24'}`}>
+                <div className={`mx-auto w-full ${chatCanvasWidthClass} text-center ${isTemporaryDraft ? 'text-[#0d0d0d]' : 'text-[#0d0d0d] dark:text-slate-100'} ${shouldCenterComposer ? 'mt-6' : 'mt-24'}`}>
                   <h2 className="mb-3 text-[30px] font-semibold tracking-tight">
                     {isTemporaryDraft ? '临时聊天' : '今天想聊点什么？'}
                   </h2>
@@ -6393,12 +6774,12 @@ const ChatPage: React.FC = () => {
                   </p>
                 </div>
               ) : messages.length === 0 ? (
-                <div className="mx-auto mt-24 max-w-2xl rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-[#212121] dark:text-slate-400">
+                <div className={`mx-auto mt-24 w-full ${chatCanvasWidthClass} rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 dark:border-slate-700 dark:bg-[#212121] dark:text-slate-400`}>
                   <p className="text-lg">会话已创建</p>
                   <p className="mt-2 text-sm">输入你的问题，或拖拽/上传图片开始对话。</p>
                 </div>
               ) : (
-                <div ref={messagesContentRef} className="space-y-7 pb-3">
+                <div ref={messagesContentRef} className={`mx-auto w-full ${chatCanvasWidthClass} space-y-7 pb-3`}>
                   {displayMessages.map(({ message, embeddedTools, mergedMessageIds, preToolContent, requiresToolApproval, approvalMessageId }) => {
                     const explicitToolApprovalStatus =
                       mergedMessageIds
@@ -6440,6 +6821,7 @@ const ChatPage: React.FC = () => {
                           onSelectForAction={handleSelectForAction}
                           onAddToAppCenter={handleOpenSaveCodeBlock}
                           onToolApproval={handleToolApproval}
+                          onOpenReasoningPanel={setReasoningPanel}
                           savedSourceKeySet={appSourceKeySet}
                         />
                       </div>
@@ -6450,14 +6832,14 @@ const ChatPage: React.FC = () => {
               )}
             </div>
 
-            <div
-              className={
-                shouldCenterComposer
-                  ? 'px-4 pb-5 pt-8'
-                  : 'bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]'
-              }
-            >
-              <div className="mx-auto max-w-[860px]">
+              <div
+                className={
+                  shouldCenterComposer
+                    ? 'px-4 pb-5 pt-8'
+                    : 'bg-gradient-to-t from-white via-white to-white px-4 pb-5 pt-3 dark:from-[#212121] dark:via-[#212121] dark:to-[#212121]'
+                }
+              >
+                <div className={`mx-auto w-full ${chatCanvasWidthClass}`}>
                 {error && (
                   <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
                     {error}
@@ -6966,9 +7348,31 @@ const ChatPage: React.FC = () => {
                 <p className={`mt-2 text-center text-[11px] ${temporaryChatActive ? 'text-[#8f8f8f]' : 'text-slate-400 dark:text-slate-500'}`}>
                   AI 可能会犯错，请注意核验关键信息
                 </p>
+                </div>
               </div>
             </div>
-          </>
+
+            {activeReasoningPanel && (
+              <>
+                <aside className="hidden min-h-0 min-w-0 flex-col border-l border-slate-200 bg-[#fcfcfc] dark:border-[#2f2f2f] dark:bg-[#171717] lg:flex">
+                  {reasoningPanelContent}
+                </aside>
+
+                <div className="lg:hidden">
+                  <button
+                    type="button"
+                    aria-label="关闭思考侧栏"
+                    onClick={() => setReasoningPanel(null)}
+                    className="absolute inset-0 z-20 bg-black/12 backdrop-blur-[1px]"
+                  />
+                  <aside className="absolute inset-y-0 right-0 z-30 flex w-full max-w-[420px] flex-col border-l border-slate-200 bg-[#fcfcfc] shadow-[-18px_0_48px_rgba(15,23,42,0.14)] dark:border-[#2f2f2f] dark:bg-[#171717] dark:shadow-[-20px_0_60px_rgba(2,6,23,0.5)]">
+                    {reasoningPanelHeader}
+                    {reasoningPanelContent}
+                  </aside>
+                </div>
+              </>
+            )}
+          </div>
         ) : (
           <div className="flex-1 min-h-0 overflow-hidden">
             {pageMode === 'models' ? (
