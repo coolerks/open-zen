@@ -1238,6 +1238,19 @@ public class ChatService {
         ).message();
     }
 
+    public SseEmitter streamToolApproval(Long sessionId,
+                                         Long assistantMessageId,
+                                         boolean approved,
+                                         Integer maxToolRounds) {
+        return streamToolApprovalInternal(
+                null,
+                sessionId,
+                assistantMessageId,
+                approved,
+                maxToolRounds
+        );
+    }
+
     public ChatMessage resolveProjectToolApproval(String projectId,
                                                   Long sessionId,
                                                   Long assistantMessageId,
@@ -1265,7 +1278,20 @@ public class ChatService {
                                                 Long assistantMessageId,
                                                 boolean approved,
                                                 Integer maxToolRounds) {
-        String normalizedProjectId = normalizeProjectId(projectId);
+        return streamToolApprovalInternal(
+                normalizeProjectId(projectId),
+                sessionId,
+                assistantMessageId,
+                approved,
+                maxToolRounds
+        );
+    }
+
+    private SseEmitter streamToolApprovalInternal(String expectedProjectId,
+                                                  Long sessionId,
+                                                  Long assistantMessageId,
+                                                  boolean approved,
+                                                  Integer maxToolRounds) {
         SseEmitter emitter = new SseEmitter(0L);
 
         Thread.startVirtualThread(() -> {
@@ -1289,7 +1315,7 @@ public class ChatService {
                 };
 
                 ToolLoopResult loopResult = resolveToolApprovalInternal(
-                        normalizedProjectId,
+                        expectedProjectId,
                         sessionId,
                         assistantMessageId,
                         approved,
@@ -1298,7 +1324,7 @@ public class ChatService {
                 );
 
                 ChatMessage assistantMessage = loopResult.message();
-                ChatSession session = resolveScopedSession(sessionId, normalizedProjectId);
+                ChatSession session = resolveScopedSession(sessionId, expectedProjectId);
                 ChatSessionContextStatsResponse contextStats = buildSessionContextStats(
                         session,
                         assistantMessage.getModelId()
@@ -1453,20 +1479,37 @@ public class ChatService {
             String toolName = toolCall != null && toolCall.getFunction() != null
                     ? normalizeContent(toolCall.getFunction().getName())
                     : null;
-            String toolResult = approved
-                    ? executeToolCall(toolCall, context.availableTools(), toolExecutionContext)
-                    : "用户拒绝执行工具" + (toolName != null ? "：" + toolName : "");
-
             ChatMessage toolMessage = new ChatMessage();
             toolMessage.setSessionId(sessionId);
             toolMessage.setRole("tool");
-            toolMessage.setContent(toolResult);
             toolMessage.setToolCallId(toolCall != null ? toolCall.getId() : null);
             toolMessage.setModelId(context.model().getId());
             toolMessage.setModelName(context.model().getDisplayName());
             applyAgentSnapshot(toolMessage, context.agent());
             toolMessage.setCreatedAt(LocalDateTime.now());
+
+            if (!approved) {
+                String rejectedResult = "用户拒绝执行工具" + (toolName != null ? "：" + toolName : "");
+                toolMessage.setContent(rejectedResult);
+                messageMapper.insert(toolMessage);
+                emitToolLoopEvent(
+                        deltaListener,
+                        buildToolResultEvent(toolCall, toolName, rejectedResult, 0)
+                );
+                continue;
+            }
+
+            String pendingResult = "工具执行中" + (toolName != null ? "：" + toolName : "...");
+            toolMessage.setContent(pendingResult);
             messageMapper.insert(toolMessage);
+            emitToolLoopEvent(
+                    deltaListener,
+                    buildToolResultEvent(toolCall, toolName, pendingResult, 0)
+            );
+
+            String toolResult = executeToolCall(toolCall, context.availableTools(), toolExecutionContext);
+            toolMessage.setContent(toolResult);
+            messageMapper.updateById(toolMessage);
             emitToolLoopEvent(
                     deltaListener,
                     buildToolResultEvent(toolCall, toolName, toolResult, 0)

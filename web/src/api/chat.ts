@@ -15,6 +15,14 @@ interface StreamHandlers {
   onStart?: (payload: any) => void;
   onDelta?: (payload: { content: string }) => void;
   onReasoning?: (payload: { reasoning: string }) => void;
+  onTool?: (payload: {
+    type?: string;
+    round?: number;
+    toolCallId?: string | null;
+    name?: string | null;
+    arguments?: string | null;
+    result?: string | null;
+  }) => void;
   onDone?: (payload: StreamDonePayload) => void;
   onError?: (payload: { message: string }) => void;
 }
@@ -89,6 +97,90 @@ export const chatApi = {
     del<void>(`/chat/sessions/${sessionId}/messages/${messageId}`),
   approveToolCall: (sessionId: number, assistantMessageId: number, approved: boolean) =>
     post<ChatMessage>(`/chat/sessions/${sessionId}/tool-approval`, { assistantMessageId, approved }),
+  approveToolCallStream: async (
+    sessionId: number,
+    assistantMessageId: number,
+    approved: boolean,
+    handlers: StreamHandlers,
+    options?: { signal?: AbortSignal },
+  ) => {
+    const response = await fetch(`/api/chat/sessions/${sessionId}/tool-approval/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        assistantMessageId,
+        approved,
+      }),
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `流式授权请求失败: ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error('流式授权响应为空');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? '';
+
+      for (const block of blocks) {
+        const parsed = parseEventBlock(block);
+        if (!parsed) {
+          continue;
+        }
+
+        const { event, data: payload } = parsed;
+        if (event === 'start') {
+          handlers.onStart?.(payload);
+        } else if (event === 'delta') {
+          handlers.onDelta?.(payload as { content: string });
+        } else if (event === 'reasoning') {
+          handlers.onReasoning?.(payload as { reasoning: string });
+        } else if (event === 'tool') {
+          handlers.onTool?.(payload as {
+            type?: string;
+            round?: number;
+            toolCallId?: string | null;
+            name?: string | null;
+            arguments?: string | null;
+            result?: string | null;
+          });
+        } else if (event === 'done') {
+          handlers.onDone?.(payload as StreamDonePayload);
+        } else if (event === 'error') {
+          const normalizedError = normalizeStreamError(payload);
+          handlers.onError?.(normalizedError);
+          throw new Error(normalizedError.message);
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const parsed = parseEventBlock(buffer);
+      if (parsed?.event === 'done') {
+        handlers.onDone?.(parsed.data as StreamDonePayload);
+      } else if (parsed?.event === 'error') {
+        const normalizedError = normalizeStreamError(parsed.data);
+        handlers.onError?.(normalizedError);
+        throw new Error(normalizedError.message);
+      }
+    }
+  },
   sendMessage: (data: ChatSendRequest) => post<ChatMessage>('/chat/send', data),
   streamMessage: async (
     data: ChatSendRequest,
@@ -139,6 +231,15 @@ export const chatApi = {
           handlers.onDelta?.(payload as { content: string });
         } else if (event === 'reasoning') {
           handlers.onReasoning?.(payload as { reasoning: string });
+        } else if (event === 'tool') {
+          handlers.onTool?.(payload as {
+            type?: string;
+            round?: number;
+            toolCallId?: string | null;
+            name?: string | null;
+            arguments?: string | null;
+            result?: string | null;
+          });
         } else if (event === 'done') {
           handlers.onDone?.(payload as StreamDonePayload);
         } else if (event === 'error') {

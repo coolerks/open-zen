@@ -72,6 +72,10 @@ function isDefaultSessionTitle(title: string | null | undefined): boolean {
   return title.trim() === '' || title.trim() === DEFAULT_SESSION_TITLE;
 }
 
+function isToolApprovalAlreadyProcessedError(message: string | null | undefined): boolean {
+  return typeof message === 'string' && message.includes('该工具调用已处理');
+}
+
 let activeStreamAbortController: AbortController | null = null;
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -500,28 +504,227 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   resolveToolApproval: async (assistantMessageId, approved) => {
-    const { currentSessionId } = get();
+    const { currentSessionId, currentSession, selectedModelId, messages } = get();
     if (!currentSessionId) {
       return;
     }
 
-    set({ loading: true, error: null });
+    const sourceAssistant = messages.find((message) => message.id === assistantMessageId) ?? null;
+    const tempAssistantId = -Date.now();
+    const createdAt = new Date().toISOString();
+    const optimisticAssistant: ChatMessage = {
+      id: tempAssistantId,
+      sessionId: currentSessionId,
+      role: 'assistant',
+      content: '',
+      toolCalls: null,
+      toolCallId: null,
+      tokenUsage: null,
+      promptTokens: null,
+      completionTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+      modelId: sourceAssistant?.modelId ?? selectedModelId ?? currentSession?.modelId ?? null,
+      modelName: sourceAssistant?.modelName ?? null,
+      agentId: sourceAssistant?.agentId ?? null,
+      agentName: sourceAssistant?.agentName ?? null,
+      agentAvatarType: sourceAssistant?.agentAvatarType ?? null,
+      agentAvatarValue: sourceAssistant?.agentAvatarValue ?? null,
+      reasoningContent: '',
+      reasoningDurationMs: null,
+      imageUrls: null,
+      createdAt,
+    };
+
+    set((state) => ({
+      streaming: true,
+      error: null,
+      messages: [...state.messages, optimisticAssistant],
+    }));
+    activeStreamAbortController = new AbortController();
+
+    const donePayloadHolder: { value: StreamDonePayload | null } = { value: null };
+    const streamQueue = {
+      content: '',
+      reasoning: '',
+    };
+    let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
+    let streamClosed = false;
+    let resolveQueueDrain: (() => void) | null = null;
+
+    const clearStreamFlushTimer = () => {
+      if (streamFlushTimer == null) {
+        return;
+      }
+      clearInterval(streamFlushTimer);
+      streamFlushTimer = null;
+    };
+
+    const tryResolveQueueDrain = () => {
+      if (!streamClosed) {
+        return;
+      }
+      if (streamQueue.content.length > 0 || streamQueue.reasoning.length > 0) {
+        return;
+      }
+      clearStreamFlushTimer();
+      if (resolveQueueDrain) {
+        resolveQueueDrain();
+        resolveQueueDrain = null;
+      }
+    };
+
+    const flushStreamQueue = () => {
+      const contentStep = resolveStreamStepSize(streamQueue.content.length);
+      const reasoningStep = resolveStreamStepSize(streamQueue.reasoning.length);
+      const contentDelta = contentStep > 0 ? streamQueue.content.slice(0, contentStep) : '';
+      const reasoningDelta = reasoningStep > 0 ? streamQueue.reasoning.slice(0, reasoningStep) : '';
+
+      if (contentDelta) {
+        streamQueue.content = streamQueue.content.slice(contentDelta.length);
+      }
+      if (reasoningDelta) {
+        streamQueue.reasoning = streamQueue.reasoning.slice(reasoningDelta.length);
+      }
+
+      if (!contentDelta && !reasoningDelta) {
+        tryResolveQueueDrain();
+        return;
+      }
+
+      set((state) => ({
+        messages: state.messages.map((message) => {
+          if (message.id !== tempAssistantId) {
+            return message;
+          }
+
+          const nextContent = contentDelta ? appendStreamField(message.content, contentDelta) : message.content;
+          const nextReasoning = reasoningDelta
+            ? appendStreamField(message.reasoningContent, reasoningDelta)
+            : message.reasoningContent;
+
+          if (nextContent === message.content && nextReasoning === message.reasoningContent) {
+            return message;
+          }
+
+          return {
+            ...message,
+            content: nextContent,
+            reasoningContent: nextReasoning,
+          };
+        }),
+      }));
+
+      tryResolveQueueDrain();
+    };
+
+    const ensureStreamFlushTimer = () => {
+      if (streamFlushTimer != null) {
+        return;
+      }
+      streamFlushTimer = setInterval(() => {
+        flushStreamQueue();
+      }, STREAM_RENDER_INTERVAL_MS);
+    };
+
+    const waitForStreamQueueDrain = async () => {
+      if (streamQueue.content.length === 0 && streamQueue.reasoning.length === 0) {
+        clearStreamFlushTimer();
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        resolveQueueDrain = resolve;
+      });
+    };
+
     try {
-      await chatApi.approveToolCall(currentSessionId, assistantMessageId, approved);
+      await chatApi.approveToolCallStream(
+        currentSessionId,
+        assistantMessageId,
+        approved,
+        {
+          onDelta: ({ content: delta }) => {
+            if (!delta) {
+              return;
+            }
+            streamQueue.content += delta;
+            ensureStreamFlushTimer();
+          },
+          onReasoning: ({ reasoning }) => {
+            if (!reasoning) {
+              return;
+            }
+            streamQueue.reasoning += reasoning;
+            ensureStreamFlushTimer();
+          },
+          onDone: (payload) => {
+            donePayloadHolder.value = payload;
+          },
+          onError: (payload) => {
+            set({ error: payload.message || '工具授权处理异常' });
+          },
+        },
+        { signal: activeStreamAbortController.signal },
+      );
+      streamClosed = true;
+      flushStreamQueue();
+      await waitForStreamQueueDrain();
+
       const [session, latestMessages, sessions] = await Promise.all([
         chatApi.getSession(currentSessionId),
         chatApi.getMessages(currentSessionId),
         chatApi.listSessions(),
       ]);
       set({
-        loading: false,
         currentSession: session,
         selectedModelId: session.modelId,
         messages: latestMessages,
         sessions,
       });
+
+      if (donePayloadHolder.value?.title && session.title !== donePayloadHolder.value.title) {
+        set((state) => ({
+          currentSession: state.currentSession
+            ? { ...state.currentSession, title: donePayloadHolder.value!.title }
+            : state.currentSession,
+          sessions: state.sessions.map((item) =>
+            item.id === currentSessionId ? { ...item, title: donePayloadHolder.value!.title } : item,
+          ),
+        }));
+      }
     } catch (e: any) {
-      set({ loading: false, error: e.message });
+      streamClosed = true;
+      flushStreamQueue();
+      clearStreamFlushTimer();
+      const isAborted = e?.name === 'AbortError';
+      const alreadyProcessed = isToolApprovalAlreadyProcessedError(e?.message);
+      if (!isAborted || alreadyProcessed) {
+        try {
+          const [session, latestMessages, sessions] = await Promise.all([
+            chatApi.getSession(currentSessionId),
+            chatApi.getMessages(currentSessionId),
+            chatApi.listSessions(),
+          ]);
+          set({
+            currentSession: session,
+            selectedModelId: session.modelId,
+            messages: latestMessages,
+            sessions,
+            error: alreadyProcessed ? null : (e?.message ?? '工具授权处理异常'),
+          });
+        } catch (refreshError: any) {
+          set({ error: refreshError?.message ?? e?.message ?? '工具授权处理异常' });
+        }
+      }
+      set((state) => ({
+        messages: state.messages.filter((message) => message.id !== tempAssistantId),
+      }));
+    } finally {
+      streamClosed = true;
+      clearStreamFlushTimer();
+      activeStreamAbortController = null;
+      set({ streaming: false });
     }
   },
 

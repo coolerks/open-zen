@@ -18,6 +18,8 @@ import com.aiagent.mapper.ProviderMapper;
 
 import java.time.LocalDateTime;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -79,6 +81,18 @@ class ChatControllerTest {
         mockMvc.perform(get("/api/chat/sessions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2));
+    }
+
+    @Test
+    void testListTools_shouldIncludeWebfetchAndExcludeProjectOnlyTools() throws Exception {
+        String body = mockMvc.perform(get("/api/chat/tools"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertTrue(body.contains("\"name\":\"webfetch\""));
+        assertFalse(body.contains("\"name\":\"read\""));
     }
 
     @Test

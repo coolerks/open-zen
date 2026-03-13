@@ -1,23 +1,33 @@
 package com.aiagent.service;
 
+import com.aiagent.dto.ModelRequest;
+import com.aiagent.dto.ProviderRequest;
+import com.aiagent.dto.ChatToolDefinitionResponse;
 import com.aiagent.dto.openrouter.ChatCompletionRequest;
 import com.aiagent.entity.ChatMessage;
 import com.aiagent.entity.ChatSession;
 import com.aiagent.entity.CustomAgent;
+import com.aiagent.mapper.AiModelMapper;
 import com.aiagent.mapper.ChatMessageMapper;
 import com.aiagent.mapper.ChatSessionMapper;
+import com.aiagent.mapper.ProviderMapper;
+import com.aiagent.dto.openrouter.ChatCompletionResponse;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -33,12 +43,29 @@ class ChatServiceTest {
     private ChatMessageMapper messageMapper;
 
     @Autowired
+    private AiModelMapper aiModelMapper;
+
+    @Autowired
+    private ProviderMapper providerMapper;
+
+    @Autowired
+    private ProviderService providerService;
+
+    @Autowired
+    private AiModelService aiModelService;
+
+    @Autowired
     private ObjectMapper objectMapper;
+
+    @MockBean
+    private OpenRouterClient openRouterClient;
 
     @BeforeEach
     void setUp() {
         messageMapper.selectList(null).forEach(m -> messageMapper.deleteById(m.getId()));
         sessionMapper.selectList(null).forEach(s -> sessionMapper.deleteById(s.getId()));
+        aiModelMapper.selectList(null).forEach(m -> aiModelMapper.deleteById(m.getId()));
+        providerMapper.selectList(null).forEach(p -> providerMapper.deleteById(p.getId()));
     }
 
     @Test
@@ -98,6 +125,22 @@ class ChatServiceTest {
         ChatSession session = chatService.createSession("空消息");
         List<ChatMessage> messages = chatService.getMessages(session.getId());
         assertTrue(messages.isEmpty());
+    }
+
+    @Test
+    void testListToolDefinitions_shouldIncludeWebfetchAndExcludeProjectOnlyTools() {
+        List<ChatToolDefinitionResponse> tools = chatService.listToolDefinitions();
+
+        assertTrue(tools.stream().anyMatch(item -> "webfetch".equals(item.getName())));
+        assertFalse(tools.stream().anyMatch(item -> "read".equals(item.getName())));
+    }
+
+    @Test
+    void testListProjectToolDefinitions_shouldIncludeWebfetchAndProjectTools() {
+        List<ChatToolDefinitionResponse> tools = chatService.listProjectToolDefinitions();
+
+        assertTrue(tools.stream().anyMatch(item -> "webfetch".equals(item.getName())));
+        assertTrue(tools.stream().anyMatch(item -> "read".equals(item.getName())));
     }
 
     @Test
@@ -256,5 +299,79 @@ class ChatServiceTest {
         assertEquals("call_123", toolCalls.getFirst().getId());
         assertEquals("list", toolCalls.getFirst().getFunction().getName());
         assertEquals("{\"path\":\".\"}", toolCalls.getFirst().getFunction().getArguments());
+    }
+
+    @Test
+    void testResolveToolApproval_approvedShouldPersistToolResultAndAssistantReply() throws Exception {
+        Long modelId = createToolEnabledModelId();
+        ChatSession session = chatService.createSession("工具授权测试");
+        session.setModelId(modelId);
+        sessionMapper.updateById(session);
+
+        String toolCallId = "call_current_date";
+        ChatMessage assistantToolMessage = new ChatMessage();
+        assistantToolMessage.setSessionId(session.getId());
+        assistantToolMessage.setRole("assistant");
+        assistantToolMessage.setModelId(modelId);
+        assistantToolMessage.setModelName("测试模型");
+        assistantToolMessage.setToolCalls(objectMapper.writeValueAsString(List.of(buildDateToolCall(toolCallId))));
+        assistantToolMessage.setCreatedAt(LocalDateTime.now());
+        messageMapper.insert(assistantToolMessage);
+
+        ChatCompletionResponse.Message continuationMessage = new ChatCompletionResponse.Message();
+        continuationMessage.setRole("assistant");
+        continuationMessage.setContent("工具已经执行完成，这是继续生成的回复。");
+        ChatCompletionResponse.Choice choice = new ChatCompletionResponse.Choice();
+        choice.setMessage(continuationMessage);
+        ChatCompletionResponse completionResponse = new ChatCompletionResponse();
+        completionResponse.setChoices(List.of(choice));
+        when(openRouterClient.chatCompletion(anyString(), anyString(), any(ChatCompletionRequest.class)))
+                .thenReturn(completionResponse);
+
+        ChatMessage resolved = chatService.resolveToolApproval(session.getId(), assistantToolMessage.getId(), true);
+
+        assertEquals("assistant", resolved.getRole());
+        assertEquals("工具已经执行完成，这是继续生成的回复。", resolved.getContent());
+
+        List<ChatMessage> persistedMessages = chatService.getMessages(session.getId());
+        assertEquals(3, persistedMessages.size());
+        ChatMessage persistedToolMessage = persistedMessages.stream()
+                .filter(message -> "tool".equals(message.getRole()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(toolCallId, persistedToolMessage.getToolCallId());
+        assertNotNull(persistedToolMessage.getContent());
+        assertTrue(persistedToolMessage.getContent().contains("当前日期"));
+    }
+
+    private Long createToolEnabledModelId() {
+        ProviderRequest providerRequest = new ProviderRequest();
+        providerRequest.setName("测试供应商");
+        providerRequest.setBaseUrl("https://mock.openrouter.local/api/v1");
+        providerRequest.setApiKey("test-api-key");
+        providerRequest.setEnabled(true);
+        Long providerId = providerService.create(providerRequest).getId();
+
+        ModelRequest modelRequest = new ModelRequest();
+        modelRequest.setProviderId(providerId);
+        modelRequest.setModelKey("test-model");
+        modelRequest.setDisplayName("测试模型");
+        modelRequest.setSupportsTools(true);
+        modelRequest.setSupportsVision(false);
+        modelRequest.setSupportsReasoning(false);
+        modelRequest.setEnabled(true);
+        return aiModelService.create(modelRequest).getId();
+    }
+
+    private ChatCompletionResponse.ToolCall buildDateToolCall(String toolCallId) {
+        ChatCompletionResponse.FunctionCall functionCall = new ChatCompletionResponse.FunctionCall();
+        functionCall.setName("getCurrentDate");
+        functionCall.setArguments("{\"timezone\":\"Asia/Shanghai\",\"pattern\":\"yyyy-MM-dd\"}");
+
+        ChatCompletionResponse.ToolCall toolCall = new ChatCompletionResponse.ToolCall();
+        toolCall.setId(toolCallId);
+        toolCall.setType("function");
+        toolCall.setFunction(functionCall);
+        return toolCall;
     }
 }

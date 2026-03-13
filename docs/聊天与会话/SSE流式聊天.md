@@ -5,6 +5,9 @@ Open Zen 采用 SSE (Server-Sent Events) 实现大模型响应的增量实时下
 ## 接口定义
 
 - **端点**: `POST /api/chat/stream`
+- **工具授权续跑**:
+  - `POST /api/chat/sessions/{sessionId}/tool-approval/stream`
+  - `POST /api/projects/{projectId}/chat/sessions/{sessionId}/tool-approval/stream`
 - **内容类型**: `text/event-stream`
 - **请求负载**: `ChatSendRequest` (含会话 ID、模型、提示词、多模态图片)
 
@@ -15,6 +18,7 @@ Open Zen 采用 SSE (Server-Sent Events) 实现大模型响应的增量实时下
 | `start` | `sessionId`, `modelId`, `modelName` 等 | 会话初始化信息，含上下文统计 |
 | `delta` | `content` | 助手回复的正文增量片段 |
 | `reasoning` | `reasoning` | 模型的推理内容（如思维链）片段 |
+| `tool` | `type`, `toolCallId`, `name`, `result` 等 | 工具请求、待授权、执行中、工具结果等过程事件 |
 | `done` | `messageId`, `tokenUsage`, `costUsd` 等 | 传输结束，含最终生成的数据库消息 ID 与费用 |
 | `error` | `message` | 服务端抛出的异常信息 |
 
@@ -54,9 +58,13 @@ while (true) {
 
 - **流式滚动**：前端组件监听 `messages` 变化，仅在用户处于页面底部时触发 `scrollToBottom`。
 - **停止按钮**：通过 `chatStore.stopStreaming()` 清理 `AbortController` 并重置 UI 状态。
+- **授权后续跑**：
+  - 初始工具调用轮次若需要授权，当前 SSE 轮次会先结束，前端展示待授权卡片。
+  - 用户点击允许/拒绝后，会重新建立一条 SSE 连接继续续跑，而不是等待同步接口把结果一次性返回。
+  - 为避免刷新后又回到待授权状态，后端会先写入“工具执行中…”占位 `tool` 消息，再在工具完成后回写真实结果。
 - **错误降级**：若 SSE 过程异常，前端将显示错误 Toast，并重新从后端拉取完整消息列表以同步状态。
 
 ## 关键文件定位
 
 - **前端**：`web/src/api/chat.ts` (传输层), `web/src/store/chatStore.ts` (状态流转)
-- **后端**：`ChatService.streamMessageInternal` (虚拟线程处理逻辑), `ChatController.stream` (入口)
+- **后端**：`ChatService.streamMessageInternal` / `ChatService.streamToolApprovalInternal` (虚拟线程处理逻辑), `ChatController.stream` / `ChatController.streamApproveToolCall` (入口)

@@ -111,6 +111,17 @@ public class ChatController {
         ));
     }
 
+    @PostMapping(value = "/sessions/{sessionId}/tool-approval/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamApproveToolCall(@PathVariable Long sessionId,
+                                            @Valid @RequestBody ChatToolApprovalRequest request) {
+        return chatService.streamToolApproval(
+                sessionId,
+                request.getAssistantMessageId(),
+                Boolean.TRUE.equals(request.getApproved()),
+                request.getMaxToolRounds()
+        );
+    }
+
     @PostMapping("/send")
     public ApiResult<ChatMessage> send(@Valid @RequestBody ChatSendRequest request) {
         return ApiResult.ok(chatService.sendMessage(request));
