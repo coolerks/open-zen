@@ -732,6 +732,47 @@ function parseToolCalls(rawToolCalls: string | null): ParsedToolCall[] {
   }
 }
 
+function findMatchingReasoningMessage(
+  displayMessages: DisplayChatMessage[],
+  reasoningPanel: ReasoningPanelState,
+): ChatMessage | null {
+  const directMatch = displayMessages.find((item) => item.message.id === reasoningPanel.messageId)?.message ?? null;
+  if (directMatch) {
+    return directMatch;
+  }
+  if (reasoningPanel.messageId >= 0) {
+    return null;
+  }
+
+  const panelReasoning = reasoningPanel.reasoning.trim();
+  const panelPreview = reasoningPanel.preview.trim();
+  const panelModelName = reasoningPanel.modelName?.trim() ?? '';
+
+  return [...displayMessages]
+    .map((item) => item.message)
+    .reverse()
+    .find((message) => {
+      if (message.role !== 'assistant' || message.id <= 0) {
+        return false;
+      }
+
+      const candidateReasoning = message.reasoningContent?.trim() ?? '';
+      if (!candidateReasoning) {
+        return false;
+      }
+
+      if (panelModelName && panelModelName !== (message.modelName?.trim() ?? '')) {
+        return false;
+      }
+
+      if (panelReasoning && candidateReasoning.startsWith(panelReasoning)) {
+        return true;
+      }
+
+      return Boolean(panelPreview) && candidateReasoning.includes(panelPreview);
+    }) ?? null;
+}
+
 function buildDisplayMessages(messages: ChatMessage[]): DisplayChatMessage[] {
   const result: DisplayChatMessage[] = [];
   const syntheticSessionId = messages[0]?.sessionId ?? 0;
@@ -4285,11 +4326,31 @@ const ChatPage: React.FC = () => {
   }, [messages, streaming]);
 
   const displayMessages = useMemo(() => buildDisplayMessages(messages), [messages]);
+  const matchedReasoningMessage = useMemo(
+    () => (reasoningPanel ? findMatchingReasoningMessage(displayMessages, reasoningPanel) : null),
+    [displayMessages, reasoningPanel],
+  );
+
+  useEffect(() => {
+    if (!reasoningPanel || reasoningPanel.messageId >= 0 || !matchedReasoningMessage || matchedReasoningMessage.id <= 0) {
+      return;
+    }
+    setReasoningPanel((current) => {
+      if (!current || current.messageId !== reasoningPanel.messageId || current.messageId >= 0) {
+        return current;
+      }
+      return {
+        ...current,
+        messageId: matchedReasoningMessage.id,
+      };
+    });
+  }, [matchedReasoningMessage, reasoningPanel]);
+
   const activeReasoningPanel = useMemo(() => {
     if (!reasoningPanel) {
       return null;
     }
-    const matchedMessage = displayMessages.find((item) => item.message.id === reasoningPanel.messageId)?.message;
+    const matchedMessage = matchedReasoningMessage;
     if (!matchedMessage?.reasoningContent?.trim()) {
       return reasoningPanel;
     }
@@ -4298,6 +4359,7 @@ const ChatPage: React.FC = () => {
     const latestIsInProgress = Boolean(latestReasoning) && activeStreamingMessageId === matchedMessage.id && !(matchedMessage.content?.trim());
     return {
       ...reasoningPanel,
+      messageId: matchedMessage.id,
       reasoning: latestReasoning,
       preview: extractReasoningPreview(latestReasoning),
       summary: latestIsInProgress
@@ -4308,7 +4370,7 @@ const ChatPage: React.FC = () => {
       modelName: matchedMessage.modelName,
       createdAt: matchedMessage.createdAt,
     };
-  }, [displayMessages, reasoningPanel, activeStreamingMessageId]);
+  }, [matchedReasoningMessage, reasoningPanel, activeStreamingMessageId]);
   const activeReasoningEntries = useMemo(
     () => buildReasoningTimelineEntries(activeReasoningPanel?.reasoning ?? ''),
     [activeReasoningPanel?.reasoning],
