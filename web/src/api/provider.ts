@@ -1,4 +1,4 @@
-import { get, post, put, patch } from './client';
+import { get, post, put, patch, del } from './client';
 import type { Provider, ProviderRequest } from '../types';
 
 export const providerApi = {
@@ -7,4 +7,5 @@ export const providerApi = {
   create: (data: ProviderRequest) => post<Provider>('/providers', data),
   update: (id: number, data: ProviderRequest) => put<Provider>(`/providers/${id}`, data),
   toggle: (id: number, enabled: boolean) => patch<void>(`/providers/${id}/toggle`, { enabled }),
+  delete: (id: number) => del<void>(`/providers/${id}`),
 };

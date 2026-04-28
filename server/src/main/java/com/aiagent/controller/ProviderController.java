@@ -44,4 +44,10 @@ public class ProviderController {
         providerService.toggleEnabled(id, body.getOrDefault("enabled", true));
         return ApiResult.ok();
     }
+
+    @DeleteMapping("/{id}")
+    public ApiResult<Void> delete(@PathVariable Long id) {
+        providerService.delete(id);
+        return ApiResult.ok();
+    }
 }

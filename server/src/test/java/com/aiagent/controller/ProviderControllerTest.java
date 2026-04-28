@@ -1,6 +1,8 @@
 package com.aiagent.controller;
 
 import com.aiagent.dto.ProviderRequest;
+import com.aiagent.dto.ModelRequest;
+import com.aiagent.entity.ChatSession;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -132,6 +134,36 @@ class ProviderControllerTest {
                 .andExpect(jsonPath("$.data.enabled").value(false));
     }
 
+    @Test
+    void testDeleteProvider_shouldDeleteProviderModelsAndRebindSession() throws Exception {
+        String targetProviderBody = createProvider("TargetProvider");
+        String fallbackProviderBody = createProvider("FallbackProvider");
+        Long targetProviderId = objectMapper.readTree(targetProviderBody).path("data").path("id").asLong();
+        Long fallbackProviderId = objectMapper.readTree(fallbackProviderBody).path("data").path("id").asLong();
+
+        Long fallbackModelId = createModel(fallbackProviderId, "fallback-model", "Fallback Model");
+        mockMvc.perform(patch("/api/models/" + fallbackModelId + "/default")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"isDefault\":true}"))
+                .andExpect(status().isOk());
+
+        Long deletingModelId = createModel(targetProviderId, "target-model", "Target Model");
+
+        ChatSession session = new ChatSession();
+        session.setTitle("供应商删除降级会话");
+        session.setModelId(deletingModelId);
+        session.setIsTemporary(false);
+        chatSessionMapper.insert(session);
+
+        mockMvc.perform(delete("/api/providers/" + targetProviderId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        ChatSession updated = chatSessionMapper.selectById(session.getId());
+        org.junit.jupiter.api.Assertions.assertNotNull(updated);
+        org.junit.jupiter.api.Assertions.assertEquals(fallbackModelId, updated.getModelId());
+    }
+
     private String createProvider(String name) throws Exception {
         ProviderRequest req = new ProviderRequest();
         req.setName(name);
@@ -143,5 +175,19 @@ class ProviderControllerTest {
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
+    }
+
+    private Long createModel(Long providerId, String modelKey, String displayName) throws Exception {
+        ModelRequest request = new ModelRequest();
+        request.setProviderId(providerId);
+        request.setModelKey(modelKey);
+        request.setDisplayName(displayName);
+
+        String body = mockMvc.perform(post("/api/models")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).path("data").path("id").asLong();
     }
 }

@@ -61,4 +61,10 @@ public class AiModelController {
         aiModelService.setDefault(id, body.getOrDefault("isDefault", true));
         return ApiResult.ok();
     }
+
+    @DeleteMapping("/{id}")
+    public ApiResult<Void> delete(@PathVariable Long id) {
+        aiModelService.delete(id);
+        return ApiResult.ok();
+    }
 }

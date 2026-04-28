@@ -1,4 +1,4 @@
-import { get, post, put, patch } from './client';
+import { get, post, put, patch, del } from './client';
 import type { AiModel, ModelDiscoveryItem, ModelRequest } from '../types';
 
 export const modelApi = {
@@ -10,4 +10,5 @@ export const modelApi = {
   update: (id: number, data: ModelRequest) => put<AiModel>(`/models/${id}`, data),
   toggle: (id: number, enabled: boolean) => patch<void>(`/models/${id}/toggle`, { enabled }),
   setDefault: (id: number, isDefault: boolean) => patch<void>(`/models/${id}/default`, { isDefault }),
+  delete: (id: number) => del<void>(`/models/${id}`),
 };

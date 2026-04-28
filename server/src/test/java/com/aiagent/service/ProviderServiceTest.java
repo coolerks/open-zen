@@ -2,6 +2,10 @@ package com.aiagent.service;
 
 import com.aiagent.dto.ProviderRequest;
 import com.aiagent.dto.ProviderResponse;
+import com.aiagent.dto.ModelRequest;
+import com.aiagent.entity.ChatSession;
+import com.aiagent.mapper.AiModelMapper;
+import com.aiagent.mapper.ChatSessionMapper;
 import com.aiagent.entity.Provider;
 import com.aiagent.mapper.ProviderMapper;
 import com.aiagent.util.EncryptionUtil;
@@ -28,9 +32,20 @@ class ProviderServiceTest {
     @Autowired
     private EncryptionUtil encryptionUtil;
 
+    @Autowired
+    private AiModelService aiModelService;
+
+    @Autowired
+    private AiModelMapper aiModelMapper;
+
+    @Autowired
+    private ChatSessionMapper chatSessionMapper;
+
     @BeforeEach
     void setUp() {
         // Clean up
+        chatSessionMapper.selectList(null).forEach(s -> chatSessionMapper.deleteById(s.getId()));
+        aiModelMapper.selectList(null).forEach(m -> aiModelMapper.deleteById(m.getId()));
         providerMapper.selectList(null).forEach(p -> providerMapper.deleteById(p.getId()));
     }
 
@@ -149,6 +164,39 @@ class ProviderServiceTest {
         providerService.toggleEnabled(created.getId(), true);
         updated = providerService.getById(created.getId());
         assertTrue(updated.getEnabled());
+    }
+
+    @Test
+    void testDeleteProvider_deletesModelsAndRebindsSessions() {
+        ProviderResponse targetProvider = createTestProvider("DeleteProvider");
+        ProviderResponse fallbackProvider = createTestProvider("FallbackProvider");
+
+        var fallbackModelReq = new ModelRequest();
+        fallbackModelReq.setProviderId(fallbackProvider.getId());
+        fallbackModelReq.setModelKey("fallback-model");
+        fallbackModelReq.setDisplayName("Fallback Model");
+        fallbackModelReq.setEnabled(true);
+        var fallbackModel = aiModelService.create(fallbackModelReq);
+        aiModelService.setDefault(fallbackModel.getId(), true);
+
+        var deletingModelReq = new ModelRequest();
+        deletingModelReq.setProviderId(targetProvider.getId());
+        deletingModelReq.setModelKey("delete-model");
+        deletingModelReq.setDisplayName("Delete Model");
+        deletingModelReq.setEnabled(true);
+        var deletingModel = aiModelService.create(deletingModelReq);
+
+        ChatSession session = new ChatSession();
+        session.setTitle("Provider Delete Session");
+        session.setModelId(deletingModel.getId());
+        session.setIsTemporary(false);
+        chatSessionMapper.insert(session);
+
+        providerService.delete(targetProvider.getId());
+
+        assertNull(providerMapper.selectById(targetProvider.getId()));
+        assertNull(aiModelMapper.selectById(deletingModel.getId()));
+        assertEquals(fallbackModel.getId(), chatSessionMapper.selectById(session.getId()).getModelId());
     }
 
     private ProviderResponse createTestProvider(String name) {

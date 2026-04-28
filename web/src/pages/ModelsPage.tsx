@@ -136,7 +136,8 @@ const ModelsPage: React.FC = () => {
 
 // ========== Provider Panel ==========
 const ProviderPanel: React.FC = () => {
-  const { providers, loading, fetchProviders, createProvider, updateProvider, toggleProvider } = useProviderStore();
+  const { providers, loading, fetchProviders, createProvider, updateProvider, toggleProvider, deleteProvider } = useProviderStore();
+  const { fetchModels, fetchEnabledModels } = useModelStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Provider | null>(null);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -165,6 +166,15 @@ const ProviderPanel: React.FC = () => {
   const handleCreate = () => {
     setEditing(null);
     setDialogOpen(true);
+  };
+
+  const handleDelete = async (provider: Provider) => {
+    const confirmed = window.confirm(`确认删除供应商「${provider.name}」吗？\n将同步删除该供应商下的所有模型。`);
+    if (!confirmed) {
+      return;
+    }
+    await deleteProvider(provider.id);
+    await Promise.all([fetchModels(), fetchEnabledModels()]);
   };
 
   return (
@@ -226,6 +236,9 @@ const ProviderPanel: React.FC = () => {
                   <td className="px-4 py-3">
                     <Button variant="ghost" size="sm" onClick={() => handleEdit(p)}>
                       编辑
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => void handleDelete(p)}>
+                      删除
                     </Button>
                   </td>
                 </tr>
@@ -314,7 +327,7 @@ const ProviderDialog: React.FC<{
 
 // ========== Model Panel ==========
 const ModelPanel: React.FC = () => {
-  const { models, loading, fetchModels, createModel, updateModel, toggleModel, setDefaultModel } = useModelStore();
+  const { models, loading, fetchModels, createModel, updateModel, toggleModel, setDefaultModel, deleteModel } = useModelStore();
   const { providers, fetchProviders } = useProviderStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AiModel | null>(null);
@@ -345,6 +358,14 @@ const ModelPanel: React.FC = () => {
     fetchModels();
     fetchProviders();
   }, [fetchModels, fetchProviders]);
+
+  const handleDeleteModel = async (model: AiModel) => {
+    const confirmed = window.confirm(`确认删除模型「${model.displayName}」吗？`);
+    if (!confirmed) {
+      return;
+    }
+    await deleteModel(model.id);
+  };
 
   return (
     <div>
@@ -454,6 +475,14 @@ const ModelPanel: React.FC = () => {
                       onClick={() => { setEditing(m); setDialogOpen(true); }}
                     >
                       编辑
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="whitespace-nowrap px-2.5 py-1 text-xs"
+                      onClick={() => void handleDeleteModel(m)}
+                    >
+                      删除
                     </Button>
                   </td>
                 </tr>
