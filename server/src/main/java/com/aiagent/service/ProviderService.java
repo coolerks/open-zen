@@ -18,6 +18,7 @@ public class ProviderService {
 
     private final ProviderMapper providerMapper;
     private final EncryptionUtil encryptionUtil;
+    private final AiModelService aiModelService;
 
     public List<ProviderResponse> listAll() {
         List<Provider> providers = providerMapper.selectList(
@@ -86,6 +87,15 @@ public class ProviderService {
             throw new RuntimeException("供应商不存在: " + id);
         }
         return encryptionUtil.decrypt(provider.getApiKey());
+    }
+
+    public void delete(Long id) {
+        Provider provider = providerMapper.selectById(id);
+        if (provider == null) {
+            throw new RuntimeException("供应商不存在: " + id);
+        }
+        aiModelService.deleteByProviderId(id);
+        providerMapper.deleteById(id);
     }
 
     private ProviderResponse toResponse(Provider provider) {

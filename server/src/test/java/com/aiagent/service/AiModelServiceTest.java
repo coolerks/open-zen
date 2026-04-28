@@ -5,7 +5,11 @@ import com.aiagent.dto.ModelDiscoveryItemResponse;
 import com.aiagent.dto.ModelResponse;
 import com.aiagent.dto.ProviderRequest;
 import com.aiagent.dto.ProviderResponse;
+import com.aiagent.entity.ChatMessage;
+import com.aiagent.entity.ChatSession;
 import com.aiagent.mapper.AiModelMapper;
+import com.aiagent.mapper.ChatMessageMapper;
+import com.aiagent.mapper.ChatSessionMapper;
 import com.aiagent.mapper.ProviderMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -39,11 +43,19 @@ class AiModelServiceTest {
     @Autowired
     private ProviderMapper providerMapper;
 
+    @Autowired
+    private ChatSessionMapper chatSessionMapper;
+
+    @Autowired
+    private ChatMessageMapper chatMessageMapper;
+
     private Long testProviderId;
 
     @BeforeEach
     void setUp() {
         // Clean up
+        chatMessageMapper.selectList(null).forEach(m -> chatMessageMapper.deleteById(m.getId()));
+        chatSessionMapper.selectList(null).forEach(s -> chatSessionMapper.deleteById(s.getId()));
         aiModelMapper.selectList(null).forEach(m -> aiModelMapper.deleteById(m.getId()));
         providerMapper.selectList(null).forEach(p -> providerMapper.deleteById(p.getId()));
 
@@ -166,6 +178,38 @@ class AiModelServiceTest {
         aiModelService.toggleEnabled(second.getId(), false);
         Long fallbackModelId = aiModelService.resolvePreferredEnabledModelId();
         assertEquals(first.getId(), fallbackModelId);
+    }
+
+    @Test
+    void testDeleteModel_rebindsSessionToDefaultAndKeepsHistoryMessage() {
+        ModelResponse fallback = createTestModel("fallback-model", "Fallback Model");
+        aiModelService.setDefault(fallback.getId(), true);
+        ModelResponse deleting = createTestModel("deleting-model", "Deleting Model");
+
+        ChatSession session = new ChatSession();
+        session.setTitle("测试会话");
+        session.setModelId(deleting.getId());
+        session.setIsTemporary(false);
+        chatSessionMapper.insert(session);
+
+        ChatMessage message = new ChatMessage();
+        message.setSessionId(session.getId());
+        message.setRole("assistant");
+        message.setContent("历史内容");
+        message.setModelId(deleting.getId());
+        message.setModelName("Deleting Model");
+        chatMessageMapper.insert(message);
+
+        aiModelService.delete(deleting.getId());
+
+        ChatSession updatedSession = chatSessionMapper.selectById(session.getId());
+        assertEquals(fallback.getId(), updatedSession.getModelId());
+        assertNull(aiModelMapper.selectById(deleting.getId()));
+
+        ChatMessage historyMessage = chatMessageMapper.selectById(message.getId());
+        assertNotNull(historyMessage);
+        assertEquals(deleting.getId(), historyMessage.getModelId());
+        assertEquals("Deleting Model", historyMessage.getModelName());
     }
 
     @Test

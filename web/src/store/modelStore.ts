@@ -13,6 +13,7 @@ interface ModelState {
   updateModel: (id: number, data: ModelRequest) => Promise<void>;
   toggleModel: (id: number, enabled: boolean) => Promise<void>;
   setDefaultModel: (id: number, isDefault: boolean) => Promise<void>;
+  deleteModel: (id: number) => Promise<void>;
 }
 
 export const useModelStore = create<ModelState>((set, get) => ({
@@ -57,6 +58,11 @@ export const useModelStore = create<ModelState>((set, get) => ({
 
   setDefaultModel: async (id: number, isDefault: boolean) => {
     await modelApi.setDefault(id, isDefault);
+    await Promise.all([get().fetchModels(), get().fetchEnabledModels()]);
+  },
+
+  deleteModel: async (id: number) => {
+    await modelApi.delete(id);
     await Promise.all([get().fetchModels(), get().fetchEnabledModels()]);
   },
 }));

@@ -10,6 +10,7 @@ interface ProviderState {
   createProvider: (data: ProviderRequest) => Promise<void>;
   updateProvider: (id: number, data: ProviderRequest) => Promise<void>;
   toggleProvider: (id: number, enabled: boolean) => Promise<void>;
+  deleteProvider: (id: number) => Promise<void>;
 }
 
 export const useProviderStore = create<ProviderState>((set, get) => ({
@@ -39,6 +40,11 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
   toggleProvider: async (id: number, enabled: boolean) => {
     await providerApi.toggle(id, enabled);
+    await get().fetchProviders();
+  },
+
+  deleteProvider: async (id: number) => {
+    await providerApi.delete(id);
     await get().fetchProviders();
   },
 }));

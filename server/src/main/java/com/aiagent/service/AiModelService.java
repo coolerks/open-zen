@@ -4,8 +4,10 @@ import com.aiagent.dto.ModelRequest;
 import com.aiagent.dto.ModelDiscoveryItemResponse;
 import com.aiagent.dto.ModelResponse;
 import com.aiagent.entity.AiModel;
+import com.aiagent.entity.ChatSession;
 import com.aiagent.entity.Provider;
 import com.aiagent.mapper.AiModelMapper;
+import com.aiagent.mapper.ChatSessionMapper;
 import com.aiagent.mapper.ProviderMapper;
 import com.aiagent.service.modelcatalog.DiscoveredModelInfo;
 import com.aiagent.service.modelcatalog.ModelCatalogService;
@@ -15,14 +17,17 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 public class AiModelService {
 
     private final AiModelMapper aiModelMapper;
+    private final ChatSessionMapper chatSessionMapper;
     private final ProviderMapper providerMapper;
     private final EncryptionUtil encryptionUtil;
     private final ModelCatalogService modelCatalogService;
@@ -196,6 +201,41 @@ public class AiModelService {
         aiModelMapper.updateById(model);
     }
 
+    public void delete(Long id) {
+        AiModel model = aiModelMapper.selectById(id);
+        if (model == null) {
+            throw new RuntimeException("模型不存在: " + id);
+        }
+
+        Set<Long> deletingModelIds = Set.of(id);
+        Long fallbackModelId = resolvePreferredEnabledModelIdExcluding(deletingModelIds);
+        rebindSessionsForDeletedModels(deletingModelIds, fallbackModelId);
+        aiModelMapper.deleteById(id);
+        ensureSingleDefaultModelExists();
+    }
+
+    public int deleteByProviderId(Long providerId) {
+        List<AiModel> providerModels = aiModelMapper.selectList(
+                new LambdaQueryWrapper<AiModel>().eq(AiModel::getProviderId, providerId)
+        );
+        if (providerModels.isEmpty()) {
+            return 0;
+        }
+
+        Set<Long> deletingModelIds = new HashSet<>();
+        for (AiModel providerModel : providerModels) {
+            deletingModelIds.add(providerModel.getId());
+        }
+
+        Long fallbackModelId = resolvePreferredEnabledModelIdExcluding(deletingModelIds);
+        rebindSessionsForDeletedModels(deletingModelIds, fallbackModelId);
+        for (Long modelId : deletingModelIds) {
+            aiModelMapper.deleteById(modelId);
+        }
+        ensureSingleDefaultModelExists();
+        return deletingModelIds.size();
+    }
+
     /**
      * 按供应商自动发现模型列表（支持 OpenAI 兼容接口与供应商特化解析）。
      */
@@ -226,6 +266,71 @@ public class AiModelService {
             candidate.setUpdatedAt(LocalDateTime.now());
             aiModelMapper.updateById(candidate);
         }
+    }
+
+    private Long resolvePreferredEnabledModelIdExcluding(Set<Long> excludedIds) {
+        AiModel defaultEnabled = aiModelMapper.selectOne(
+                new LambdaQueryWrapper<AiModel>()
+                        .eq(AiModel::getEnabled, true)
+                        .eq(AiModel::getIsDefault, true)
+                        .notIn(!excludedIds.isEmpty(), AiModel::getId, excludedIds)
+                        .last("LIMIT 1")
+        );
+        if (defaultEnabled != null) {
+            return defaultEnabled.getId();
+        }
+
+        AiModel firstEnabled = aiModelMapper.selectOne(
+                new LambdaQueryWrapper<AiModel>()
+                        .eq(AiModel::getEnabled, true)
+                        .notIn(!excludedIds.isEmpty(), AiModel::getId, excludedIds)
+                        .orderByAsc(AiModel::getDisplayName)
+                        .last("LIMIT 1")
+        );
+        return firstEnabled != null ? firstEnabled.getId() : null;
+    }
+
+    private void rebindSessionsForDeletedModels(Set<Long> deletingModelIds, Long fallbackModelId) {
+        if (deletingModelIds.isEmpty()) {
+            return;
+        }
+
+        List<ChatSession> sessions = chatSessionMapper.selectList(
+                new LambdaQueryWrapper<ChatSession>()
+                        .in(ChatSession::getModelId, deletingModelIds)
+        );
+        for (ChatSession session : sessions) {
+            session.setModelId(fallbackModelId);
+            session.setUpdatedAt(LocalDateTime.now());
+            chatSessionMapper.updateById(session);
+        }
+    }
+
+    /**
+     * 删除默认模型后，如果系统仍有启用模型，自动补出一个新的默认模型，确保“默认模型”始终可用。
+     */
+    private void ensureSingleDefaultModelExists() {
+        AiModel defaultModel = aiModelMapper.selectOne(
+                new LambdaQueryWrapper<AiModel>()
+                        .eq(AiModel::getIsDefault, true)
+                        .last("LIMIT 1")
+        );
+        if (defaultModel != null) {
+            return;
+        }
+
+        AiModel candidate = aiModelMapper.selectOne(
+                new LambdaQueryWrapper<AiModel>()
+                        .eq(AiModel::getEnabled, true)
+                        .orderByAsc(AiModel::getDisplayName)
+                        .last("LIMIT 1")
+        );
+        if (candidate == null) {
+            return;
+        }
+        candidate.setIsDefault(true);
+        candidate.setUpdatedAt(LocalDateTime.now());
+        aiModelMapper.updateById(candidate);
     }
 
     private ModelResponse toResponse(AiModel model) {

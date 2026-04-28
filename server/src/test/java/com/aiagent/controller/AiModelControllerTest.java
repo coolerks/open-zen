@@ -18,6 +18,7 @@ import com.aiagent.mapper.AiModelMapper;
 import com.aiagent.mapper.ChatMessageMapper;
 import com.aiagent.mapper.ChatSessionMapper;
 import com.aiagent.mapper.ProviderMapper;
+import com.aiagent.entity.ChatSession;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -169,6 +170,33 @@ class AiModelControllerTest {
         mockMvc.perform(get("/api/models/" + id1))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.isDefault").value(false));
+    }
+
+    @Test
+    void testDeleteModel_rebindsSessionToFallbackModel() throws Exception {
+        String fallbackBody = createModel("fallback-model", "Fallback Model");
+        String deletingBody = createModel("deleting-model", "Deleting Model");
+        Long fallbackId = objectMapper.readTree(fallbackBody).path("data").path("id").asLong();
+        Long deletingId = objectMapper.readTree(deletingBody).path("data").path("id").asLong();
+
+        mockMvc.perform(patch("/api/models/" + fallbackId + "/default")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"isDefault\":true}"))
+                .andExpect(status().isOk());
+
+        ChatSession session = new ChatSession();
+        session.setTitle("模型删除降级会话");
+        session.setModelId(deletingId);
+        session.setIsTemporary(false);
+        chatSessionMapper.insert(session);
+
+        mockMvc.perform(delete("/api/models/" + deletingId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        ChatSession updated = chatSessionMapper.selectById(session.getId());
+        org.junit.jupiter.api.Assertions.assertNotNull(updated);
+        org.junit.jupiter.api.Assertions.assertEquals(fallbackId, updated.getModelId());
     }
 
     @Test
